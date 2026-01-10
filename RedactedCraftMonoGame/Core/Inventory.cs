@@ -98,6 +98,7 @@ public sealed class Inventory
         if (max <= 0)
             return;
 
+        // 1. Check existing hotbar stacks
         for (int i = 0; i < _hotbar.Length; i++)
         {
             if (_hotbar[i].Count > 0 && _hotbar[i].Id == id)
@@ -107,6 +108,17 @@ public sealed class Inventory
             }
         }
 
+        // 2. Check existing grid stacks
+        for (int i = 0; i < _grid.Length; i++)
+        {
+            if (_grid[i].Count > 0 && _grid[i].Id == id)
+            {
+                _grid[i].Count = Math.Min(max, _grid[i].Count + amount);
+                return;
+            }
+        }
+
+        // 3. Check empty hotbar slots
         for (int i = 0; i < _hotbar.Length; i++)
         {
             if (_hotbar[i].Count == 0)
@@ -119,15 +131,7 @@ public sealed class Inventory
             }
         }
 
-        for (int i = 0; i < _grid.Length; i++)
-        {
-            if (_grid[i].Count > 0 && _grid[i].Id == id)
-            {
-                _grid[i].Count = Math.Min(max, _grid[i].Count + amount);
-                return;
-            }
-        }
-
+        // 4. Check empty grid slots
         for (int i = 0; i < _grid.Length; i++)
         {
             if (_grid[i].Count == 0)

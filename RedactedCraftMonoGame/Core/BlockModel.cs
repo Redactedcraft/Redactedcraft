@@ -41,14 +41,102 @@ public sealed class BlockModel
         if (Cache.TryGetValue(id, out var cached))
             return cached;
 
-        var model = id switch
+        var name = BlockRegistry.Get(id).Name.Trim().ToLowerInvariant().Replace(' ', '_');
+        var path = Path.Combine(Paths.AssetsDir, "models", $"{name}.json");
+        
+        BlockModel? model = null;
+        if (File.Exists(path))
         {
-            BlockId.Door or BlockId.DoorOpen => CreateDoorModel(id == BlockId.DoorOpen),
-            _ => CreateDefaultCube()
-        };
+            model = LoadModel(path, log);
+        }
+
+        if (model == null)
+        {
+            model = id switch
+            {
+                BlockId.Door or BlockId.DoorOpen => CreateDoorModel(id == BlockId.DoorOpen),
+                _ => CreateDefaultCube()
+            };
+        }
 
         Cache[id] = model;
         return model;
+    }
+
+    private static BlockModel? LoadModel(string path, Logger log)
+    {
+        try
+        {
+            using var fs = File.OpenRead(path);
+            using var doc = JsonDocument.Parse(fs);
+            return ParseModel(doc.RootElement);
+        }
+        catch (Exception ex)
+        {
+            log.Warn($"Failed to load model from {path}: {ex.Message}");
+            return null;
+        }
+    }
+
+    private static BlockModel? ParseModel(JsonElement root)
+    {
+        if (!root.TryGetProperty("elements", out var elementsEl))
+            return null;
+
+        var textureSize = new Vector2(16, 16);
+        if (root.TryGetProperty("texture_size", out var texSizeEl) && texSizeEl.GetArrayLength() >= 2)
+        {
+            textureSize = new Vector2(ReadFloat(texSizeEl, 0, 16), ReadFloat(texSizeEl, 1, 16));
+        }
+
+        var elements = new List<BlockModelElement>();
+        foreach (var el in elementsEl.EnumerateArray())
+        {
+            var element = new BlockModelElement
+            {
+                From = ReadVec3(el.GetProperty("from"), Vector3.Zero),
+                To = ReadVec3(el.GetProperty("to"), new Vector3(16, 16, 16))
+            };
+
+            if (el.TryGetProperty("faces", out var facesEl))
+            {
+                foreach (var prop in facesEl.EnumerateObject())
+                {
+                    if (TryMapFace(prop.Name, out var dir))
+                    {
+                        var faceEl = prop.Value;
+                        var face = new BlockModelFace();
+                        if (faceEl.TryGetProperty("uv", out var uvEl))
+                        {
+                            face.Uv = ReadUv(uvEl, textureSize);
+                        }
+                        element.Faces[dir] = face;
+                    }
+                }
+            }
+            elements.Add(element);
+        }
+
+        var display = new Dictionary<BlockModelContext, BlockModelTransform>();
+        if (root.TryGetProperty("display", out var displayEl))
+        {
+            foreach (var prop in displayEl.EnumerateObject())
+            {
+                if (TryMapContext(prop.Name, out var ctx))
+                {
+                    var transEl = prop.Value;
+                    var transform = new BlockModelTransform
+                    {
+                        Rotation = ReadVec3(transEl.TryGetProperty("rotation", out var r) ? r : default, Vector3.Zero),
+                        Translation = ReadVec3(transEl.TryGetProperty("translation", out var t) ? t : default, Vector3.Zero),
+                        ScaleFactor = ReadVec3(transEl.TryGetProperty("scale", out var s) ? s : default, Vector3.One)
+                    };
+                    display[ctx] = transform;
+                }
+            }
+        }
+
+        return new BlockModel(elements, display, textureSize);
     }
 
     public bool TryGetDisplayTransform(BlockModelContext context, out Matrix transform)
