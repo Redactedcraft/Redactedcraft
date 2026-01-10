@@ -1,0 +1,488 @@
+using System;
+using System.Collections.Generic;
+using System.IO;
+using System.Text.Json;
+using Microsoft.Xna.Framework;
+using Microsoft.Xna.Framework.Graphics;
+
+namespace RedactedCraftMonoGame.Core;
+
+public enum BlockModelContext
+{
+    Gui,
+    FirstPersonRightHand,
+    FirstPersonLeftHand,
+    ThirdPersonRightHand,
+    ThirdPersonLeftHand,
+    Ground,
+    Fixed,
+    Head
+}
+
+public sealed class BlockModel
+{
+    private readonly List<BlockModelElement> _elements;
+    private readonly Dictionary<BlockModelContext, BlockModelTransform> _display;
+    private readonly Vector2 _textureSize;
+
+    private static readonly Dictionary<BlockId, BlockModel> Cache = new();
+
+    public static string ConfigPath => Path.Combine(Paths.ConfigDir, "custom_model.json");
+
+    private BlockModel(List<BlockModelElement> elements, Dictionary<BlockModelContext, BlockModelTransform> display, Vector2 textureSize)
+    {
+        _elements = elements;
+        _display = display;
+        _textureSize = textureSize;
+    }
+
+    public static BlockModel GetModel(BlockId id, Logger log)
+    {
+        if (Cache.TryGetValue(id, out var cached))
+            return cached;
+
+        var model = id switch
+        {
+            BlockId.Door or BlockId.DoorOpen => CreateDoorModel(id == BlockId.DoorOpen),
+            _ => CreateDefaultCube()
+        };
+
+        Cache[id] = model;
+        return model;
+    }
+
+    public bool TryGetDisplayTransform(BlockModelContext context, out Matrix transform)
+    {
+        if (_display.TryGetValue(context, out var t))
+        {
+            transform = t.ToMatrix();
+            return true;
+        }
+
+        transform = Matrix.Identity;
+        return false;
+    }
+
+    public VertexPositionTexture[] BuildMesh(CubeNetAtlas atlas, BlockId id)
+    {
+        var verts = new List<VertexPositionTexture>();
+        for (var i = 0; i < _elements.Count; i++)
+        {
+            var element = _elements[i];
+            var min = Scale.MU(element.From) - new Vector3(0.5f, 0.5f, 0.5f);
+            var max = Scale.MU(element.To) - new Vector3(0.5f, 0.5f, 0.5f);
+
+            var hasFaces = element.Faces.Count > 0;
+            AddElementFace(verts, atlas, id, FaceDirection.PosX, min, max, hasFaces ? element.GetFace(FaceDirection.PosX) : null, hasFaces);
+            AddElementFace(verts, atlas, id, FaceDirection.NegX, min, max, hasFaces ? element.GetFace(FaceDirection.NegX) : null, hasFaces);
+            AddElementFace(verts, atlas, id, FaceDirection.PosY, min, max, hasFaces ? element.GetFace(FaceDirection.PosY) : null, hasFaces);
+            AddElementFace(verts, atlas, id, FaceDirection.NegY, min, max, hasFaces ? element.GetFace(FaceDirection.NegY) : null, hasFaces);
+            AddElementFace(verts, atlas, id, FaceDirection.PosZ, min, max, hasFaces ? element.GetFace(FaceDirection.PosZ) : null, hasFaces);
+            AddElementFace(verts, atlas, id, FaceDirection.NegZ, min, max, hasFaces ? element.GetFace(FaceDirection.NegZ) : null, hasFaces);
+        }
+
+        if (verts.Count == 0)
+            return BuildCubeMesh(atlas, id);
+
+        return verts.ToArray();
+    }
+
+    public static VertexPositionTexture[] BuildCubeMesh(CubeNetAtlas atlas, BlockId id)
+    {
+        var verts = new List<VertexPositionTexture>();
+        var min = new Vector3(-0.5f, -0.5f, -0.5f);
+        var max = new Vector3(0.5f, 0.5f, 0.5f);
+
+        AddFace(verts, atlas, id, FaceDirection.PosX,
+            new Vector3(max.X, min.Y, min.Z),
+            new Vector3(max.X, min.Y, max.Z),
+            new Vector3(max.X, max.Y, max.Z),
+            new Vector3(max.X, max.Y, min.Z));
+
+        AddFace(verts, atlas, id, FaceDirection.NegX,
+            new Vector3(min.X, min.Y, max.Z),
+            new Vector3(min.X, min.Y, min.Z),
+            new Vector3(min.X, max.Y, min.Z),
+            new Vector3(min.X, max.Y, max.Z));
+
+        AddFace(verts, atlas, id, FaceDirection.PosY,
+            new Vector3(min.X, max.Y, max.Z),
+            new Vector3(max.X, max.Y, max.Z),
+            new Vector3(max.X, max.Y, min.Z),
+            new Vector3(min.X, max.Y, min.Z));
+
+        AddFace(verts, atlas, id, FaceDirection.NegY,
+            new Vector3(min.X, min.Y, min.Z),
+            new Vector3(max.X, min.Y, min.Z),
+            new Vector3(max.X, min.Y, max.Z),
+            new Vector3(min.X, min.Y, max.Z));
+
+        AddFace(verts, atlas, id, FaceDirection.PosZ,
+            new Vector3(min.X, min.Y, max.Z),
+            new Vector3(max.X, min.Y, max.Z),
+            new Vector3(max.X, max.Y, max.Z),
+            new Vector3(min.X, max.Y, max.Z));
+
+        AddFace(verts, atlas, id, FaceDirection.NegZ,
+            new Vector3(max.X, min.Y, min.Z),
+            new Vector3(min.X, min.Y, min.Z),
+            new Vector3(min.X, max.Y, min.Z),
+            new Vector3(max.X, max.Y, min.Z));
+
+        return verts.ToArray();
+    }
+
+    private static BlockModel CreateDoorModel(bool open)
+    {
+        var elements = new List<BlockModelElement>();
+
+        // Main Door Slab
+        var doorSlab = new BlockModelElement
+        {
+            From = new Vector3(0, 0, 0),
+            To = open ? new Vector3(2, 32, 16) : new Vector3(16, 32, 2)
+        };
+
+        // UVs for the door slab (16x32 area mapped to 16x16 tiles in the net)
+        // We'll use the standard tiles but they will be stretched or tiled. 
+        // Actually, the BuildMesh logic will handle it by stretching if we don't specify custom UVs.
+        // But we want to ensure they look right.
+        
+        // Front/Back faces (the large ones)
+        doorSlab.Faces[FaceDirection.NegZ] = new BlockModelFace { Uv = new BlockModelUv { U0 = 0, V0 = 0, U1 = 1, V1 = 1 } };
+        doorSlab.Faces[FaceDirection.PosZ] = new BlockModelFace { Uv = new BlockModelUv { U0 = 0, V0 = 0, U1 = 1, V1 = 1 } };
+        // Sides (thin edges)
+        doorSlab.Faces[FaceDirection.PosX] = new BlockModelFace { Uv = new BlockModelUv { U0 = 0, V0 = 0, U1 = 0.125f, V1 = 1 } };
+        doorSlab.Faces[FaceDirection.NegX] = new BlockModelFace { Uv = new BlockModelUv { U0 = 0, V0 = 0, U1 = 0.125f, V1 = 1 } };
+        // Top/Bottom
+        doorSlab.Faces[FaceDirection.PosY] = new BlockModelFace { Uv = new BlockModelUv { U0 = 0, V0 = 0, U1 = 1, V1 = 0.125f } };
+        doorSlab.Faces[FaceDirection.NegY] = new BlockModelFace { Uv = new BlockModelUv { U0 = 0, V0 = 0, U1 = 1, V1 = 0.125f } };
+
+        elements.Add(doorSlab);
+
+        // 3D Doorknob
+        var knob = new BlockModelElement
+        {
+            // Positioned near the edge opposite the hinge (X=0)
+            From = open ? new Vector3(2, 12, 12) : new Vector3(12, 12, 2),
+            To = open ? new Vector3(4, 14, 14) : new Vector3(14, 14, 4)
+        };
+        // Use a small gold/brass colored area from the texture or just a solid part of the door texture.
+        // For now, let's just use the PosY tile (top edge) which we can make look like metal.
+        foreach (FaceDirection dir in Enum.GetValues(typeof(FaceDirection)))
+        {
+            knob.Faces[dir] = new BlockModelFace { Uv = new BlockModelUv { U0 = 0.8f, V0 = 0.8f, U1 = 1.0f, V1 = 1.0f } };
+        }
+        elements.Add(knob);
+
+        var display = new Dictionary<BlockModelContext, BlockModelTransform>
+        {
+            [BlockModelContext.Gui] = new() { Rotation = new Vector3(-17f, -31.5f, 0f), Translation = new Vector3(-1f, -2f, 0f), ScaleFactor = new Vector3(0.41406f, 0.41406f, 0.41406f) },
+            [BlockModelContext.FirstPersonRightHand] = new() { Rotation = new Vector3(-7.76f, 17.08f, 5.37f), Translation = new Vector3(9.75f, -4.5f, 0f), ScaleFactor = new Vector3(0.55273f, 0.55273f, 0.55273f) },
+            [BlockModelContext.FirstPersonLeftHand] = new() { Rotation = new Vector3(-7.76f, 17.08f, 5.37f), Translation = new Vector3(9.75f, -4.5f, 0f), ScaleFactor = new Vector3(0.55273f, 0.55273f, 0.55273f) },
+            [BlockModelContext.ThirdPersonRightHand] = new() { Rotation = new Vector3(-0.27f, -3.42f, 1.67f), Translation = new Vector3(0f, 0f, 2.5f), ScaleFactor = new Vector3(0.36719f, 0.36719f, 0.36719f) },
+            [BlockModelContext.ThirdPersonLeftHand] = new() { Rotation = new Vector3(-0.27f, -3.42f, 1.67f), Translation = new Vector3(0f, 0f, 2.5f), ScaleFactor = new Vector3(0.36719f, 0.36719f, 0.36719f) },
+            [BlockModelContext.Ground] = new() { Translation = new Vector3(0f, 0.75f, 0f), ScaleFactor = new Vector3(0.32422f, 0.32422f, 0.32422f) },
+            [BlockModelContext.Fixed] = new() { Translation = new Vector3(0f, -2f, 3.75f), ScaleFactor = new Vector3(0.51953f, 0.51953f, 0.51953f) },
+            [BlockModelContext.Head] = new() { ScaleFactor = new Vector3(0.80859f, 0.80859f, 0.80859f) }
+        };
+
+        return new BlockModel(elements, display, new Vector2(48f, 32f));
+    }
+
+    private static BlockModel CreateDefaultCube()
+    {
+        var element = new BlockModelElement
+        {
+            From = Vector3.Zero,
+            To = new Vector3(16f, 16f, 16f)
+        };
+
+        var display = new Dictionary<BlockModelContext, BlockModelTransform>
+        {
+            [BlockModelContext.Gui] = new() { Rotation = new Vector3(25.5f, -43.25f, 0f), ScaleFactor = new Vector3(0.49414f, 0.49414f, 0.49414f) },
+            [BlockModelContext.FirstPersonRightHand] = new() { Rotation = new Vector3(-6.05f, 6.72f, 0.7f), ScaleFactor = new Vector3(0.375f, 0.375f, 0.375f) },
+            [BlockModelContext.FirstPersonLeftHand] = new() { Rotation = new Vector3(-6.05f, 6.72f, 0.7f), ScaleFactor = new Vector3(0.375f, 0.375f, 0.375f) },
+            [BlockModelContext.ThirdPersonRightHand] = new() { Rotation = new Vector3(14f, 0f, 0f), ScaleFactor = new Vector3(0.375f, 0.375f, 0.375f) },
+            [BlockModelContext.ThirdPersonLeftHand] = new() { Rotation = new Vector3(14f, 0f, 0f), ScaleFactor = new Vector3(0.375f, 0.375f, 0.375f) },
+            [BlockModelContext.Ground] = new() { Rotation = new Vector3(-6.05f, 6.72f, 0.7f), Translation = new Vector3(0f, 3.25f, 0f), ScaleFactor = new Vector3(0.375f, 0.375f, 0.375f) },
+            [BlockModelContext.Fixed] = new() { ScaleFactor = new Vector3(0.7207f, 0.7207f, 0.7207f) },
+            [BlockModelContext.Head] = new() { ScaleFactor = new Vector3(0.80859f, 0.80859f, 0.80859f) }
+        };
+
+        return new BlockModel(new List<BlockModelElement> { element }, display, new Vector2(16f, 16f));
+    }
+
+    public static BlockModel LoadOrDefault(Logger log)
+    {
+        return CreateDefault();
+    }
+
+    private static BlockModel CreateDefault()
+    {
+        return CreateDefaultCube();
+    }
+
+    private static void AddElementFace(List<VertexPositionTexture> verts, CubeNetAtlas atlas, BlockId id, FaceDirection face, Vector3 min, Vector3 max, BlockModelFace? modelFace, bool hasFaces)
+    {
+        if (hasFaces && modelFace == null)
+            return;
+
+        var uv = modelFace?.Uv;
+        var p0 = Vector3.Zero;
+        var p1 = Vector3.Zero;
+        var p2 = Vector3.Zero;
+        var p3 = Vector3.Zero;
+
+        switch (face)
+        {
+            case FaceDirection.PosX:
+                p0 = new Vector3(max.X, min.Y, min.Z);
+                p1 = new Vector3(max.X, min.Y, max.Z);
+                p2 = new Vector3(max.X, max.Y, max.Z);
+                p3 = new Vector3(max.X, max.Y, min.Z);
+                break;
+            case FaceDirection.NegX:
+                p0 = new Vector3(min.X, min.Y, max.Z);
+                p1 = new Vector3(min.X, min.Y, min.Z);
+                p2 = new Vector3(min.X, max.Y, min.Z);
+                p3 = new Vector3(min.X, max.Y, max.Z);
+                break;
+            case FaceDirection.PosY:
+                p0 = new Vector3(min.X, max.Y, max.Z);
+                p1 = new Vector3(max.X, max.Y, max.Z);
+                p2 = new Vector3(max.X, max.Y, min.Z);
+                p3 = new Vector3(min.X, max.Y, min.Z);
+                break;
+            case FaceDirection.NegY:
+                p0 = new Vector3(min.X, min.Y, min.Z);
+                p1 = new Vector3(max.X, min.Y, min.Z);
+                p2 = new Vector3(max.X, min.Y, max.Z);
+                p3 = new Vector3(min.X, min.Y, max.Z);
+                break;
+            case FaceDirection.PosZ:
+                p0 = new Vector3(min.X, min.Y, max.Z);
+                p1 = new Vector3(max.X, min.Y, max.Z);
+                p2 = new Vector3(max.X, max.Y, max.Z);
+                p3 = new Vector3(min.X, max.Y, max.Z);
+                break;
+            case FaceDirection.NegZ:
+                p0 = new Vector3(max.X, min.Y, min.Z);
+                p1 = new Vector3(min.X, min.Y, min.Z);
+                p2 = new Vector3(min.X, max.Y, min.Z);
+                p3 = new Vector3(max.X, max.Y, min.Z);
+                break;
+        }
+
+        GetFaceUvs(atlas, (byte)id, face, uv, out var uv00, out var uv10, out var uv11, out var uv01);
+        AddFace(verts, face, p0, p1, p2, p3, uv00, uv10, uv11, uv01);
+    }
+
+    private static void AddFace(List<VertexPositionTexture> verts, FaceDirection face, Vector3 p0, Vector3 p1, Vector3 p2, Vector3 p3, Vector2 uv00, Vector2 uv10, Vector2 uv11, Vector2 uv01)
+    {
+        var flip = face == FaceDirection.NegX || face == FaceDirection.NegY || face == FaceDirection.NegZ;
+        if (!flip)
+        {
+            verts.Add(new VertexPositionTexture(p0, uv00));
+            verts.Add(new VertexPositionTexture(p1, uv10));
+            verts.Add(new VertexPositionTexture(p2, uv11));
+            verts.Add(new VertexPositionTexture(p0, uv00));
+            verts.Add(new VertexPositionTexture(p2, uv11));
+            verts.Add(new VertexPositionTexture(p3, uv01));
+        }
+        else
+        {
+            verts.Add(new VertexPositionTexture(p0, uv00));
+            verts.Add(new VertexPositionTexture(p2, uv11));
+            verts.Add(new VertexPositionTexture(p1, uv10));
+            verts.Add(new VertexPositionTexture(p0, uv00));
+            verts.Add(new VertexPositionTexture(p3, uv01));
+            verts.Add(new VertexPositionTexture(p2, uv11));
+        }
+    }
+
+    private static void AddFace(List<VertexPositionTexture> verts, CubeNetAtlas atlas, BlockId id, FaceDirection face, Vector3 p0, Vector3 p1, Vector3 p2, Vector3 p3)
+    {
+        atlas.GetFaceUvRect((byte)id, face, out var uv00, out var uv10, out var uv11, out var uv01);
+        AddFace(verts, face, p0, p1, p2, p3, uv00, uv10, uv11, uv01);
+    }
+
+    private static void GetFaceUvs(CubeNetAtlas atlas, byte id, FaceDirection face, BlockModelUv? uv, out Vector2 uv00, out Vector2 uv10, out Vector2 uv11, out Vector2 uv01)
+    {
+        atlas.GetFaceUvRect(id, face, out var f00, out var f10, out var f11, out var f01);
+        if (uv == null)
+        {
+            uv00 = f00;
+            uv10 = f10;
+            uv11 = f11;
+            uv01 = f01;
+            return;
+        }
+
+        var minU = MathF.Min(MathF.Min(f00.X, f10.X), MathF.Min(f11.X, f01.X));
+        var maxU = MathF.Max(MathF.Max(f00.X, f10.X), MathF.Max(f11.X, f01.X));
+        var minV = MathF.Min(MathF.Min(f00.Y, f10.Y), MathF.Min(f11.Y, f01.Y));
+        var maxV = MathF.Max(MathF.Max(f00.Y, f10.Y), MathF.Max(f11.Y, f01.Y));
+
+        var u0 = MathHelper.Lerp(minU, maxU, uv.Value.U0);
+        var u1 = MathHelper.Lerp(minU, maxU, uv.Value.U1);
+        var v0 = MathHelper.Lerp(minV, maxV, uv.Value.V0);
+        var v1 = MathHelper.Lerp(minV, maxV, uv.Value.V1);
+
+        uv00 = new Vector2(u0, v1);
+        uv10 = new Vector2(u1, v1);
+        uv11 = new Vector2(u1, v0);
+        uv01 = new Vector2(u0, v0);
+    }
+
+    private static Vector3 ReadVec3(JsonElement element, Vector3 fallback)
+    {
+        if (element.ValueKind != JsonValueKind.Array)
+            return fallback;
+
+        var x = ReadFloat(element, 0, fallback.X);
+        var y = ReadFloat(element, 1, fallback.Y);
+        var z = ReadFloat(element, 2, fallback.Z);
+        return new Vector3(x, y, z);
+    }
+
+    private static float ReadFloat(JsonElement array, int index, float fallback)
+    {
+        if (array.ValueKind != JsonValueKind.Array)
+            return fallback;
+        if (array.GetArrayLength() <= index)
+            return fallback;
+
+        var v = array[index];
+        if (v.ValueKind == JsonValueKind.Number && v.TryGetSingle(out var f))
+            return f;
+
+        return fallback;
+    }
+
+    private static BlockModelUv? ReadUv(JsonElement uvEl, Vector2 textureSize)
+    {
+        var u0 = ReadFloat(uvEl, 0, 0f);
+        var v0 = ReadFloat(uvEl, 1, 0f);
+        var u1 = ReadFloat(uvEl, 2, textureSize.X);
+        var v1 = ReadFloat(uvEl, 3, textureSize.Y);
+
+        var minU = MathF.Min(u0, u1) / textureSize.X;
+        var maxU = MathF.Max(u0, u1) / textureSize.X;
+        var minV = MathF.Min(v0, v1) / textureSize.Y;
+        var maxV = MathF.Max(v0, v1) / textureSize.Y;
+
+        return new BlockModelUv
+        {
+            U0 = Math.Clamp(minU, 0f, 1f),
+            U1 = Math.Clamp(maxU, 0f, 1f),
+            V0 = Math.Clamp(minV, 0f, 1f),
+            V1 = Math.Clamp(maxV, 0f, 1f)
+        };
+    }
+
+    private static bool TryMapContext(string name, out BlockModelContext ctx)
+    {
+        switch (name)
+        {
+            case "gui":
+                ctx = BlockModelContext.Gui;
+                return true;
+            case "firstperson_righthand":
+                ctx = BlockModelContext.FirstPersonRightHand;
+                return true;
+            case "firstperson_lefthand":
+                ctx = BlockModelContext.FirstPersonLeftHand;
+                return true;
+            case "thirdperson_righthand":
+                ctx = BlockModelContext.ThirdPersonRightHand;
+                return true;
+            case "thirdperson_lefthand":
+                ctx = BlockModelContext.ThirdPersonLeftHand;
+                return true;
+            case "ground":
+                ctx = BlockModelContext.Ground;
+                return true;
+            case "fixed":
+                ctx = BlockModelContext.Fixed;
+                return true;
+            case "head":
+                ctx = BlockModelContext.Head;
+                return true;
+            default:
+                ctx = BlockModelContext.Gui;
+                return false;
+        }
+    }
+
+    private static bool TryMapFace(string name, out FaceDirection dir)
+    {
+        switch (name)
+        {
+            case "north":
+                dir = FaceDirection.NegZ;
+                return true;
+            case "south":
+                dir = FaceDirection.PosZ;
+                return true;
+            case "east":
+                dir = FaceDirection.PosX;
+                return true;
+            case "west":
+                dir = FaceDirection.NegX;
+                return true;
+            case "up":
+                dir = FaceDirection.PosY;
+                return true;
+            case "down":
+                dir = FaceDirection.NegY;
+                return true;
+            default:
+                dir = FaceDirection.PosY;
+                return false;
+        }
+    }
+
+    private sealed class BlockModelElement
+    {
+        public Vector3 From { get; set; } = Vector3.Zero;
+        public Vector3 To { get; set; } = new Vector3(16f, 16f, 16f);
+        public Dictionary<FaceDirection, BlockModelFace> Faces { get; } = new();
+
+        public BlockModelFace? GetFace(FaceDirection dir)
+        {
+            return Faces.TryGetValue(dir, out var face) ? face : null;
+        }
+    }
+
+    private sealed class BlockModelFace
+    {
+        public BlockModelUv? Uv { get; set; }
+    }
+
+    private sealed class BlockModelTransform
+    {
+        public Vector3 Rotation { get; set; } = Vector3.Zero;
+        public Vector3 Translation { get; set; } = Vector3.Zero;
+        public Vector3 ScaleFactor { get; set; } = Vector3.One;
+
+        public Matrix ToMatrix()
+        {
+            var scale = Matrix.CreateScale(ScaleFactor);
+            var rx = MathHelper.ToRadians(Rotation.X);
+            var ry = MathHelper.ToRadians(Rotation.Y);
+            var rz = MathHelper.ToRadians(Rotation.Z);
+            var rotation = Matrix.CreateRotationX(rx) * Matrix.CreateRotationY(ry) * Matrix.CreateRotationZ(rz);
+            var translation = Matrix.CreateTranslation(Scale.MU(Translation));
+            return scale * rotation * translation;
+        }
+    }
+
+    private readonly struct BlockModelUv
+    {
+        public float U0 { get; init; }
+        public float V0 { get; init; }
+        public float U1 { get; init; }
+        public float V1 { get; init; }
+    }
+}

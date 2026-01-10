@@ -1,0 +1,248 @@
+using System.Collections.Generic;
+using Microsoft.Xna.Framework;
+using Microsoft.Xna.Framework.Graphics;
+
+namespace RedactedCraftMonoGame.Core;
+
+public static class VoxelMesherGreedy
+{
+    public static ChunkMesh BuildChunkMesh(VoxelWorld world, VoxelChunkData chunk, CubeNetAtlas atlas)
+    {
+        var opaque = new List<VertexPositionTexture>();
+        var transparent = new List<VertexPositionTexture>();
+
+        var sizeX = VoxelChunkData.ChunkSizeX;
+        var sizeY = VoxelChunkData.ChunkSizeY;
+        var sizeZ = VoxelChunkData.ChunkSizeZ;
+
+        var bs = Scale.BlockSize;
+        var originX = chunk.Coord.X * sizeX;
+        var originY = chunk.Coord.Y * sizeY;
+        var originZ = chunk.Coord.Z * sizeZ;
+
+        var dims = new[] { sizeX, sizeY, sizeZ };
+        var x = new int[3];
+        var q = new int[3];
+
+        for (var d = 0; d < 3; d++)
+        {
+            var u = (d + 1) % 3;
+            var v = (d + 2) % 3;
+            q[0] = q[1] = q[2] = 0;
+            q[d] = 1;
+
+            var mask = new MaskCell[dims[u] * dims[v]];
+
+            for (x[d] = -1; x[d] < dims[d];)
+            {
+                var n = 0;
+                for (x[v] = 0; x[v] < dims[v]; x[v]++)
+                {
+                    for (x[u] = 0; x[u] < dims[u]; x[u]++)
+                    {
+                        var ax = originX + x[0];
+                        var ay = originY + x[1];
+                        var az = originZ + x[2];
+                        var bx = originX + x[0] + q[0];
+                        var by = originY + x[1] + q[1];
+                        var bz = originZ + x[2] + q[2];
+
+                        var a = world.GetBlock(ax, ay, az);
+                        var b = world.GetBlock(bx, by, bz);
+                        mask[n++] = BuildMaskCell(a, b, d, atlas);
+                    }
+                }
+
+                x[d]++;
+
+                for (var j = 0; j < dims[v]; j++)
+                {
+                    for (var i = 0; i < dims[u];)
+                    {
+                        var index = i + j * dims[u];
+                        var cell = mask[index];
+                        if (!cell.IsValid)
+                        {
+                            i++;
+                            continue;
+                        }
+
+                        var w = 1;
+                        while (i + w < dims[u] && mask[index + w].SameAs(cell))
+                            w++;
+
+                        var h = 1;
+                        var done = false;
+                        while (j + h < dims[v] && !done)
+                        {
+                            for (var k = 0; k < w; k++)
+                            {
+                                if (!mask[index + k + h * dims[u]].SameAs(cell))
+                                {
+                                    done = true;
+                                    break;
+                                }
+                            }
+
+                            if (!done)
+                                h++;
+                        }
+
+                        var px = d == 0 ? x[d] : 0;
+                        var py = d == 1 ? x[d] : 0;
+                        var pz = d == 2 ? x[d] : 0;
+
+                        if (u == 0) px = i;
+                        else if (u == 1) py = i;
+                        else pz = i;
+
+                        if (v == 0) px = j;
+                        else if (v == 1) py = j;
+                        else pz = j;
+
+                        atlas.GetFaceUvRect(cell.BlockId, cell.Face, out var uv00, out var uv10, out var uv11, out var uv01);
+                        var list = cell.Transparent ? transparent : opaque;
+                        AddTiledQuad(list, originX, originY, originZ, px, py, pz, u, v, w, h, bs, uv00, uv10, uv11, uv01, IsBackFace(cell.Face));
+
+                        for (var y = 0; y < h; y++)
+                        {
+                            for (var k = 0; k < w; k++)
+                                mask[index + k + y * dims[u]] = default;
+                        }
+
+                        i += w;
+                    }
+                }
+            }
+        }
+
+        var min = new Vector3(originX * bs, originY * bs, originZ * bs);
+        var max = min + new Vector3(sizeX * bs, sizeY * bs, sizeZ * bs);
+        return new ChunkMesh(chunk.Coord, opaque.ToArray(), transparent.ToArray(), new BoundingBox(min, max));
+    }
+
+    private static MaskCell BuildMaskCell(byte a, byte b, int axis, CubeNetAtlas atlas)
+    {
+        var aDef = BlockRegistry.Get(a);
+        var bDef = BlockRegistry.Get(b);
+
+        var aFilled = a != BlockIds.Air && !aDef.HasCustomModel;
+        var bFilled = b != BlockIds.Air && !bDef.HasCustomModel;
+
+        if (!aFilled && !bFilled)
+            return default;
+
+        var aTransparent = aFilled && atlas.IsTransparent(a);
+        var bTransparent = bFilled && atlas.IsTransparent(b);
+
+        if (aFilled && !bFilled)
+            return new MaskCell(a, FaceDirPos(axis), aTransparent);
+
+        if (!aFilled && bFilled)
+            return new MaskCell(b, FaceDirNeg(axis), bTransparent);
+
+        if (a == b)
+            return default;
+
+        if (aTransparent && !bTransparent)
+            return new MaskCell(a, FaceDirPos(axis), aTransparent);
+
+        if (!aTransparent && bTransparent)
+            return new MaskCell(b, FaceDirNeg(axis), bTransparent);
+
+        if (aTransparent && bTransparent)
+            return new MaskCell(a, FaceDirPos(axis), aTransparent);
+
+        return default;
+    }
+
+    private static FaceDirection FaceDirPos(int axis) => axis switch
+    {
+        0 => FaceDirection.PosX,
+        1 => FaceDirection.PosY,
+        _ => FaceDirection.PosZ
+    };
+
+    private static FaceDirection FaceDirNeg(int axis) => axis switch
+    {
+        0 => FaceDirection.NegX,
+        1 => FaceDirection.NegY,
+        _ => FaceDirection.NegZ
+    };
+
+    private static bool IsBackFace(FaceDirection face)
+    {
+        return face == FaceDirection.NegX || face == FaceDirection.NegY || face == FaceDirection.NegZ;
+    }
+
+    private static void AddTiledQuad(List<VertexPositionTexture> verts, int originX, int originY, int originZ, int px, int py, int pz, int u, int v, int w, int h, float bs, Vector2 uv00, Vector2 uv10, Vector2 uv11, Vector2 uv01, bool flip)
+    {
+        var stepUx = u == 0 ? 1 : 0;
+        var stepUy = u == 1 ? 1 : 0;
+        var stepUz = u == 2 ? 1 : 0;
+
+        var stepVx = v == 0 ? 1 : 0;
+        var stepVy = v == 1 ? 1 : 0;
+        var stepVz = v == 2 ? 1 : 0;
+
+        for (var ty = 0; ty < h; ty++)
+        {
+            for (var tx = 0; tx < w; tx++)
+            {
+                var x = px + (u == 0 ? tx : 0) + (v == 0 ? ty : 0);
+                var y = py + (u == 1 ? tx : 0) + (v == 1 ? ty : 0);
+                var z = pz + (u == 2 ? tx : 0) + (v == 2 ? ty : 0);
+
+                var p0 = new Vector3((originX + x) * bs, (originY + y) * bs, (originZ + z) * bs);
+                var p1 = new Vector3((originX + x + stepUx) * bs, (originY + y + stepUy) * bs, (originZ + z + stepUz) * bs);
+                var p2 = new Vector3((originX + x + stepUx + stepVx) * bs, (originY + y + stepUy + stepVy) * bs, (originZ + z + stepUz + stepVz) * bs);
+                var p3 = new Vector3((originX + x + stepVx) * bs, (originY + y + stepVy) * bs, (originZ + z + stepVz) * bs);
+
+                AddQuad(verts, p0, p1, p2, p3, uv00, uv10, uv11, uv01, flip);
+            }
+        }
+    }
+
+    private static void AddQuad(List<VertexPositionTexture> verts, Vector3 p0, Vector3 p1, Vector3 p2, Vector3 p3, Vector2 uv00, Vector2 uv10, Vector2 uv11, Vector2 uv01, bool flip)
+    {
+        if (!flip)
+        {
+            verts.Add(new VertexPositionTexture(p0, uv00));
+            verts.Add(new VertexPositionTexture(p1, uv10));
+            verts.Add(new VertexPositionTexture(p2, uv11));
+            verts.Add(new VertexPositionTexture(p0, uv00));
+            verts.Add(new VertexPositionTexture(p2, uv11));
+            verts.Add(new VertexPositionTexture(p3, uv01));
+        }
+        else
+        {
+            verts.Add(new VertexPositionTexture(p0, uv00));
+            verts.Add(new VertexPositionTexture(p2, uv11));
+            verts.Add(new VertexPositionTexture(p1, uv10));
+            verts.Add(new VertexPositionTexture(p0, uv00));
+            verts.Add(new VertexPositionTexture(p3, uv01));
+            verts.Add(new VertexPositionTexture(p2, uv11));
+        }
+    }
+
+    private readonly struct MaskCell
+    {
+        public readonly bool IsValid;
+        public readonly byte BlockId;
+        public readonly FaceDirection Face;
+        public readonly bool Transparent;
+
+        public MaskCell(byte blockId, FaceDirection face, bool transparent)
+        {
+            IsValid = true;
+            BlockId = blockId;
+            Face = face;
+            Transparent = transparent;
+        }
+
+        public bool SameAs(MaskCell other)
+        {
+            return IsValid && other.IsValid && BlockId == other.BlockId && Face == other.Face && Transparent == other.Transparent;
+        }
+    }
+}
