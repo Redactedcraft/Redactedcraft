@@ -1,5 +1,9 @@
 Release Notes
 
+- Fixed EOS configuration to use the new Render service (eos-service.onrender.com).
+- Added robust EOS credential fallback (game works even if remote config fails).
+- Removed sensitive EOS SDK tools from the repository.
+- Restructured repository: Latest Executable and Source Zip are now available in the root.
 - Added Blockbench block.json support for 3D block models in UI and first-person hand.
 - Hotbar/inventory now uses cached 3D block icons and does not fall back to 2D on pickup.
 - Held block rendering adjusted to reduce clipping and improve depth handling.
