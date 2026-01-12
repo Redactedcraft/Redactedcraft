@@ -1,27 +1,60 @@
-# RedactedCraft C#
+# ⚒️ RedactedCraft C#
 
-Welcome to the RedactedCraft C# Repository!
+![License](https://img.shields.io/badge/license-MIT-green)
+![Platform](https://img.shields.io/badge/platform-win--x64-blue)
+![Engine](https://img.shields.io/badge/engine-MonoGame-orange)
 
-## Latest Release
-- **Source Code:** [RedactedcraftCsharp.zip](./RedactedcraftCsharp.zip)
-- **Executable:** [RedactedCraftMonoGame.exe](./RedactedCraftMonoGame.exe)
+**RedactedCraft** is a high-performance voxel sandbox engine built from the ground up in C# using the MonoGame framework. Dive into an infinite world of blocks, creativity, and exploration.
 
-## Overview
-RedactedCraft is a voxel-based sandbox game built with MonoGame.
+---
 
-## Setup
-1. Download the latest release or clone the repository.
-2. Ensure you have the .NET 8.0 SDK installed.
-3. Run the game using the provided executable or build from source.
+## 🚀 Quick Start
 
-## Multiplayer
-- Supports LAN and Online play via EOS (Epic Online Services).
-- Note: EOS SDK tools are excluded from this repository for security.
+| Artifact | Download |
+| :--- | :--- |
+| **Latest Build** | [🎮 Download RedactedCraft.exe](./RedactedCraft.exe) |
+| **Source Archive** | [📦 Download RedactedcraftCsharp.zip](./RedactedcraftCsharp.zip) |
 
-## Controls
-- **WASD:** Move
-- **Space:** Jump / Fly (Double tap)
-- **Left Click:** Break Block
-- **Right Click:** Place Block
-- **E:** Inventory
-- **T:** Chat
+### Prerequisites
+- Windows 10/11 (x64)
+- [.NET 8.0 Runtime](https://dotnet.microsoft.com/download/dotnet/8.0)
+
+---
+
+## ✨ Features
+
+- **🌍 Infinite Terrain:** Procedurally generated worlds with varied biomes.
+- **⚡ Greedy Meshing:** Optimized voxel rendering for high FPS.
+- **👥 Multiplayer:** Integrated LAN discovery and Online play via Epic Online Services (EOS).
+- **🛠️ Extensible:** Easy-to-modify block registry and asset system.
+- **🚀 Lightweight Launcher:** Built-in launcher for updates, profiles, and settings.
+
+---
+
+## ⌨️ Controls
+
+| Key | Action |
+| :--- | :--- |
+| **W, A, S, D** | Move |
+| **Space** | Jump / Fly (Double-tap) |
+| **Left Click** | Mine / Break Block |
+| **Right Click** | Place Block |
+| **E** | Open Inventory |
+| **T** | Open Chat |
+| **Esc** | Pause Menu |
+
+---
+
+## 🛠️ Development
+
+To build from source:
+1. Clone the repo: `git clone https://github.com/Redactedcraft/Redactedcraft.git`
+2. Open `RedactedcraftCsharp.sln` in Visual Studio 2022.
+3. Restore NuGet packages and Build (Release/x64).
+
+> **Note:** Sensitive EOS SDK tools are excluded from this repository for security. Runtime DLLs are included in `ThirdParty/EOS`.
+
+---
+
+## 📜 License
+This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
