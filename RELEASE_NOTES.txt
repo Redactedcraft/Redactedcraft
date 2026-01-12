@@ -1,7 +1,0 @@
-Release Notes
-
-- Added Blockbench block.json support for 3D block models in UI and first-person hand.
-- Hotbar/inventory now uses cached 3D block icons and does not fall back to 2D on pickup.
-- Held block rendering adjusted to reduce clipping and improve depth handling.
-- Dragged inventory icon slightly enlarges while held.
-- Packaged current Assets into Assets.zip for launcher distribution.

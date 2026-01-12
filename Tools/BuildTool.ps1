@@ -119,7 +119,7 @@ function Prepare-Ship {
     Log "Creating Source Zip (git archive)..."
     try {
         Set-Location $SolutionRoot
-        git archive -o RedactedcraftCsharp.zip HEAD --format=zip
+        git archive -o RedactedcraftCsharp.zip HEAD --format=zip --worktree-attributes
         Log "Created RedactedcraftCsharp.zip"
     } catch {
         Log "Git archive failed: $_"
@@ -290,3 +290,4 @@ $form.Controls.Add($txtOutput)
 Log "Welcome. Ready to build."
 
 [void]$form.ShowDialog()
+

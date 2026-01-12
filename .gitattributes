@@ -4,5 +4,6 @@
 # Exclude Examples folder from git archive (zips)
 Examples/ export-ignore
 ThirdParty/EOS/ export-ignore
+RedactedcraftCsharp.zip export-ignore.exe export-ignore
 *.exe filter=lfs diff=lfs merge=lfs -text
 *.zip filter=lfs diff=lfs merge=lfs -text
