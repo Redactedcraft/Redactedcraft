@@ -14,7 +14,7 @@ public sealed class EosConfig
     private static EosConfig? _remoteCached;
     private static bool _remoteFetchLogged;
     private static bool _missingLogged;
-    private const int RemoteFetchTimeoutSeconds = 6;
+    private const int RemoteFetchTimeoutSeconds = 30;
 
     public string ProductId { get; set; } = "";
     public string SandboxId { get; set; } = "";
@@ -44,12 +44,20 @@ public sealed class EosConfig
             return remote;
         }
 
-        if (!_missingLogged)
+        log.Warn("EOS remote config fetch failed or timed out. Using hardcoded fallback.");
+        
+        // Fallback to known credentials to ensure the game works
+        return new EosConfig
         {
-            log.Warn("EOS remote config fetch failed.");
-            _missingLogged = true;
-        }
-        return null;
+            ProductId = "0794da3c598d467c9ac126231f132351",
+            SandboxId = "f9417e71fd2645f4af2d072c6ca5b63d",
+            DeploymentId = "843fd58fa18545eaa1a7c8232eb7522b",
+            ClientId = "xyza7891M5Mc8NNr3Bln7pSpVXN7252e",
+            ClientSecret = "3UUNLCgdV4RdB8TC8SJrjfEHE5vkmz5ZygCdyVcqNH0",
+            ProductName = "RedactedCraft",
+            ProductVersion = "1.0",
+            LoginMode = "device"
+        };
     }
 
     public bool IsValid(out string? error)
