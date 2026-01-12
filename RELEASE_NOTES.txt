@@ -1,5 +1,6 @@
 Release Notes
 
+- Fixed EOS P2P receive pumping to run on the main thread (prevents remote flyers from freezing).
 - Fixed EOS configuration to use the new Render service (eos-service.onrender.com).
 - Added robust EOS credential fallback (game works even if remote config fails).
 - Removed sensitive EOS SDK tools from the repository.

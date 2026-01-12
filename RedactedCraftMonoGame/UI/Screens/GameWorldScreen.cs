@@ -757,7 +757,6 @@ public sealed class GameWorldScreen : IScreen, IMouseCaptureScreen
             return;
 
         _player.Update(dt, gameTime.TotalGameTime.TotalSeconds, input, _world.GetBlock);
-        UpdateNetwork(dt);
     }
 
     private void HandleBlockInteraction(GameTime gameTime, InputState input)
@@ -1633,6 +1632,12 @@ public sealed class GameWorldScreen : IScreen, IMouseCaptureScreen
     {
         if (_lanSession == null || !_lanSession.IsConnected)
             return;
+#if EOS_SDK
+        if (_lanSession is EosP2PHostSession eosHost)
+            eosHost.PumpIncoming();
+        else if (_lanSession is EosP2PClientSession eosClient)
+            eosClient.PumpIncoming();
+#endif
 
         _netSendAccumulator += dt;
         if (_netSendAccumulator >= 0.05f)

@@ -37,7 +37,6 @@ public sealed class EosP2PHostSession : ILanSession
     private readonly ConcurrentQueue<bool> _worldSyncComplete = new();
     private readonly Dictionary<string, ClientState> _clients = new(StringComparer.OrdinalIgnoreCase);
     private readonly object _clientLock = new();
-    private readonly CancellationTokenSource _cts = new();
     private int _nextId = 1;
     private ulong _notifyRequestId;
     private ulong _notifyClosedId;
@@ -61,7 +60,6 @@ public sealed class EosP2PHostSession : ILanSession
         RegisterNotifications();
         IsConnected = true;
         _log.Info("EOS host session ready.");
-        _ = Task.Run(() => ReceiveLoop(_cts.Token));
 #endif
     }
 
@@ -200,64 +198,56 @@ public sealed class EosP2PHostSession : ILanSession
         RemoveClient(info.RemoteUserId);
     }
 
-    private async Task ReceiveLoop(CancellationToken token)
+    public void PumpIncoming(int maxPackets = 128)
     {
+#if EOS_SDK
+        if (_disposed || !IsConnected)
+            return;
+
+        var processed = 0;
         try
         {
-            while (!token.IsCancellationRequested)
+            while (processed < maxPackets &&
+                   EosP2PWire.TryReceivePacket(_p2p, _localUserId, _socketId, out var peerId, out var msg))
             {
-                var received = false;
-                while (EosP2PWire.TryReceivePacket(_p2p, _localUserId, _socketId, out var peerId, out var msg))
+                processed++;
+                if (peerId == null || !peerId.IsValid())
+                    continue;
+
+                switch (msg.Type)
                 {
-                    received = true;
-                    if (peerId == null || !peerId.IsValid())
-                        continue;
+                    case LanMessageType.Hello:
+                        HandleHello(peerId, msg.Name);
+                        break;
+                    case LanMessageType.PlayerState:
+                        if (!TryGetClient(peerId, out _))
+                            break;
+                        _playerStates.Enqueue(msg.PlayerState);
+                        BroadcastPlayerState(msg.PlayerState);
+                        break;
+                    case LanMessageType.BlockSet:
+                        if (!TryGetClient(peerId, out _))
+                            break;
 
-                    switch (msg.Type)
-                    {
-                        case LanMessageType.Hello:
-                            HandleHello(peerId, msg.Name);
-                            break;
-                        case LanMessageType.PlayerState:
-                            if (!TryGetClient(peerId, out _))
-                                break;
-                            _playerStates.Enqueue(msg.PlayerState);
-                            BroadcastPlayerState(msg.PlayerState);
-                            break;
-                        case LanMessageType.BlockSet:
-                            if (!TryGetClient(peerId, out _))
-                                break;
-
-                            // Validate the block placement on the host before broadcasting.
-                            var b = msg.BlockSet;
-                            if (_world.SetBlock(b.X, b.Y, b.Z, b.Id))
-                            {
-                                // The change is valid, so enqueue it for the host's own world
-                                // and broadcast it to all other clients.
-                                _blockSets.Enqueue(b);
-                                BroadcastBlockSet(b);
-                            }
-                            break;
-                    }
+                        // Validate the block placement on the host before broadcasting.
+                        var b = msg.BlockSet;
+                        if (_world.SetBlock(b.X, b.Y, b.Z, b.Id))
+                        {
+                            // The change is valid, so enqueue it for the host's own world
+                            // and broadcast it to all other clients.
+                            _blockSets.Enqueue(b);
+                            BroadcastBlockSet(b);
+                        }
+                        break;
                 }
-
-                if (!received)
-                    await Task.Delay(8, token);
             }
-        }
-        catch (OperationCanceledException)
-        {
         }
         catch (Exception ex)
         {
-            _log.Warn($"EOS host read failed: {ex.Message}");
+            _log.Warn($"EOS host pump failed: {ex.Message}");
         }
-        finally
-        {
-            IsConnected = false;
-        }
+#endif
     }
-
     private void HandleHello(ProductUserId peerId, string? name)
     {
         if (!TryGetClient(peerId, out var client))
@@ -374,7 +364,6 @@ public sealed class EosP2PHostSession : ILanSession
             return;
 
         _disposed = true;
-        _cts.Cancel();
         IsConnected = false;
 
         if (_notifyRequestId != 0)
@@ -431,7 +420,6 @@ public sealed class EosP2PClientSession : ILanSession
     private readonly ConcurrentQueue<LanPlayerList> _playerLists = new();
     private readonly ConcurrentQueue<LanChunkData> _chunkData = new();
     private readonly ConcurrentQueue<bool> _worldSyncComplete = new();
-    private readonly CancellationTokenSource _cts = new();
     private ulong _notifyClosedId;
     private bool _disposed;
 #endif
@@ -458,7 +446,6 @@ public sealed class EosP2PClientSession : ILanSession
         WorldInfo = worldInfo;
         IsConnected = true;
         RegisterNotifications();
-        _ = Task.Run(() => ReadLoop(_cts.Token));
 #endif
     }
 
@@ -631,56 +618,48 @@ public sealed class EosP2PClientSession : ILanSession
             IsConnected = false;
     }
 
-    private async Task ReadLoop(CancellationToken token)
+    public void PumpIncoming(int maxPackets = 128)
     {
+#if EOS_SDK
+        if (_disposed || !IsConnected)
+            return;
+
+        var processed = 0;
         try
         {
-            while (!token.IsCancellationRequested)
+            while (processed < maxPackets &&
+                   EosP2PWire.TryReceivePacket(_p2p, _localUserId, _socketId, out var peerId, out var msg))
             {
-                var received = false;
-                while (EosP2PWire.TryReceivePacket(_p2p, _localUserId, _socketId, out var peerId, out var msg))
+                processed++;
+                if (peerId == null || !peerId.IsValid() || !peerId.Equals(_hostUserId))
+                    continue;
+
+                switch (msg.Type)
                 {
-                    received = true;
-                    if (peerId == null || !peerId.IsValid() || !peerId.Equals(_hostUserId))
-                        continue;
-
-                    switch (msg.Type)
-                    {
-                        case LanMessageType.PlayerState:
-                            _playerStates.Enqueue(msg.PlayerState);
-                            break;
-                        case LanMessageType.BlockSet:
-                            _blockSets.Enqueue(msg.BlockSet);
-                            break;
-                        case LanMessageType.PlayerList:
-                            _playerLists.Enqueue(msg.PlayerList);
-                            break;
-                        case LanMessageType.ChunkData:
-                            _chunkData.Enqueue(msg.ChunkData);
-                            break;
-                        case LanMessageType.WorldSyncComplete:
-                            _worldSyncComplete.Enqueue(true);
-                            break;
-                    }
+                    case LanMessageType.PlayerState:
+                        _playerStates.Enqueue(msg.PlayerState);
+                        break;
+                    case LanMessageType.BlockSet:
+                        _blockSets.Enqueue(msg.BlockSet);
+                        break;
+                    case LanMessageType.PlayerList:
+                        _playerLists.Enqueue(msg.PlayerList);
+                        break;
+                    case LanMessageType.ChunkData:
+                        _chunkData.Enqueue(msg.ChunkData);
+                        break;
+                    case LanMessageType.WorldSyncComplete:
+                        _worldSyncComplete.Enqueue(true);
+                        break;
                 }
-
-                if (!received)
-                    await Task.Delay(8, token);
             }
-        }
-        catch (OperationCanceledException)
-        {
         }
         catch (Exception ex)
         {
-            _log.Warn($"EOS client read failed: {ex.Message}");
+            _log.Warn($"EOS client pump failed: {ex.Message}");
         }
-        finally
-        {
-            IsConnected = false;
-        }
+#endif
     }
-
     private static ProductUserId? ParseProductUserId(string joinInfo)
     {
         if (string.IsNullOrWhiteSpace(joinInfo))
@@ -701,7 +680,6 @@ public sealed class EosP2PClientSession : ILanSession
             return;
 
         _disposed = true;
-        _cts.Cancel();
         IsConnected = false;
 
         if (_notifyClosedId != 0)
