@@ -48,10 +48,6 @@
   </ItemGroup>
 
   <ItemGroup>
-    <None Include="..\eos.local.json" Link="eos.local.json" CopyToOutputDirectory="PreserveNewest" Condition="Exists('..\eos.local.json')" />
-  </ItemGroup>
-
-  <ItemGroup>
     <None Include="Defaults/**" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
 

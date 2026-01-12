@@ -8,13 +8,13 @@ namespace RedactedCraftMonoGame.Online.Eos;
 
 public sealed class EosConfig
 {
-    private const string DefaultRemoteConfigUrl = "https://eos-service.onrender.com/eos/config";
+    private const string DefaultRemoteConfigUrl = "https://eos-config-service.onrender.com/eos/config";
     private static readonly object RemoteSync = new();
     private static Task? _remoteFetchTask;
     private static EosConfig? _remoteCached;
     private static bool _remoteFetchLogged;
     private static bool _missingLogged;
-    private const int RemoteFetchTimeoutSeconds = 30;
+    private const int RemoteFetchTimeoutSeconds = 6;
 
     public string ProductId { get; set; } = "";
     public string SandboxId { get; set; } = "";
@@ -30,34 +30,58 @@ public sealed class EosConfig
 
     public static EosConfig? Load(Logger log)
     {
-        // FORCE REMOTE: Ignore environment and local files.
-        var cached = TryGetRemoteCached();
-        if (cached != null)
-            return cached;
-
-        log.Info($"Fetching EOS config from {DefaultRemoteConfigUrl}...");
-        var remote = TryLoadRemoteConfig(log);
-        if (remote != null)
+        EosConfig? envConfig = null;
+        if (TryLoadFromEnvironment(out var tempEnv))
         {
-            lock (RemoteSync)
-                _remoteCached = remote;
-            return remote;
+            envConfig = tempEnv;
+            if (envConfig.IsValid(out var envError))
+                return envConfig;
+
+            log.Warn($"EOS env config invalid: {envError}");
         }
 
-        log.Warn("EOS remote config fetch failed or timed out. Using hardcoded fallback.");
-        
-        // Fallback to known credentials to ensure the game works
-        return new EosConfig
+        var path = ResolveConfigPath(log);
+        if (path == null)
         {
-            ProductId = "0794da3c598d467c9ac126231f132351",
-            SandboxId = "f9417e71fd2645f4af2d072c6ca5b63d",
-            DeploymentId = "843fd58fa18545eaa1a7c8232eb7522b",
-            ClientId = "xyza7891M5Mc8NNr3Bln7pSpVXN7252e",
-            ClientSecret = "3UUNLCgdV4RdB8TC8SJrjfEHE5vkmz5ZygCdyVcqNH0",
-            ProductName = "RedactedCraft",
-            ProductVersion = "1.0",
-            LoginMode = "device"
-        };
+            var cached = TryGetRemoteCached();
+            if (cached != null)
+                return cached;
+
+            EnsureRemoteFetch(log);
+            if (!_missingLogged)
+            {
+                log.Info("EOS config not found; skipping EOS login.");
+                _missingLogged = true;
+            }
+            return null;
+        }
+
+        try
+        {
+            var json = File.ReadAllText(path);
+            var cfg = JsonSerializer.Deserialize<EosConfig>(json, new JsonSerializerOptions
+            {
+                PropertyNameCaseInsensitive = true
+            });
+            if (cfg == null)
+            {
+                log.Warn("EOS config parse failed.");
+                return null;
+            }
+
+            if (!cfg.IsValid(out var error))
+            {
+                log.Warn($"EOS config invalid: {error}");
+                return null;
+            }
+
+            return cfg;
+        }
+        catch (Exception ex)
+        {
+            log.Warn($"EOS config load failed: {ex.Message}");
+            return null;
+        }
     }
 
     public bool IsValid(out string? error)
@@ -150,26 +174,11 @@ public sealed class EosConfig
         var envUrl = GetEnv("EOS_CONFIG_URL");
         var envKey = GetEnv("EOS_CONFIG_API_KEY");
         if (!string.IsNullOrWhiteSpace(envUrl))
-        {
-            if (string.IsNullOrWhiteSpace(envKey))
-            {
-                log.Warn("EOS_CONFIG_URL is set but EOS_CONFIG_API_KEY is missing; remote config disabled.");
-                return null;
-            }
-
             return new RemoteConfigSource(envUrl, envKey);
-        }
-
-        if (!string.IsNullOrWhiteSpace(envKey))
-        {
-            return new RemoteConfigSource(DefaultRemoteConfigUrl, envKey);
-        }
 
         var remotePath = Path.Combine(Paths.ConfigDir, "eos.remote.json");
         if (!File.Exists(remotePath))
-        {
             return new RemoteConfigSource(DefaultRemoteConfigUrl, null);
-        }
 
         try
         {
@@ -180,13 +189,6 @@ public sealed class EosConfig
             });
             if (remote == null || string.IsNullOrWhiteSpace(remote.Url))
                 return null;
-
-            if (string.IsNullOrWhiteSpace(remote.ApiKey))
-            {
-                log.Warn("EOS remote config missing api key; remote config disabled.");
-                return null;
-            }
-
             return remote;
         }
         catch (Exception ex)
@@ -346,7 +348,3 @@ public sealed class EosConfig
         return string.IsNullOrWhiteSpace(value) ? null : value.Trim();
     }
 }
-
-
-
-
