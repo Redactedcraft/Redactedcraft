@@ -8,7 +8,7 @@ namespace RedactedCraftMonoGame.Online.Eos;
 
 public sealed class EosConfig
 {
-    private const string DefaultRemoteConfigUrl = "https://eos-config-service.onrender.com/eos/config";
+    private const string DefaultRemoteConfigUrl = "https://eos-service.onrender.com/eos/config";
     private static readonly object RemoteSync = new();
     private static Task? _remoteFetchTask;
     private static EosConfig? _remoteCached;
@@ -174,11 +174,21 @@ public sealed class EosConfig
         var envUrl = GetEnv("EOS_CONFIG_URL");
         var envKey = GetEnv("EOS_CONFIG_API_KEY");
         if (!string.IsNullOrWhiteSpace(envUrl))
+        {
+            if (string.IsNullOrWhiteSpace(envKey))
+            {
+                log.Warn("EOS_CONFIG_URL is set but EOS_CONFIG_API_KEY is missing; remote config disabled.");
+                return null;
+            }
             return new RemoteConfigSource(envUrl, envKey);
+        }
+
+        if (!string.IsNullOrWhiteSpace(envKey))
+            return new RemoteConfigSource(DefaultRemoteConfigUrl, envKey);
 
         var remotePath = Path.Combine(Paths.ConfigDir, "eos.remote.json");
         if (!File.Exists(remotePath))
-            return new RemoteConfigSource(DefaultRemoteConfigUrl, null);
+            return null;
 
         try
         {
@@ -189,6 +199,11 @@ public sealed class EosConfig
             });
             if (remote == null || string.IsNullOrWhiteSpace(remote.Url))
                 return null;
+            if (string.IsNullOrWhiteSpace(remote.ApiKey))
+            {
+                log.Warn("EOS remote config missing api key; remote config disabled.");
+                return null;
+            }
             return remote;
         }
         catch (Exception ex)

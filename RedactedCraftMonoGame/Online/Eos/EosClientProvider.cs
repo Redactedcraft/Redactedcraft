@@ -9,7 +9,7 @@ public static class EosClientProvider
     private static EosClient? _client;
     private static bool _attempted;
     private static DateTime _lastAttemptUtc = DateTime.MinValue;
-    private static readonly TimeSpan RetryCooldown = TimeSpan.FromSeconds(5);
+    private static readonly TimeSpan RetryCooldown = TimeSpan.FromSeconds(1);
 
     public static EosClient? GetOrCreate(Logger log, string? loginModeOverride = null, bool allowRetry = false, bool autoLogin = true)
     {

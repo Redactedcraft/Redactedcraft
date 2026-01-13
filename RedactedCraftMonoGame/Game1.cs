@@ -101,7 +101,12 @@ public sealed class Game1 : Game
         {
             _eosClient = EosClientProvider.GetOrCreate(_log, "device", allowRetry: true);
             if (_eosClient == null)
-                _log.Warn("EOS client unavailable; online play disabled.");
+            {
+                if (EosConfig.IsRemoteFetchPending)
+                    _log.Info("EOS config loading from remote service; online play will enable once ready.");
+                else
+                    _log.Warn("EOS client unavailable; online play disabled.");
+            }
         }
 
         if (_startOptions?.HasJoinToken == true)
@@ -165,7 +170,20 @@ public sealed class Game1 : Game
         RefreshSettingsIfChanged();
         UpdateUiLayout();
         UpdateMouseCapture(computeDelta: true);
-        _eosClient?.Tick();
+        if (_eosClient == null && _startOptions?.Offline != true)
+        {
+            var created = EosClientProvider.GetOrCreate(_log, "device", allowRetry: true);
+            if (created != null)
+            {
+                _eosClient = created;
+                _log.Info("EOS client initialized.");
+            }
+        }
+
+        var eos = _eosClient ?? EosClientProvider.Current;
+        if (_eosClient == null && eos != null)
+            _eosClient = eos;
+        eos?.Tick();
 
         if (_input.IsNewKeyPress(Keys.F2))
             RequestScreenshot();
@@ -447,3 +465,4 @@ public sealed class Game1 : Game
         _lastUpdateSeconds = now;
     }
 }
+
