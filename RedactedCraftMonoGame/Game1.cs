@@ -41,6 +41,8 @@ public sealed class Game1 : Game
     private double _lastStallLogSeconds = -1;
     private const double StallThresholdSeconds = 2.0;
     private const double StallLogCooldownSeconds = 10.0;
+    private double _smokeExitAtSeconds = -1;
+    private const double SmokeDurationSeconds = 8.0;
 
 	public PlayerProfile Profile => _profile;
 
@@ -190,6 +192,7 @@ public sealed class Game1 : Game
 
         // Global quit (Alt+F4 is handled by OS; Esc handled in screens)
         _menus.Update(gameTime, _input);
+        HandleSmoke(gameTime);
         if (!_exitRequested && _menus.Count == 0)
         {
             _exitRequested = true;
@@ -463,6 +466,37 @@ public sealed class Game1 : Game
         }
 
         _lastUpdateSeconds = now;
+    }
+
+    private void HandleSmoke(GameTime gameTime)
+    {
+        if (_startOptions?.Smoke != true)
+            return;
+
+        if (_smokeExitAtSeconds < 0)
+        {
+            _smokeExitAtSeconds = gameTime.TotalGameTime.TotalSeconds + SmokeDurationSeconds;
+            if (_startOptions.SmokeAssetsOk)
+            {
+                _log.Info("SMOKE: assets check OK.");
+            }
+            else
+            {
+                var missing = _startOptions.SmokeMissingAssets ?? Array.Empty<string>();
+                _log.Warn($"SMOKE: assets missing ({string.Join(", ", missing)}).");
+            }
+        }
+
+        if (_exitRequested)
+            return;
+
+        if (gameTime.TotalGameTime.TotalSeconds >= _smokeExitAtSeconds)
+        {
+            _exitRequested = true;
+            ReleaseMouseCapture();
+            _log.Info(_startOptions.SmokeAssetsOk ? "SMOKE PASS" : "SMOKE FAIL");
+            Exit();
+        }
     }
 }
 

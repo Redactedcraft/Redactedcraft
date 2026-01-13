@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.IO;
 using Microsoft.Xna.Framework;
 using Microsoft.Xna.Framework.Graphics;
@@ -291,9 +292,14 @@ public sealed class CubeNetAtlas
         var netW = faceSize * 3; var netH = faceSize * 2;
         var width = regionsPerRow * netW; var height = regionsPerCol * netH;
         var data = new Color[width * height];
+        var missingLogged = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         foreach (var def in BlockRegistry.All) {
             var blockPath = Path.Combine(blocksDir, GetBlockFileName(def));
-            if (!TryLoadBlockNetTexture(assets.GraphicsDevice, blockPath, log, out var net, netW, netH)) {
+            if (!TryLoadBlockNetTexture(assets.GraphicsDevice, blockPath, out var net, netW, netH, out var error)) {
+                if (missingLogged.Add(blockPath))
+                {
+                    log.Warn($"Block texture missing or invalid: {blockPath}. {error} Fallback: generated checker net ({netW}x{netH}).");
+                }
                 net = new Color[netW * netH];
                 for (int i = 0; i < net.Length; i++) {
                     int x = i % netW; int y = i / netW;
@@ -311,18 +317,30 @@ public sealed class CubeNetAtlas
         return true;
     }
 
-    private static bool TryLoadBlockNetTexture(GraphicsDevice device, string path, Logger log, out Color[] data, int expectedW, int expectedH)
+    private static bool TryLoadBlockNetTexture(GraphicsDevice device, string path, out Color[] data, int expectedW, int expectedH, out string error)
     {
         data = Array.Empty<Color>();
-        if (!File.Exists(path)) return false;
+        if (!File.Exists(path))
+        {
+            error = "File not found.";
+            return false;
+        }
         try {
             using var fs = File.OpenRead(path);
             using var tex = Texture2D.FromStream(device, fs);
-            if (tex.Width != expectedW || tex.Height != expectedH) return false;
+            if (tex.Width != expectedW || tex.Height != expectedH)
+            {
+                error = $"Invalid dimensions {tex.Width}x{tex.Height} (expected {expectedW}x{expectedH}).";
+                return false;
+            }
             data = new Color[expectedW * expectedH];
             tex.GetData(data);
+            error = string.Empty;
             return true;
-        } catch { return false; }
+        } catch (Exception ex) {
+            error = $"Load failed: {ex.Message}";
+            return false;
+        }
     }
 
     private static void GetAtlasGrid(int count, out int regionsPerRow, out int regionsPerCol)
