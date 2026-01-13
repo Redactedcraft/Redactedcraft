@@ -1,4 +1,4 @@
-$Tags = @("v5.3", "v5.2", "v5.0", "v4.0", "v3.0", "v2.0", "v1.2", "v1.1", "AssetsV4.1", "AssetsV4", "V3", "V2.2", "AssetsV2.1", "v1.0", "AssetsV2")
+$Tags = @("v6.0", "v5.3", "v5.2", "v5.0", "v4.1", "v4.0", "v3.0", "v2.2", "v2.1", "v2.0", "v1.2", "v1.1", "v1.0")
 $Repo = "Redactedcraft/Assets"
 $Workspace = "$PSScriptRoot\HistoryCleaner"
 
