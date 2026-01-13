@@ -205,3 +205,29 @@ The actual structured recipes are in:
 
 Block / item identifiers are written to match RedactedCraft’s current **BlockId**-as-inventory system.
 
+
+---
+
+## The Continuist Papers (Addendum v1.2)
+
+A cache of Continuist field pages has begun surfacing in the same strata as older grave markers. They read less like prophecy and more like **engineering notes**: what failed, why it failed, and what the world did afterward. The pages also include cross-notes from other factions—warnings copied verbatim, arguments in the margins, and a repeated theme:
+
+> **A clean end closes the circuit. A loud end leaves a bruise.**
+
+### The five voices
+
+- **Continuists**: Reality can be worked safely when every design includes a **Frame** (where it happens), a **Conduit** (how it flows), and a **Limiter** (where it stops). They are closest to the world's true behavior.
+- **Veilkeepers**: Every opening is a debt. Seal first, open only what you can close. Right about danger; wrong when fear becomes policy.
+- **Hearthward Covenant**: If it keeps people alive, it is true enough. Salt, rest, and strict town rules.
+- **Ascendants**: Power proves itself through pain. They force outcomes quickly and pay later in instability.
+- **Echo Faith**: The Echo is a chorus of meaning. Sometimes they predict what will happen; often they invite it.
+
+### Death states (what the papers claim)
+
+The Continuist pages treat death as a **pattern outcome**, not just a body ending.
+
+- **Quiet death** (low Echo): fades cleanly.
+- **Violent death** (medium Echo): leaves a sharper imprint; repeated endings thin a place.
+- **Echo-fed death** (high Echo): residue sticks and attracts visitation.
+- **Transit death** (very high Echo): misrouting risk—split arrival, duplication, delayed return.
+- **Nullrock-adjacent death**: residue collapses faster because Nullrock refuses continuation.

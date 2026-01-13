@@ -1,5 +1,5 @@
 {
-  "version": "v1.1",
+  "version": "v6.0",
   "notes": "Updated for Nullblock as the canonical bottom layer and added Artificer\u2019s Workbench as an in-game station.",
   "blocks": [
     {
@@ -98,7 +98,7 @@
     },
     {
       "blockEnum": "ArtificersWorkbench",
-      "byteId": 13,
+      "byteId": 65,
       "displayNameOverride": "Artificer\u2019s Workbench",
       "aliases": [
         "Artificer Bench",

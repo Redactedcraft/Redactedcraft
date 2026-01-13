@@ -12,6 +12,7 @@
 
     <RootNamespace>RedactedCraftMonoGame</RootNamespace>
     <AssemblyName>RedactedCraftMonoGame</AssemblyName>
+    <Version>6.0.0.0</Version>
 
     <ApplicationIcon>Icon.ico</ApplicationIcon>
   </PropertyGroup>

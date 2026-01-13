@@ -245,7 +245,7 @@ function Export-LorePack {
     $LoreOutDir = "$BuildDir\LorePack"
     $LoreDataSrc = "$SolutionRoot\RedactedCraftMonoGame\Defaults\Assets\data\lore"
     $LoreBlocksSrc = "$SolutionRoot\RedactedCraftMonoGame\Defaults\Assets\textures\blocks"
-    $LoreZip = "$SolutionRoot\RedactedCraft_LorePack_FULL_v1_1d_LOREPLUS_TEXTURES.zip"
+    $LoreZip = "$SolutionRoot\RedactedCraft_LorePack_V6.zip"
 
     if (Test-Path $LoreOutDir) { Remove-Item $LoreOutDir -Recurse -Force }
     New-Item -ItemType Directory -Force -Path $BuildDir | Out-Null

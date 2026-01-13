@@ -47,4 +47,3 @@
 | 62 | SkyboundPhilter | Skybound Philter | skybound_philter.png |
 | 63 | PyroskinTonic | Pyroskin Tonic | pyroskin_tonic.png |
 | 64 | BrineveilElixir | Brineveil Elixir | brineveil_elixir.png |
-Note: Artificer's Workbench is an existing in-game block (ArtificerBench) using byte id 13 and texture artificer_bench.png. Nullblock/Nullrock remains byte id 15.

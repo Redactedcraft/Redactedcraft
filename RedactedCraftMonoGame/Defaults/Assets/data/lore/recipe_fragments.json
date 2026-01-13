@@ -65,7 +65,7 @@
       "fragment_type": "ingredients",
       "text": [
         "Quiet Alembic:",
-        "Glass\u00d73, Copper\u00d72, Anchoring Salt."
+        "Glass×3, Copper×2, Anchoring Salt."
       ],
       "teaches": [
         "recipe.quiet_alembic.safe"
@@ -95,7 +95,7 @@
       "fragment_type": "ingredients",
       "text": [
         "Sigil Loom:",
-        "Runestone\u00d72, Veinstone\u00d71, Limiter Sigil\u00d71."
+        "Runestone×2, Veinstone×1, Limiter Sigil×1."
       ],
       "teaches": [
         "recipe.sigil_loom.safe"
@@ -289,7 +289,7 @@
       "fragment_type": "ingredients",
       "text": [
         "Fleetstep Draught (safe):",
-        "Swiftleaf\u00d72 + Anchoring Salt + Clean Phial."
+        "Swiftleaf×2 + Anchoring Salt + Clean Phial."
       ],
       "teaches": [
         "recipe.potion.fleetstep.safe"
@@ -305,7 +305,7 @@
       "fragment_type": "temptation",
       "text": [
         "Fleetstep Draught (unstable):",
-        "Swiftleaf\u00d73, no salt."
+        "Swiftleaf×3, no salt."
       ],
       "teaches": [
         "recipe.potion.fleetstep.unstable"
@@ -319,7 +319,7 @@
       "fragment_type": "ingredients",
       "text": [
         "Skybound Philter (safe):",
-        "Driftcap\u00d72 + Anchoring Salt + Clean Phial."
+        "Driftcap×2 + Anchoring Salt + Clean Phial."
       ],
       "teaches": [
         "recipe.potion.skybound.safe"
@@ -335,7 +335,7 @@
       "fragment_type": "temptation",
       "text": [
         "Skybound Philter (unstable):",
-        "Driftcap\u00d73 + Icon Dust."
+        "Driftcap×3 + Icon Dust."
       ],
       "teaches": [
         "recipe.potion.skybound.unstable"
@@ -349,7 +349,7 @@
       "fragment_type": "ingredients",
       "text": [
         "Pyroskin Tonic (safe):",
-        "Embermoss\u00d72 + Anchoring Salt + Clean Phial."
+        "Embermoss×2 + Anchoring Salt + Clean Phial."
       ],
       "teaches": [
         "recipe.potion.pyroskin.safe"
@@ -365,7 +365,7 @@
       "fragment_type": "temptation",
       "text": [
         "Pyroskin Tonic (unstable):",
-        "Embermoss\u00d73, no salt."
+        "Embermoss×3, no salt."
       ],
       "teaches": [
         "recipe.potion.pyroskin.unstable"
@@ -501,10 +501,127 @@
         "craft.keystone"
       ],
       "unlocks": []
+    },
+    {
+      "id": "frag_0035",
+      "topic": "death_states",
+      "tier": "early",
+      "fragment_type": "rule",
+      "text": [
+        "On endings:",
+        "A clean end closes the circuit.",
+        "A loud end leaves a bruise."
+      ],
+      "teaches": [],
+      "unlocks": []
+    },
+    {
+      "id": "frag_0036",
+      "topic": "death_states",
+      "tier": "mid",
+      "fragment_type": "warning",
+      "text": [
+        "Do not die twice in the same room.",
+        "Repeated endings thin the Veil and invite Echo return."
+      ],
+      "teaches": [
+        "veil.thin_places"
+      ],
+      "unlocks": []
+    },
+    {
+      "id": "frag_0037",
+      "topic": "burial_practice",
+      "tier": "early",
+      "fragment_type": "note",
+      "text": [
+        "Hearthward practice:",
+        "Salt on the tools, ash on the cloth.",
+        "Bury metal with the dead so it does not 'call'."
+      ],
+      "teaches": [
+        "hearthward.rituals"
+      ],
+      "unlocks": []
+    },
+    {
+      "id": "frag_0038",
+      "topic": "nullrock",
+      "tier": "mid",
+      "fragment_type": "rule",
+      "text": [
+        "Nullrock does not 'hold' you.",
+        "It refuses your continuation.",
+        "Near it, patterns collapse faster."
+      ],
+      "teaches": [
+        "nullrock.boundary"
+      ],
+      "unlocks": []
+    },
+    {
+      "id": "frag_0039",
+      "topic": "waygates",
+      "tier": "mid",
+      "fragment_type": "warning",
+      "text": [
+        "If you fall during transit,",
+        "you may arrive split:",
+        "one echo here, one echo elsewhere."
+      ],
+      "teaches": [
+        "waygate.misroute"
+      ],
+      "unlocks": []
+    },
+    {
+      "id": "frag_0040",
+      "topic": "echo",
+      "tier": "late",
+      "fragment_type": "warning",
+      "text": [
+        "Unstable craft pays in attention.",
+        "Attention becomes pressure.",
+        "Pressure becomes visitation."
+      ],
+      "teaches": [
+        "echo.attention"
+      ],
+      "unlocks": []
+    },
+    {
+      "id": "frag_0041",
+      "topic": "continuist_papers",
+      "tier": "mid",
+      "fragment_type": "note",
+      "text": [
+        "Continuist filing standard:",
+        "Record: Frame / Conduit / Limiter.",
+        "Record also: Failure mode and containment."
+      ],
+      "teaches": [
+        "continuist.records"
+      ],
+      "unlocks": []
+    },
+    {
+      "id": "frag_0042",
+      "topic": "veilkeepers",
+      "tier": "late",
+      "fragment_type": "note",
+      "text": [
+        "Veilkeeper dictum:",
+        "A seal is a promise.",
+        "Break it only if you can keep what follows."
+      ],
+      "teaches": [
+        "veilkeeper.seals"
+      ],
+      "unlocks": []
     }
   ],
   "manifest": {
-    "version": "v1.1",
-    "generated_utc": "2026-01-13T00:12:54.232581Z"
+    "version": "v6.0",
+    "generated_utc": "2026-01-13T03:36:31.041968Z"
   }
 }

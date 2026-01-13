@@ -1,13 +1,12 @@
-Release Notes
+Release Notes - V6.0 - THE ARTIFICER UPDATE
 
-The Continuist Papers
-- New lore pack data: inscriptions, fragments, structures, loot, and story.
-- New block textures: runestone, veinstone, veilglass, resonance core, waybound frame, transit regulator.
-- Nullblock enforced at world bottom (y==0).
-- Nullblock unbreakable in Survival.
+- Consolidated assets and game version to V6 for alignment.
+- The Artificer Update: Full integration of lore, blocks, and mechanics.
+- Nullblock enforced at world bottom (y==0) and unbreakable in Survival.
 - Artificer's Workbench mapped as the canonical gatecraft station.
-- Builder: export lore pack and prepare+run packaging flow.
-- Versioning: consolidated assets to v6; game version skips to v6 for alignment.
+- New lore pack data (The Continuist Papers) integrated.
+- New block textures: runestone, veinstone, veilglass, resonance core, waybound frame, transit regulator.
+- Source for final assets: RedactedCraftMonoGame\Defaults\Assets\.
 
 Previous Notes
 - Fixed EOS P2P receive pumping to run on the main thread (prevents remote flyers from freezing).

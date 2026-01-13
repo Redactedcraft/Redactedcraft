@@ -1,0 +1,17 @@
+# --- Copy these Key-Value pairs to your Render.com Environment Variables ---
+
+# Core EOS Credentials (User Provided)
+EOS_PRODUCT_ID=0794da3c598d467c9ac126231f132351
+EOS_SANDBOX_ID=f9417e71fd2645f4af2d072c6ca5b63d
+EOS_DEPLOYMENT_ID=843fd58fa18545eaa1a7c8232eb7522b
+EOS_CLIENT_ID=xyza7891M5Mc8NNr3Bln7pSpVXN7252e
+EOS_CLIENT_SECRET=3UUNLCgdV4RdB8TC8SJrjfEHE5vkmz5ZygCdyVcqNH0
+
+# Game Metadata (Required by RedactedCraft)
+EOS_PRODUCT_NAME=RedactedCraft
+EOS_PRODUCT_VERSION=1.0
+EOS_LOGIN_MODE=device
+
+# Optional Security (If your Render service code requires an API Key)
+# If you set this, you must also set EOS_CONFIG_API_KEY on the client PC.
+# API_KEY=

@@ -1,7 +1,7 @@
 {
   "manifest": {
-    "version": "v1.1",
-    "generated_utc": "2026-01-13T00:12:54.232581Z",
+    "version": "v6.0",
+    "generated_utc": "2026-01-13T03:36:31.041968Z",
     "dimensions": [
       "Caelum Prime",
       "Ignivar",
@@ -47,7 +47,7 @@
     {
       "pack_id": "pack_02_ruinwork_continuum",
       "name": "Ruinwork of the Continuum",
-      "scope": "Continuist workshops and safe recipes (Runestone, Limiter, Alembic); includes Artificer\u2019s Workbench discovery",
+      "scope": "Continuist workshops and safe recipes (Runestone, Limiter, Alembic); includes Artificer’s Workbench discovery",
       "adds": [
         "structures:ruin_continuist_workshop_small",
         "loot:continuist_ruin_chest",

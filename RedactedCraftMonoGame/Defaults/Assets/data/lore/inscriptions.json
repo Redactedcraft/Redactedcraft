@@ -355,7 +355,7 @@
         "ruin_wall"
       ],
       "weight": 1.0,
-      "text": "Drink again before it fades\u2014do not return to lesser laws."
+      "text": "Drink again before it fades—do not return to lesser laws."
     },
     {
       "id": "insc_0035",
@@ -889,7 +889,7 @@
         "hearthhold_sign"
       ],
       "weight": 1.0,
-      "text": "A gate stays shut until you\u2019re ready to end it."
+      "text": "A gate stays shut until you’re ready to end it."
     },
     {
       "id": "insc_0086",
@@ -899,7 +899,7 @@
         "hearthhold_sign"
       ],
       "weight": 1.0,
-      "text": "Two gates, one core. Don\u2019t mix."
+      "text": "Two gates, one core. Don’t mix."
     },
     {
       "id": "insc_0087",
@@ -919,7 +919,7 @@
         "hearthhold_sign"
       ],
       "weight": 1.0,
-      "text": "Ask the smith if you\u2019re unsure. He\u2019ll grunt once for yes."
+      "text": "Ask the smith if you’re unsure. He’ll grunt once for yes."
     },
     {
       "id": "insc_0089",
@@ -939,7 +939,7 @@
         "hearthhold_sign"
       ],
       "weight": 1.0,
-      "text": "We keep small roads so the big ones don\u2019t return."
+      "text": "We keep small roads so the big ones don’t return."
     },
     {
       "id": "insc_0091",
@@ -981,7 +981,7 @@
         "ruin_wall"
       ],
       "weight": 1.0,
-      "text": "Nothing is forbidden\u2014only misunderstood."
+      "text": "Nothing is forbidden—only misunderstood."
     },
     {
       "id": "insc_0095",
@@ -1271,7 +1271,7 @@
         "tablet"
       ],
       "weight": 1.0,
-      "text": "A gate is a question. The Echo is the answer you didn\u2019t ask for."
+      "text": "A gate is a question. The Echo is the answer you didn’t ask for."
     },
     {
       "id": "insc_0123",
@@ -1312,10 +1312,296 @@
       ],
       "weight": 1.0,
       "text": "When you repeat a doorway, the doorway begins to remember you."
+    },
+    {
+      "id": "insc_0127",
+      "faction": "Continuists",
+      "stage": "early",
+      "placement_tags": [
+        "ruin_wall",
+        "grave"
+      ],
+      "weight": 1.0,
+      "text": "A clean end is a closed circuit. Leave no open loops."
+    },
+    {
+      "id": "insc_0128",
+      "faction": "Continuists",
+      "stage": "mid",
+      "placement_tags": [
+        "ruin_wall",
+        "workshop"
+      ],
+      "weight": 1.0,
+      "text": "If you must open a rule, bring a limiter that can outlive you."
+    },
+    {
+      "id": "insc_0129",
+      "faction": "Continuists",
+      "stage": "mid",
+      "placement_tags": [
+        "workshop",
+        "tablet"
+      ],
+      "weight": 1.0,
+      "text": "Record the failure. The Echo feeds on forgotten mistakes."
+    },
+    {
+      "id": "insc_0130",
+      "faction": "Continuists",
+      "stage": "late",
+      "placement_tags": [
+        "regulator",
+        "chamber"
+      ],
+      "weight": 1.0,
+      "text": "An Evergate is not a door. It is an argument you keep shouting into the world."
+    },
+    {
+      "id": "insc_0131",
+      "faction": "Continuists",
+      "stage": "mid",
+      "placement_tags": [
+        "waygate",
+        "ruin_wall"
+      ],
+      "weight": 1.0,
+      "text": "Routing without sealing is just distributing the catastrophe."
+    },
+    {
+      "id": "insc_0132",
+      "faction": "Continuists",
+      "stage": "early",
+      "placement_tags": [
+        "grave",
+        "marker"
+      ],
+      "weight": 1.0,
+      "text": "Bury metal with salt. Bury questions with answers."
+    },
+    {
+      "id": "insc_0133",
+      "faction": "Veilkeepers",
+      "stage": "mid",
+      "placement_tags": [
+        "ruin_wall",
+        "shrine"
+      ],
+      "weight": 1.0,
+      "text": "If it answers when you speak, you have already spoken too much."
+    },
+    {
+      "id": "insc_0134",
+      "faction": "Veilkeepers",
+      "stage": "late",
+      "placement_tags": [
+        "regulator",
+        "chamber"
+      ],
+      "weight": 1.0,
+      "text": "We do not worship seals. We survive them."
+    },
+    {
+      "id": "insc_0135",
+      "faction": "Veilkeepers",
+      "stage": "mid",
+      "placement_tags": [
+        "waygate",
+        "ruin_wall"
+      ],
+      "weight": 1.0,
+      "text": "A gate left open is a promise you cannot keep."
+    },
+    {
+      "id": "insc_0136",
+      "faction": "Veilkeepers",
+      "stage": "early",
+      "placement_tags": [
+        "grave",
+        "marker"
+      ],
+      "weight": 1.0,
+      "text": "Mark the spot, not the story. Stories invite return."
+    },
+    {
+      "id": "insc_0137",
+      "faction": "Hearthward Covenant",
+      "stage": "early",
+      "placement_tags": [
+        "hearthhold",
+        "sign"
+      ],
+      "weight": 1.0,
+      "text": "No circles in town. No experiments in beds."
+    },
+    {
+      "id": "insc_0138",
+      "faction": "Hearthward Covenant",
+      "stage": "early",
+      "placement_tags": [
+        "hearthhold",
+        "sign"
+      ],
+      "weight": 1.0,
+      "text": "Salt first. Sip second. Wait for quiet. Then decide again."
+    },
+    {
+      "id": "insc_0139",
+      "faction": "Hearthward Covenant",
+      "stage": "mid",
+      "placement_tags": [
+        "hearthhold",
+        "sign"
+      ],
+      "weight": 1.0,
+      "text": "If your hands shake after crafting, stop. Eat. Sleep. Start over tomorrow."
+    },
+    {
+      "id": "insc_0140",
+      "faction": "Hearthward Covenant",
+      "stage": "mid",
+      "placement_tags": [
+        "hearthhold",
+        "sign"
+      ],
+      "weight": 1.0,
+      "text": "We bury the dead deep so the Echo must work harder to remember them."
+    },
+    {
+      "id": "insc_0141",
+      "faction": "Ascendants",
+      "stage": "mid",
+      "placement_tags": [
+        "shrine",
+        "ruin_wall"
+      ],
+      "weight": 1.0,
+      "text": "Pain is the limiter. Remove it and the world will follow."
+    },
+    {
+      "id": "insc_0142",
+      "faction": "Ascendants",
+      "stage": "late",
+      "placement_tags": [
+        "portal_site",
+        "ruin_wall"
+      ],
+      "weight": 1.0,
+      "text": "If the gate bites, bite back harder."
+    },
+    {
+      "id": "insc_0143",
+      "faction": "Ascendants",
+      "stage": "mid",
+      "placement_tags": [
+        "workshop",
+        "tablet"
+      ],
+      "weight": 1.0,
+      "text": "Why seal what can be endured?"
+    },
+    {
+      "id": "insc_0144",
+      "faction": "Ascendants",
+      "stage": "late",
+      "placement_tags": [
+        "regulator",
+        "chamber"
+      ],
+      "weight": 1.0,
+      "text": "A permanent opening is freedom. The rest is fear."
+    },
+    {
+      "id": "insc_0145",
+      "faction": "Echo Faith",
+      "stage": "early",
+      "placement_tags": [
+        "shrine",
+        "marker"
+      ],
+      "weight": 1.0,
+      "text": "The Echo keeps what the earth forgets."
+    },
+    {
+      "id": "insc_0146",
+      "faction": "Echo Faith",
+      "stage": "mid",
+      "placement_tags": [
+        "shrine",
+        "ruin_wall"
+      ],
+      "weight": 1.0,
+      "text": "Do not mourn too loudly. It listens for names."
+    },
+    {
+      "id": "insc_0147",
+      "faction": "Echo Faith",
+      "stage": "late",
+      "placement_tags": [
+        "waygate",
+        "ruin_wall"
+      ],
+      "weight": 1.0,
+      "text": "Some travelers arrive twice. Some never arrive at all."
+    },
+    {
+      "id": "insc_0148",
+      "faction": "Echo Faith",
+      "stage": "mid",
+      "placement_tags": [
+        "shrine",
+        "tablet"
+      ],
+      "weight": 1.0,
+      "text": "If your shadow answers late, leave."
+    },
+    {
+      "id": "insc_0149",
+      "faction": "Unknown",
+      "stage": "mid",
+      "placement_tags": [
+        "ruin_wall",
+        "tablet"
+      ],
+      "weight": 1.0,
+      "text": "Termination is not deletion; it is loss of routing."
+    },
+    {
+      "id": "insc_0150",
+      "faction": "Unknown",
+      "stage": "late",
+      "placement_tags": [
+        "regulator",
+        "chamber"
+      ],
+      "weight": 1.0,
+      "text": "A stable rule has one exit. Unstable rules have many."
+    },
+    {
+      "id": "insc_0151",
+      "faction": "Unknown",
+      "stage": "early",
+      "placement_tags": [
+        "grave",
+        "marker"
+      ],
+      "weight": 1.0,
+      "text": "Do not stack endings. Layered deaths thin the world."
+    },
+    {
+      "id": "insc_0152",
+      "faction": "Unknown",
+      "stage": "mid",
+      "placement_tags": [
+        "waygate",
+        "ruin_wall"
+      ],
+      "weight": 1.0,
+      "text": "Patterns persist where constraints repeat."
     }
   ],
   "manifest": {
-    "version": "v1.1",
-    "generated_utc": "2026-01-13T00:12:54.232581Z"
+    "version": "v6.0",
+    "generated_utc": "2026-01-13T03:36:31.041968Z"
   }
 }

@@ -22,7 +22,7 @@ public sealed class EosConfig
     public string ClientId { get; set; } = "";
     public string ClientSecret { get; set; } = "";
     public string ProductName { get; set; } = "RedactedCraft";
-    public string ProductVersion { get; set; } = "1.0";
+    public string ProductVersion { get; set; } = "6.0";
     public string LoginMode { get; set; } = "device";
 
     public static string ConfigPath =>
@@ -126,7 +126,7 @@ public sealed class EosConfig
             ClientId = GetEnv("EOS_CLIENT_ID") ?? "",
             ClientSecret = GetEnv("EOS_CLIENT_SECRET") ?? "",
             ProductName = GetEnv("EOS_PRODUCT_NAME") ?? "RedactedCraft",
-            ProductVersion = GetEnv("EOS_PRODUCT_VERSION") ?? "1.0",
+            ProductVersion = GetEnv("EOS_PRODUCT_VERSION") ?? "6.0",
             LoginMode = GetEnv("EOS_LOGIN_MODE") ?? "device"
         };
 
