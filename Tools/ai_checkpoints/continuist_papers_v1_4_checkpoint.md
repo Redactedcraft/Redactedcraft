@@ -42,11 +42,10 @@
   - A68CD4F5A4DABB1EB5D357D187E83F75DF404B60476BB30C251818F7E5F3D512
 
 ## What was pushed
-- Nothing pushed yet for update/gravestone-model-v1.
+- Pushed update/gravestone-model-v1 (commit b5d1616).
 
 ## Next steps
-- Stage changes, commit, and push update/gravestone-model-v1.
 - Print pull/build/smoke/assetview commands and wait for WORKED/NOT WORKING.
 
 ## SWE-1.5 CONTINUATION PROMPT
-You are SWE-1.5 taking over in the game repo at update/gravestone-model-v1. Commit current changes (including gravestone model/texture and asset viewer code), push the branch, then print test commands and wait for WORKED/NOT WORKING.
+You are SWE-1.5 taking over in the game repo at update/gravestone-model-v1. Branch is pushed; print test commands and wait for WORKED/NOT WORKING.
