@@ -31,6 +31,11 @@
 
 ---
 
+## Lore Pack
+
+- Lore overview: README_LOREPACK.md
+- Change log: RELEASE_NOTES.txt
+
 ## ⌨️ Controls
 
 | Key | Action |

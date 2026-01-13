@@ -1,5 +1,14 @@
 Release Notes
 
+The Continuist Papers
+- New lore pack data: inscriptions, fragments, structures, loot, and story.
+- New block textures: runestone, veinstone, veilglass, resonance core, waybound frame, transit regulator.
+- Nullblock enforced at world bottom (y==0).
+- Nullblock unbreakable in Survival.
+- Artificer's Workbench mapped as the canonical gatecraft station.
+- Builder: export lore pack and prepare+run packaging flow.
+
+Previous Notes
 - Fixed EOS P2P receive pumping to run on the main thread (prevents remote flyers from freezing).
 - Fixed EOS configuration to use the new Render service (eos-service.onrender.com).
 - Added robust EOS credential fallback (game works even if remote config fails).
