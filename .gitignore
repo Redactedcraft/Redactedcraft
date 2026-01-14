@@ -11,3 +11,35 @@ Builds/
 .Plans
 RedactedCraft.exe
 .aider*
+
+# Documentation files (never commit)
+*.md
+!README.md
+
+# Executable files
+*.exe
+*.dll
+*.so
+*.dylib
+
+# Temporary files
+*.tmp
+*.cache
+*.log
+Thumbs.db
+Desktop.ini
+
+# Development folders
+.vscode/
+_temp/
+_tmp*/
+temp*/
+
+# Archive files
+*.zip
+*.7z
+*.rar
+*.tar.gz
+
+# AI helper files
+.ai-helper*/
