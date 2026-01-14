@@ -91,7 +91,9 @@ public sealed class Game1 : Game
 
         _font = new PixelFont(_pixel, scale: 2);
         _assets = new AssetLoader(GraphicsDevice, _log);
-
+        
+        // Initialize asset resolver for logging
+        AssetResolver.Initialize(_log);
 
         // EOS Device-ID only (no login UI).
         if (_startOptions?.Offline == true)

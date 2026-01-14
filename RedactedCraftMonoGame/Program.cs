@@ -29,8 +29,14 @@ public static class Program
 
         EnsureRequiredFolders(log);
 
-        // Copy default assets from the app directory to Documents\RedactedCraft\Assets if missing.
-        AssetInstaller.EnsureDefaultsInstalled(AppDomain.CurrentDomain.BaseDirectory, log);
+        // Parse asset mode arguments early (before AssetInstaller)
+        var assetMode = GetArgValue(args, "--assetMode") ?? 
+                       Environment.GetEnvironmentVariable("RC_ASSET_MODE") ?? 
+                       "online";
+        var assetRoot = GetArgValue(args, "--assetRoot") ?? 
+                        Environment.GetEnvironmentVariable("RC_ASSET_ROOT");
+        
+        log.Info($"Parsed assetMode: {assetMode}, assetRoot: {assetRoot ?? "null"}");
 
         var smoke = HasArg(args, "--smoke");
         var smokeAssetsOk = true;
@@ -46,6 +52,20 @@ public static class Program
         }
 
         var assetView = HasArg(args, "--assetview");
+        
+        // For asset viewer only: use development texture location
+        if (assetView)
+        {
+            var devAssetsDir = @"C:\Users\Redacted\Documents\RedactedcraftCsharp\RedactedCraftMonoGame\Defaults\Assets";
+            if (Directory.Exists(devAssetsDir))
+            {
+                Environment.SetEnvironmentVariable("REDACTEDCRAFT_ROOT", devAssetsDir);
+            }
+        }
+
+        // Copy default assets from the app directory to Documents\RedactedCraft\Assets if missing.
+        AssetInstaller.EnsureDefaultsInstalled(AppDomain.CurrentDomain.BaseDirectory, log);
+        
         var startOptions = new GameStartOptions
         {
             JoinToken = GetArgValue(args, "--join-token"),
@@ -53,7 +73,9 @@ public static class Program
             Smoke = smoke,
             SmokeAssetsOk = smokeAssetsOk,
             SmokeMissingAssets = smokeMissing,
-            AssetView = assetView
+            AssetView = assetView,
+            AssetMode = assetMode,
+            AssetRoot = assetRoot
         };
 
         var forceLauncher = HasArg(args, "--launcher");
@@ -84,6 +106,10 @@ public static class Program
                 }
 
                 log.Info("Starting GAME mode.");
+                
+                // Initialize asset mode system
+                Paths.Initialize(startOptions, log);
+                
                 using var game = new Game1(log, profile, startOptions);
                 game.Run();
                 log.Info("Game exited.");
@@ -150,11 +176,20 @@ public static class Program
     {
         for (var i = 0; i < args.Length; i++)
         {
-            if (!string.Equals(args[i], name, StringComparison.OrdinalIgnoreCase))
-                continue;
-
-            if (i + 1 < args.Length)
-                return args[i + 1];
+            var arg = args[i];
+            
+            // Check for --name=value format
+            if (arg.StartsWith(name + "=", StringComparison.OrdinalIgnoreCase))
+            {
+                return arg.Substring(name.Length + 1);
+            }
+            
+            // Check for --name value format
+            if (string.Equals(arg, name, StringComparison.OrdinalIgnoreCase))
+            {
+                if (i + 1 < args.Length)
+                    return args[i + 1];
+            }
         }
         return null;
     }

@@ -5,6 +5,19 @@ namespace RedactedCraftMonoGame.Core;
 
 public static class Paths
 {
+    private static AssetMode? _assetMode;
+
+    public static void Initialize(GameStartOptions options, Logger? logger = null)
+    {
+        _assetMode = AssetMode.FromOptions(options, logger);
+        
+        // Log asset mode configuration
+        if (logger != null)
+        {
+            logger.Info($"AssetMode={_assetMode.Mode} Root={_assetMode.Root ?? "n/a"} Defaults={_assetMode.DefaultsDir} Documents={_assetMode.DocumentsDir ?? "n/a"} OnlineFetch={(_assetMode.OnlineFetchEnabled ? "enabled" : "disabled")}");
+        }
+    }
+
     public static string DocumentsDir =>
         Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments);
 
@@ -12,6 +25,12 @@ public static class Paths
     {
         get
         {
+            // Use AssetMode if initialized, otherwise fall back to legacy behavior
+            if (_assetMode != null)
+            {
+                return _assetMode.GetAssetsDir();
+            }
+
             var overrideDir = Environment.GetEnvironmentVariable("REDACTEDCRAFT_ROOT");
             if (!string.IsNullOrWhiteSpace(overrideDir))
                 return overrideDir.Trim();
@@ -140,6 +159,12 @@ public static class Paths
     /// </summary>
     public static string ResolveAssetPath(string relativePath)
     {
+        // Use AssetMode if initialized, otherwise fall back to legacy behavior
+        if (_assetMode != null)
+        {
+            return _assetMode.ResolveAssetPath(relativePath);
+        }
+        
         return Path.Combine(AssetsDir, relativePath);
     }
 }

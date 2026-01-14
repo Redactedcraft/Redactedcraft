@@ -17,6 +17,22 @@ $ColorButtonHover= [System.Drawing.Color]::FromArgb(80, 80, 80)
 $ColorSuccess    = [System.Drawing.Color]::SeaGreen
 $ColorError      = [System.Drawing.Color]::IndianRed
 
+# --- Asset Source Selection ---
+$script:selectedAssetMode = "online" # local | repo | online
+
+function Set-AssetMode($mode) {
+    $script:selectedAssetMode = $mode
+    Log "Asset source set to: $mode"
+    Update-AssetModeDisplay
+}
+
+function Update-AssetModeDisplay() {
+    Invoke-Ui({
+        $lblAssetMode.Text = "Asset Source: $script:selectedAssetMode"
+        $form.Refresh()
+    })
+}
+
 # --- Functions ---
 
 $script:busy = $false
@@ -33,13 +49,14 @@ function Invoke-Ui([Action]$action) {
     }
 }
 
-function Set-ButtonsEnabled($build, $ship, $clean, $open, $lore) {
-    Invoke-Ui([Action]{
-        if ($build -ne $null) { $btnBuild.Enabled = $build }
-        if ($ship -ne $null) { $btnShip.Enabled = $ship }
+function Set-ButtonsEnabled($buildLocal, $buildRepo, $runOnline, $clean, $lore, $open) {
+    Invoke-Ui({
+        if ($buildLocal -ne $null) { $btnBuildLocal.Enabled = $buildLocal }
+        if ($buildRepo -ne $null) { $btnBuildRunRepo.Enabled = $buildRepo }
+        if ($runOnline -ne $null) { $btnRunOnline.Enabled = $runOnline }
         if ($clean -ne $null) { $btnClean.Enabled = $clean }
-        if ($open -ne $null) { $btnOpen.Enabled = $open }
         if ($lore -ne $null -and $btnLore -ne $null) { $btnLore.Enabled = $lore }
+        if ($open -ne $null -and $btnOpen -ne $null) { $btnOpen.Enabled = $open }
     })
 }
 
@@ -155,12 +172,139 @@ function Build-Game {
     return $code
 }
 
-function Run-Game {
-    if ((Build-Game) -eq 0) {
-        Log "Launching Game..."
+function Build-Game-Local {
+    Log "Starting Build (Local Assets Only)..."
+    Set-ButtonsEnabled $false $false $false $false $true $true
+
+    Set-ProgressMarquee "Building (Local Assets)..."
+    $code = Run-Process "dotnet" "build `"$ProjectFile`" -c Release"
+
+    if ($code -eq 0) {
+        Log "Build Successful."
+        Set-Progress 100 "Build complete."
+    } else {
+        Log "Build Failed."
+        Set-Progress 0 "Build failed."
+    }
+
+    Set-ButtonsEnabled $true $true $true $true $true $true
+    return $code
+}
+
+function Build-Game-Repo {
+    Log "Starting Build (Repo Snapshot)..."
+    Set-ButtonsEnabled $false $false $false $false $true $true
+
+    # Ensure Assets repo is available
+    $assetsRepoDir = "$PSScriptRoot\..\..\WORKTREES\AssetsRepo"
+    if (-not (Test-Path $assetsRepoDir)) {
+        Log "Cloning Assets repo..."
+        Set-ProgressMarquee "Cloning Assets repo..."
+        $code = Run-Process "git" "clone https://github.com/Redactedcraft/Assets `"$assetsRepoDir`""
+        if ($code -ne 0) {
+            Log "Failed to clone Assets repo."
+            Set-Progress 0 "Clone failed."
+            Set-ButtonsEnabled $true $true $true $true $true $true
+            return $code
+        }
+    } else {
+        Log "Updating Assets repo..."
+        Set-ProgressMarquee "Updating Assets repo..."
+        Set-Location $assetsRepoDir
+        $code = Run-Process "git" "pull origin main"
+        if ($code -ne 0) {
+            Log "Failed to update Assets repo, continuing with existing..."
+        }
+        Set-Location $SolutionRoot
+    }
+
+    # Get commit SHA
+    Set-Location $assetsRepoDir
+    $commitSha = (git rev-parse HEAD).Trim()
+    Set-Location $SolutionRoot
+    Log "Assets repo commit: $commitSha"
+
+    # Create assets snapshot
+    $outputDir = "$PSScriptRoot\..\..\OUTPUT\staging\assets_snapshot"
+    $zipPath = "$PSScriptRoot\..\..\OUTPUT\zips\Redactedcraft_Assets_SNAPSHOT.zip"
+    
+    if (Test-Path $outputDir) { Remove-Item $outputDir -Recurse -Force }
+    New-Item -ItemType Directory -Force -Path $outputDir | Out-Null
+    
+    Log "Creating assets snapshot..."
+    Set-ProgressMarquee "Creating assets snapshot..."
+    
+    # Copy assets from repo to staging
+    Copy-Item "$assetsRepoDir\*" $outputDir -Recurse -Force
+    
+    # Create zip
+    Set-Location "$PSScriptRoot\..\..\OUTPUT"
+    if (Test-Path $zipPath) { Remove-Item $zipPath }
+    $code = Run-Process "powershell" "Compress-Archive -Path `"$outputDir\*" -DestinationPath `"$zipPath`"
+    Set-Location $SolutionRoot
+    
+    if ($code -ne 0) {
+        Log "Failed to create assets snapshot."
+        Set-Progress 0 "Snapshot failed."
+        Set-ButtonsEnabled $true $true $true $true $true $true
+        return $code
+    }
+    
+    Log "Assets snapshot created: $zipPath"
+    
+    # Build the game
+    Set-ProgressMarquee "Building game..."
+    $code = Run-Process "dotnet" "build `"$ProjectFile`" -c Release"
+
+    if ($code -eq 0) {
+        Log "Build Successful."
+        Set-Progress 100 "Build complete."
+        
+        # Write build metadata
+        $buildMeta = @{
+            timestamp = (Get-Date -Format "yyyy-MM-ddTHH:mm:ssZ")
+            gameGitSha = (git rev-parse HEAD).Trim()
+            assetsGitSha = $commitSha
+            assetMode = "repo"
+            assetRoot = $outputDir
+        }
+        $buildMetaPath = "$SolutionRoot\RedactedCraftMonoGame\bin\Release\net8.0-windows\win-x64\build_meta.json"
+        $buildMeta | ConvertTo-Json -Depth 3 | Out-File -FilePath $buildMetaPath -Encoding utf8
+        Log "Build metadata written: $buildMetaPath"
+    } else {
+        Log "Build Failed."
+        Set-Progress 0 "Build failed."
+    }
+
+    Set-ButtonsEnabled $true $true $true $true $true $true
+    return $code
+}
+
+function Run-Game-Local {
+    if ((Build-Game-Local) -eq 0) {
+        Log "Launching Game (Local Assets)..."
         Set-Progress 100 "Game launched."
-        # Launch detached
-        Start-Process "dotnet" -ArgumentList "run --project `"$ProjectFile`" -c Release" -WorkingDirectory $SolutionRoot
+        # Launch detached with local asset mode
+        Start-Process "dotnet" -ArgumentList "run --project `"$ProjectFile`" -c Release --", "--assetMode=local" -WorkingDirectory $SolutionRoot
+    }
+}
+
+function Run-Game-Repo {
+    if ((Build-Game-Repo) -eq 0) {
+        Log "Launching Game (Repo Snapshot)..."
+        Set-Progress 100 "Game launched."
+        $assetRoot = "$PSScriptRoot\..\..\OUTPUT\staging\assets_snapshot"
+        # Launch detached with repo asset mode
+        Start-Process "dotnet" -ArgumentList "run --project `"$ProjectFile`" -c Release --", "--assetMode=repo --assetRoot=`"$assetRoot`"" -WorkingDirectory $SolutionRoot
+    }
+}
+
+function Run-Game-Online {
+    if ((Build-Game) -eq 0) {
+        Log "Launching Game (Online Simulation)..."
+        Set-Progress 100 "Game launched."
+        # Launch detached with online asset mode (default)
+        Start-Process "dotnet" -ArgumentList "run --project `"$ProjectFile`" -c Release --", "--assetMode=online" -WorkingDirectory $SolutionRoot
     }
 }
 
@@ -298,7 +442,7 @@ function Export-LorePack {
 
 function Clean-Project {
     Log "Cleaning Project Artifacts..."
-    Set-ButtonsEnabled $false $false $false $null $false
+    Set-ButtonsEnabled $false $false $false $false $true $true
     Set-ProgressMarquee "Cleaning project..."
 
     # Files/Folders to remove from Root
@@ -342,7 +486,7 @@ function Clean-Project {
 
     Log "Cleanup Complete."
     Set-Progress 100 "Cleanup complete."
-    Set-ButtonsEnabled $true $true $true $null $true
+    Set-ButtonsEnabled $true $true $true $true $true $true
 }
 
 function Open-BuildFolder {
@@ -356,7 +500,7 @@ function Open-BuildFolder {
 # --- UI Layout ---
 $form = New-Object System.Windows.Forms.Form
 $form.Text = "RedactedCraft Builder"
-$form.Size = New-Object System.Drawing.Size(500, 450)
+$form.Size = New-Object System.Drawing.Size(500, 420)
 $form.StartPosition = "CenterScreen"
 $form.BackColor = $ColorBackground
 $form.FormBorderStyle = "FixedSingle"
@@ -379,28 +523,103 @@ $lblSub.AutoSize = $true
 $lblSub.Location = New-Object System.Drawing.Point(25, 55)
 $form.Controls.Add($lblSub)
 
-# Buttons
-$btnBuild = New-Object System.Windows.Forms.Button
-$btnBuild.Text = "PLAY (Build & Run)"
-$btnBuild.Location = New-Object System.Drawing.Point(25, 90)
-$btnBuild.Size = New-Object System.Drawing.Size(200, 50)
-$btnBuild.FlatStyle = "Flat"
-$btnBuild.BackColor = $ColorButton
-$btnBuild.ForeColor = $ColorSuccess
-$btnBuild.Font = New-Object System.Drawing.Font("Segoe UI", 10, [System.Drawing.FontStyle]::Bold)
-$btnBuild.Add_Click({ Start-BackgroundTask { Run-Game } })
-$form.Controls.Add($btnBuild)
+# Asset Source Selector
+$lblAssetMode = New-Object System.Windows.Forms.Label
+$lblAssetMode.Text = "Asset Source: online"
+$lblAssetMode.Font = New-Object System.Drawing.Font("Segoe UI", 9)
+$lblAssetMode.ForeColor = $ColorAccent
+$lblAssetMode.AutoSize = $true
+$lblAssetMode.Location = New-Object System.Drawing.Point(25, 90)
+$form.Controls.Add($lblAssetMode)
 
-$btnShip = New-Object System.Windows.Forms.Button
-$btnShip.Text = "PREPARE + RUN`n(Zip + Exe)"
-$btnShip.Location = New-Object System.Drawing.Point(240, 90)
-$btnShip.Size = New-Object System.Drawing.Size(180, 50)
-$btnShip.FlatStyle = "Flat"
-$btnShip.BackColor = $ColorButton
-$btnShip.ForeColor = $ColorAccent
-$btnShip.Font = New-Object System.Drawing.Font("Segoe UI", 9)
-$btnShip.Add_Click({ Start-BackgroundTask { Prepare-Ship $true } })
-$form.Controls.Add($btnShip)
+$grpAssetMode = New-Object System.Windows.Forms.GroupBox
+$grpAssetMode.Text = "Asset Source"
+$grpAssetMode.Location = New-Object System.Drawing.Point(25, 110)
+$grpAssetMode.Size = New-Object System.Drawing.Size(435, 80)
+$grpAssetMode.BackColor = $ColorPanel
+$grpAssetMode.ForeColor = $ColorText
+$form.Controls.Add($grpAssetMode)
+
+# Asset Mode Radio Buttons
+$rbLocal = New-Object System.Windows.Forms.RadioButton
+$rbLocal.Text = "Local Only (Defaults\Assets)"
+$rbLocal.Location = New-Object System.Drawing.Point(10, 20)
+$rbLocal.Size = New-Object System.Drawing.Size(200, 20)
+$rbLocal.ForeColor = $ColorText
+$rbLocal.Add_Click({ Set-AssetMode "local" })
+$grpAssetMode.Controls.Add($rbLocal)
+
+$rbRepo = New-Object System.Windows.Forms.RadioButton
+$rbRepo.Text = "Repo Snapshot (Assets repo)"
+$rbRepo.Location = New-Object System.Drawing.Point(220, 20)
+$rbRepo.Size = New-Object System.Drawing.Size(200, 20)
+$rbRepo.ForeColor = $ColorText
+$rbRepo.Add_Click({ Set-AssetMode "repo" })
+$grpAssetMode.Controls.Add($rbRepo)
+
+$rbOnline = New-Object System.Windows.Forms.RadioButton
+$rbOnline.Text = "Online Simulation (current)"
+$rbOnline.Location = New-Object System.Drawing.Point(10, 45)
+$rbOnline.Size = New-Object System.Drawing.Size(200, 20)
+$rbOnline.ForeColor = $ColorText
+$rbOnline.Checked = $true
+$rbOnline.Add_Click({ Set-AssetMode "online" })
+$grpAssetMode.Controls.Add($rbOnline)
+
+# Build Buttons
+$btnBuildLocal = New-Object System.Windows.Forms.Button
+$btnBuildLocal.Text = "BUILD`n(Local Only)"
+$btnBuildLocal.Location = New-Object System.Drawing.Point(10, 200)
+$btnBuildLocal.Size = New-Object System.Drawing.Size(130, 40)
+$btnBuildLocal.FlatStyle = "Flat"
+$btnBuildLocal.BackColor = $ColorButton
+$btnBuildLocal.ForeColor = $ColorSuccess
+$btnBuildLocal.Font = New-Object System.Drawing.Font("Segoe UI", 9)
+$btnBuildLocal.Add_Click({ Start-BackgroundTask { Build-Game-Local } })
+$grpAssetMode.Controls.Add($btnBuildLocal)
+
+$btnBuildRunRepo = New-Object System.Windows.Forms.Button
+$btnBuildRunRepo.Text = "BUILD + RUN`n(Repo Snapshot)"
+$btnBuildRunRepo.Location = New-Object System.Drawing.Point(150, 200)
+$btnBuildRunRepo.Size = New-Object System.Drawing.Size(130, 40)
+$btnBuildRunRepo.FlatStyle = "Flat"
+$btnBuildRunRepo.BackColor = $ColorButton
+$btnBuildRunRepo.ForeColor = $ColorAccent
+$btnBuildRunRepo.Font = New-Object System.Drawing.Font("Segoe UI", 9)
+$btnBuildRunRepo.Add_Click({ Start-BackgroundTask { Run-Game-Repo } })
+$grpAssetMode.Controls.Add($btnBuildRunRepo)
+
+$btnRunOnline = New-Object System.Windows.Forms.Button
+$btnRunOnline.Text = "RUN`n(Online Sim)"
+$btnRunOnline.Location = New-Object System.Drawing.Point(290, 200)
+$btnRunOnline.Size = New-Object System.Drawing.Size(130, 40)
+$btnRunOnline.FlatStyle = "Flat"
+$btnRunOnline.BackColor = $ColorButton
+$btnRunOnline.ForeColor = $ColorText
+$btnRunOnline.Font = New-Object System.Drawing.Font("Segoe UI", 9)
+$btnRunOnline.Add_Click({ Start-BackgroundTask { Run-Game-Online } })
+$grpAssetMode.Controls.Add($btnRunOnline)
+
+$btnClean = New-Object System.Windows.Forms.Button
+$btnClean.Text = "Clean Project"
+$btnClean.Location = New-Object System.Drawing.Point(25, 200)
+$btnClean.Size = New-Object System.Drawing.Size(120, 30)
+$btnClean.FlatStyle = "Flat"
+$btnClean.BackColor = $ColorButton
+$btnClean.ForeColor = $ColorError
+$btnClean.Add_Click({ Start-BackgroundTask { Clean-Project } })
+$form.Controls.Add($btnClean)
+
+$btnLore = New-Object System.Windows.Forms.Button
+$btnLore.Text = "Export Lore Pack"
+$btnLore.Location = New-Object System.Drawing.Point(160, 200)
+$btnLore.Size = New-Object System.Drawing.Size(200, 30)
+$btnLore.FlatStyle = "Flat"
+$btnLore.BackColor = $ColorButton
+$btnLore.ForeColor = $ColorAccent
+$btnLore.Font = New-Object System.Drawing.Font("Segoe UI", 9)
+$btnLore.Add_Click({ Start-BackgroundTask { Export-LorePack } })
+$form.Controls.Add($btnLore)
 
 $btnOpen = New-Object System.Windows.Forms.Button
 
@@ -422,8 +641,8 @@ try {
 } catch {
     $btnOpen.Text = "OPEN"
 }
-$btnOpen.Location = New-Object System.Drawing.Point(425, 90)
-$btnOpen.Size = New-Object System.Drawing.Size(40, 50)
+$btnOpen.Location = New-Object System.Drawing.Point(425, 200)
+$btnOpen.Size = New-Object System.Drawing.Size(40, 30)
 $btnOpen.FlatStyle = "Flat"
 $btnOpen.BackColor = $ColorButton
 $btnOpen.ForeColor = $ColorText
@@ -431,38 +650,17 @@ $btnOpen.Font = New-Object System.Drawing.Font("Segoe UI", 14)
 $btnOpen.Add_Click({ Open-BuildFolder })
 $form.Controls.Add($btnOpen)
 
-$btnClean = New-Object System.Windows.Forms.Button
-$btnClean.Text = "Clean Project"
-$btnClean.Location = New-Object System.Drawing.Point(25, 150)
-$btnClean.Size = New-Object System.Drawing.Size(120, 30)
-$btnClean.FlatStyle = "Flat"
-$btnClean.BackColor = $ColorButton
-$btnClean.ForeColor = $ColorError
-$btnClean.Add_Click({ Start-BackgroundTask { Clean-Project } })
-$form.Controls.Add($btnClean)
-
-$btnLore = New-Object System.Windows.Forms.Button
-$btnLore.Text = "Export Lore Pack"
-$btnLore.Location = New-Object System.Drawing.Point(160, 150)
-$btnLore.Size = New-Object System.Drawing.Size(200, 30)
-$btnLore.FlatStyle = "Flat"
-$btnLore.BackColor = $ColorButton
-$btnLore.ForeColor = $ColorAccent
-$btnLore.Font = New-Object System.Drawing.Font("Segoe UI", 9)
-$btnLore.Add_Click({ Start-BackgroundTask { Export-LorePack } })
-$form.Controls.Add($btnLore)
-
 # Progress
 $lblProgress = New-Object System.Windows.Forms.Label
 $lblProgress.Text = "Ready."
 $lblProgress.Font = New-Object System.Drawing.Font("Segoe UI", 9)
 $lblProgress.ForeColor = $ColorText
 $lblProgress.AutoSize = $true
-$lblProgress.Location = New-Object System.Drawing.Point(25, 185)
+$lblProgress.Location = New-Object System.Drawing.Point(25, 240)
 $form.Controls.Add($lblProgress)
 
 $progressBar = New-Object System.Windows.Forms.ProgressBar
-$progressBar.Location = New-Object System.Drawing.Point(25, 205)
+$progressBar.Location = New-Object System.Drawing.Point(25, 260)
 $progressBar.Size = New-Object System.Drawing.Size(435, 14)
 $progressBar.Style = "Blocks"
 $progressBar.Value = 0
@@ -473,8 +671,8 @@ $txtOutput = New-Object System.Windows.Forms.TextBox
 $txtOutput.Multiline = $true
 $txtOutput.ReadOnly = $true
 $txtOutput.ScrollBars = "Vertical"
-$txtOutput.Location = New-Object System.Drawing.Point(25, 230)
-$txtOutput.Size = New-Object System.Drawing.Size(435, 170)
+$txtOutput.Location = New-Object System.Drawing.Point(25, 285)
+$txtOutput.Size = New-Object System.Drawing.Size(435, 115)
 $txtOutput.BackColor = $ColorPanel
 $txtOutput.ForeColor = $ColorText
 $txtOutput.Font = New-Object System.Drawing.Font("Consolas", 9)
