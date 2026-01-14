@@ -21,6 +21,7 @@ We've added high-fidelity textures for several key lore blocks:
 - **Veinstone:** Resonant stone from the deep.
 - **Veilglass:** Translucent barriers between realms.
 - **Resonance Cores:** The heart of Waygate networks.
+- **Enhanced Gravestone:** AI-generated texture with cross on back, dirt pile, and R.I.P. inscription for realistic cemetery appearance.
 
 ### 🔄 Engine Synchronization
 To ensure a seamless update experience, we have aligned the versioning of both the game engine and the asset packs to **Version 6**. This major skip allows us to maintain a single, clear source of truth for all project files.
