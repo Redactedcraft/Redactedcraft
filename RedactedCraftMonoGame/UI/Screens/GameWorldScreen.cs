@@ -668,7 +668,7 @@ public sealed class GameWorldScreen : IScreen, IMouseCaptureScreen
             // Create/generate chunks lazily here (per-frame budget) instead of in UpdateActiveChunks.
             var chunk = _world.GetOrCreateChunk(coord);
 
-            var mesh = VoxelMesherGreedy.BuildChunkMesh(_world, chunk, _atlas);
+            var mesh = VoxelMesherGreedy.BuildChunkMesh(_world, chunk, _atlas, _log);
             if (!ValidateMesh(mesh))
             {
                 if (!_loggedInvalidChunkMesh)
@@ -1470,7 +1470,11 @@ public sealed class GameWorldScreen : IScreen, IMouseCaptureScreen
         device.RasterizerState = RasterizerState.CullNone;
         var forward = _player.Forward;
         var up = Vector3.Up;
-        _handRenderer.Draw(view, proj, _player.Position + _player.HeadOffset, forward, up, _atlas, _inventory.SelectedId, _blockModel);
+        var heldId = _inventory.SelectedId;
+        var heldModel = _blockModel;
+        if (heldId != BlockId.Air && BlockRegistry.Get(heldId).HasCustomModel)
+            heldModel = BlockModel.GetModel(heldId, _log);
+        _handRenderer.Draw(view, proj, _player.Position + _player.HeadOffset, forward, up, _atlas, heldId, heldModel);
         device.DepthStencilState = DepthStencilState.Default;
         device.RasterizerState = prevRaster;
     }

@@ -97,11 +97,15 @@ public sealed class BlockIconCache : IDisposable
         _device.BlendState = BlendState.AlphaBlend;
         _device.SamplerStates[0] = SamplerState.PointClamp;
 
-        var mesh = _model.BuildMesh(_atlas, id);
+        var model = _model;
+        if (BlockRegistry.Get(id).HasCustomModel && _log != null)
+            model = BlockModel.GetModel(id, _log);
+
+        var mesh = model.BuildMesh(_atlas, id);
         var view = Matrix.CreateLookAt(new Vector3(0f, 0f, 2.2f), Vector3.Zero, Vector3.Up);
         var projection = Matrix.CreatePerspectiveFieldOfView(MathHelper.ToRadians(30f), 1f, 0.1f, 10f);
 
-        if (!_model.TryGetDisplayTransform(context, out var display))
+        if (!model.TryGetDisplayTransform(context, out var display))
         {
             display = Matrix.CreateScale(0.5f) *
                       Matrix.CreateRotationX(MathHelper.ToRadians(25f)) *

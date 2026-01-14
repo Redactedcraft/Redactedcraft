@@ -1,9 +1,6 @@
-# Implementation Notes: Nullblock Bedrock + Safe Byte IDs (LorePack v1.1c)
+# Implementation Notes: Nullblock + Safe Byte IDs (LorePack v1.1c)
 
-This pack is **lore-only** for Nullblock and Artificer’s Workbench (they already exist in-game).
-However, the pack requires two engine behaviors:
-
-## A) Nullblock as bedrock (worldgen)
+## A) Nullblock as the final layer (worldgen)
 - Force `Nullblock` at **y == 0** everywhere.
 - Apply after terrain/ore placement so it cannot be replaced.
 - If chunks can be regenerated/retrogen, apply during those passes too.

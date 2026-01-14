@@ -19,14 +19,14 @@ public sealed class GitHubReleaseClient
 
     public async Task<GitHubRelease?> FetchLatestReleaseAsync(CancellationToken ct)
     {
-        var url = "https://api.github.com/repos/Redacted480/Redactedcraft-Assets/releases/latest";
+        var url = "https://api.github.com/repos/Redactedcraft/Assets/releases/latest";
         return await FetchReleaseAsync(url, ct);
     }
 
     public async Task<GitHubRelease?> FetchReleaseByTagAsync(string tag, CancellationToken ct)
     {
         var safeTag = Uri.EscapeDataString(tag);
-        var url = $"https://api.github.com/repos/Redacted480/Redactedcraft-Assets/releases/tags/{safeTag}";
+        var url = $"https://api.github.com/repos/Redactedcraft/Assets/releases/tags/{safeTag}";
         return await FetchReleaseAsync(url, ct);
     }
 

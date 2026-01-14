@@ -4,13 +4,13 @@ namespace RedactedCraftMonoGame.Core;
 
 public static class AssetResolver
 {
-    public static string Resolve(string relativePath) => Paths.ResolveAssetPath(relativePath);
+    public static string Resolve(string relativePath) => Path.Combine(Paths.GetAssetsDir(), relativePath);
 
     public static bool TryResolve(string relativePath, out string fullPath)
     {
-        fullPath = Paths.ResolveAssetPath(relativePath);
+        fullPath = Path.Combine(Paths.GetAssetsDir(), relativePath);
         return File.Exists(fullPath);
     }
 
-    public static string DescribeInstallLocation() => Paths.AssetsDir;
+    public static string DescribeInstallLocation() => Paths.GetAssetsDir();
 }

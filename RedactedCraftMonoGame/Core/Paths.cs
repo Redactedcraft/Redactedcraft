@@ -23,17 +23,39 @@ public static class Paths
     public static string AssetsDir =>
         Path.Combine(RootDir, "Assets");
 
+    /// <summary>
+    /// Local development assets directory for asset viewer testing.
+    /// Used when REDACTEDCRAFT_LOCAL_ASSETS environment variable is set.
+    /// </summary>
+    public static string LocalAssetsDir =>
+        Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "Defaults", "Assets");
+
+    /// <summary>
+    /// Returns the appropriate assets directory based on environment.
+    /// Uses local development assets when REDACTEDCRAFT_LOCAL_ASSETS is set,
+    /// otherwise uses the standard Documents folder assets.
+    /// </summary>
+    public static string GetAssetsDir()
+    {
+        var localAssetsOverride = Environment.GetEnvironmentVariable("REDACTEDCRAFT_LOCAL_ASSETS");
+        if (!string.IsNullOrWhiteSpace(localAssetsOverride))
+        {
+            return LocalAssetsDir;
+        }
+        return AssetsDir;
+    }
+
     public static string TexturesDir =>
-        Path.Combine(AssetsDir, "textures");
+        Path.Combine(GetAssetsDir(), "textures");
 
     public static string MenuTexturesDir =>
-        Path.Combine(AssetsDir, "textures", "menu");
+        Path.Combine(GetAssetsDir(), "textures", "menu");
 
     public static string BlocksTexturesDir =>
-        Path.Combine(AssetsDir, "textures", "blocks");
+        Path.Combine(GetAssetsDir(), "textures", "blocks");
 
     public static string LowQualityBlocksTexturesDir =>
-        Path.Combine(AssetsDir, "textures", "blocks_low");
+        Path.Combine(GetAssetsDir(), "textures", "blocks_low");
 
     public static string BlocksAtlasPath =>
         Path.Combine(TexturesDir, "blocks_cubenet_atlas.png");
@@ -96,6 +118,7 @@ public static class Paths
             Directory.CreateDirectory(TexturesDir);
             Directory.CreateDirectory(MenuTexturesDir);
             Directory.CreateDirectory(BlocksTexturesDir);
+            Directory.CreateDirectory(Path.Combine(AssetsDir, "Models", "Blocks"));
 
             WarnIfLegacyAssetFoldersExist(log);
         }

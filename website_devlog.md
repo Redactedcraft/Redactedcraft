@@ -6,7 +6,7 @@ categories: [update, lore, features]
 
 The **Artificer Update** is here! This major release (v6.0.0) consolidates all assets and features into a unified, high-performance voxel experience. 🚀
 
-### 🪨 Nullblock (Bedrock)
+### 🪨 Nullblock
 The world's final layer is now canonically **Nullblock**. It is unbreakable in Survival mode and enforced at the very bottom of the world (Y=0). This provides a stable foundation for the layers of reality above.
 
 ### 📚 Full Lore Integration

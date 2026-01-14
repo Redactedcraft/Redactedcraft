@@ -20,6 +20,7 @@ $ColorError      = [System.Drawing.Color]::IndianRed
 # --- Functions ---
 
 $script:busy = $false
+$global:RC_LastProcessLines = $null
 
 function Pump-Ui() {
     [System.Windows.Forms.Application]::DoEvents()
@@ -69,6 +70,7 @@ function Log($message) {
 
 function Run-Process($program, $cmdArgs) {
     Log "Exec: $program $cmdArgs"
+    $global:RC_LastProcessLines = [System.Collections.Concurrent.ConcurrentQueue[string]]::new()
     $pinfo = New-Object System.Diagnostics.ProcessStartInfo
     $pinfo.FileName = $program
     $pinfo.Arguments = $cmdArgs
@@ -85,10 +87,16 @@ function Run-Process($program, $cmdArgs) {
     $outId = "rc_out_$([Guid]::NewGuid().ToString())"
     $errId = "rc_err_$([Guid]::NewGuid().ToString())"
     $outEvent = Register-ObjectEvent -InputObject $p -EventName OutputDataReceived -SourceIdentifier $outId -Action {
-        if ($EventArgs.Data) { Log $EventArgs.Data }
+        if ($EventArgs.Data) {
+            Log $EventArgs.Data
+            $null = $global:RC_LastProcessLines.Enqueue($EventArgs.Data)
+        }
     }
     $errEvent = Register-ObjectEvent -InputObject $p -EventName ErrorDataReceived -SourceIdentifier $errId -Action {
-        if ($EventArgs.Data) { Log "ERROR: $($EventArgs.Data)" }
+        if ($EventArgs.Data) {
+            Log "ERROR: $($EventArgs.Data)"
+            $null = $global:RC_LastProcessLines.Enqueue($EventArgs.Data)
+        }
     }
 
     $p.Start() | Out-Null
@@ -143,7 +151,23 @@ function Build-Game {
     Set-ProgressMarquee "Building (Release)..."
     $code = Run-Process "dotnet" "build `"$ProjectFile`" -c Release"
 
-    if ($code -eq 0) {
+    $success = $code -eq 0
+    if (-not $success -and $global:RC_LastProcessLines -ne $null) {
+        $hasZeroErrors = $false
+        $hasErrors = $false
+        foreach ($line in $global:RC_LastProcessLines.ToArray()) {
+            if ($line -match '^\s*0 Error\(s\)') { $hasZeroErrors = $true }
+            if ($line -match '^\s*[1-9]\d*\s+Error\(s\)') { $hasErrors = $true }
+            if ($line -match ':\s*error\s') { $hasErrors = $true }
+            if ($line -match 'error\s+CS\d+') { $hasErrors = $true }
+        }
+        if ($hasZeroErrors -and -not $hasErrors) {
+            Log "Build returned non-zero exit code but reported 0 errors; treating as success (warnings only)."
+            $success = $true
+        }
+    }
+
+    if ($success) {
         Log "Build Successful."
         Set-Progress 100 "Build complete."
     } else {
@@ -152,7 +176,7 @@ function Build-Game {
     }
 
     Set-ButtonsEnabled $true $true $true $null $true
-    return $code
+    return $(if ($success) { 0 } else { $code })
 }
 
 function Run-Game {
@@ -161,6 +185,21 @@ function Run-Game {
         Set-Progress 100 "Game launched."
         # Launch detached
         Start-Process "dotnet" -ArgumentList "run --project `"$ProjectFile`" -c Release" -WorkingDirectory $SolutionRoot
+    }
+}
+
+function Run-GameLocal {
+    if ((Build-Game) -eq 0) {
+        Log "Launching Game with Local Assets..."
+        Set-Progress 100 "Game launched with local assets."
+        # Launch detached with local assets environment variable
+        $startInfo = New-Object System.Diagnostics.ProcessStartInfo
+        $startInfo.FileName = "dotnet"
+        $startInfo.Arguments = "run --project `"$ProjectFile`" -c Release"
+        $startInfo.WorkingDirectory = $SolutionRoot
+        $startInfo.UseShellExecute = $false
+        $startInfo.EnvironmentVariables["REDACTEDCRAFT_LOCAL_ASSETS"] = "1"
+        [System.Diagnostics.Process]::Start($startInfo) | Out-Null
     }
 }
 
@@ -356,7 +395,7 @@ function Open-BuildFolder {
 # --- UI Layout ---
 $form = New-Object System.Windows.Forms.Form
 $form.Text = "RedactedCraft Builder"
-$form.Size = New-Object System.Drawing.Size(500, 450)
+$form.Size = New-Object System.Drawing.Size(630, 450)
 $form.StartPosition = "CenterScreen"
 $form.BackColor = $ColorBackground
 $form.FormBorderStyle = "FixedSingle"
@@ -391,9 +430,20 @@ $btnBuild.Font = New-Object System.Drawing.Font("Segoe UI", 10, [System.Drawing.
 $btnBuild.Add_Click({ Start-BackgroundTask { Run-Game } })
 $form.Controls.Add($btnBuild)
 
+$btnLocal = New-Object System.Windows.Forms.Button
+$btnLocal.Text = "LOCAL (Build & Run)`nDev Assets"
+$btnLocal.Location = New-Object System.Drawing.Point(240, 90)
+$btnLocal.Size = New-Object System.Drawing.Size(180, 50)
+$btnLocal.FlatStyle = "Flat"
+$btnLocal.BackColor = $ColorButton
+$btnLocal.ForeColor = [System.Drawing.Color]::Orange
+$btnLocal.Font = New-Object System.Drawing.Font("Segoe UI", 9)
+$btnLocal.Add_Click({ Start-BackgroundTask { Run-GameLocal } })
+$form.Controls.Add($btnLocal)
+
 $btnShip = New-Object System.Windows.Forms.Button
 $btnShip.Text = "PREPARE + RUN`n(Zip + Exe)"
-$btnShip.Location = New-Object System.Drawing.Point(240, 90)
+$btnShip.Location = New-Object System.Drawing.Point(425, 90)
 $btnShip.Size = New-Object System.Drawing.Size(180, 50)
 $btnShip.FlatStyle = "Flat"
 $btnShip.BackColor = $ColorButton
@@ -463,7 +513,7 @@ $form.Controls.Add($lblProgress)
 
 $progressBar = New-Object System.Windows.Forms.ProgressBar
 $progressBar.Location = New-Object System.Drawing.Point(25, 205)
-$progressBar.Size = New-Object System.Drawing.Size(435, 14)
+$progressBar.Size = New-Object System.Drawing.Size(565, 14)
 $progressBar.Style = "Blocks"
 $progressBar.Value = 0
 $form.Controls.Add($progressBar)
@@ -474,7 +524,7 @@ $txtOutput.Multiline = $true
 $txtOutput.ReadOnly = $true
 $txtOutput.ScrollBars = "Vertical"
 $txtOutput.Location = New-Object System.Drawing.Point(25, 230)
-$txtOutput.Size = New-Object System.Drawing.Size(435, 170)
+$txtOutput.Size = New-Object System.Drawing.Size(565, 170)
 $txtOutput.BackColor = $ColorPanel
 $txtOutput.ForeColor = $ColorText
 $txtOutput.Font = New-Object System.Drawing.Font("Consolas", 9)
