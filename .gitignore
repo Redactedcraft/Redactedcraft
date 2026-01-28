@@ -1,0 +1,52 @@
+# Build artifacts
+**/bin/
+**/obj/
+Builds/
+.vs/
+*.user
+*.suo
+*.userosscache
+*.sln.docstates
+*.pdb
+**/eos.local.json
+.aider*
+
+# Builder directories (safe to ignore)
+.builder/
+.builder/staging/
+.builder/releases/
+.plans/
+
+# Documentation files (never commit)
+*.md
+!README.md
+!RELEASE_TEMPLATE.md
+
+# Executable files
+*.exe
+*.dll
+*.so
+*.dylib
+
+# Temporary files
+*.tmp
+*.cache
+*.log
+Thumbs.db
+Desktop.ini
+
+# Development folders
+.vscode/
+_temp/
+_tmp*/
+temp*/
+
+# Archive files
+*.zip
+*.7z
+*.rar
+*.tar.gz
+
+# AI helper files (never commit AI HELPER to repo)
+AI HELPER/
+.ai-helper*/

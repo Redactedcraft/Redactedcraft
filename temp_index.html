@@ -1,0 +1,1401 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>LatticeVeil | Official Site</title>
+    <link href="https://fonts.googleapis.com/css2?family=Press+Start+2P&family=VT323&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css">
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js">
+        function openFaction(evt, factionId) {
+            const container = evt.currentTarget.parentElement.parentElement;
+            container.querySelectorAll(".faction-content").forEach(c => c.classList.remove("active"));
+            container.querySelectorAll(".faction-btn").forEach(b => b.classList.remove("active"));
+            document.getElementById(factionId).classList.add("active");
+            evt.currentTarget.classList.add("active");
+        }
+
+    </script>
+    <style>
+        :root {
+            --primary: #4e9a06;
+            --primary-dark: #3a7304;
+            --bg-dark: #1a1a1a;
+            --panel-bg: #2d2d2d;
+            --text-light: #f0f0f0;
+            --accent: #e9b96e;
+            --tab-inactive: #444;
+        }
+
+        * {
+            box-sizing: border-box;
+        }
+
+        body {
+            margin: 0;
+            font-family: 'VT323', monospace;
+            background-color: var(--bg-dark);
+            color: var(--text-light);
+            font-size: 1.2rem;
+            line-height: 1.6;
+            user-select: none; /* Prevents blue selection highlight globally */
+            -webkit-user-select: none;
+            -moz-user-select: none;
+            -ms-user-select: none;
+        }
+
+        img {
+            -webkit-user-drag: none; /* Prevents image dragging ghosting */
+            user-select: none;
+            outline: none;
+        }
+
+        h1, h2, h3 {
+            font-family: 'Press Start 2P', cursive;
+            text-transform: uppercase;
+            color: var(--accent);
+        }
+
+        .container {
+            max-width: 1100px;
+            margin: 0 auto;
+            padding: 20px;
+        }
+
+        header {
+            height: 30vh;
+            background: linear-gradient(rgba(0,0,0,0.6), rgba(0,0,0,0.6)), url('assets/img/hero_bg.png');
+            background-size: cover;
+            background-position: center;
+            image-rendering: pixelated;
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
+            align-items: center;
+            text-align: center;
+            border-bottom: 8px solid var(--primary);
+        }
+
+        .logo {
+            image-rendering: pixelated;
+            max-width: 240px;
+            margin-bottom: 10px;
+        }
+
+        .tabs-nav {
+            display: flex;
+            justify-content: center;
+            background: #111;
+            padding: 10px 0;
+            position: sticky;
+            top: 0;
+            z-index: 100;
+            border-bottom: 4px solid var(--primary-dark);
+            flex-wrap: wrap;
+        }
+
+        .tab-link {
+            font-family: 'Press Start 2P', cursive;
+            font-size: 0.6rem;
+            color: #888;
+            padding: 12px 15px;
+            cursor: pointer;
+            text-decoration: none;
+            border: none;
+            background: none;
+            transition: color 0.2s;
+        }
+
+        .tab-link:hover { color: var(--text-light); }
+        .tab-link.active { color: var(--primary); border-bottom: 4px solid var(--primary); }
+
+        /* Sub-navigation for Dev Logs */
+        .sub-nav {
+            display: flex;
+            justify-content: center;
+            gap: 20px;
+            margin-bottom: 30px;
+            background: #222;
+            padding: 10px;
+            border: 2px dashed #444;
+        }
+
+        .sub-link {
+            font-family: 'Press Start 2P', cursive;
+            font-size: 0.55rem;
+            color: #666;
+            padding: 8px 12px;
+            cursor: pointer;
+            border: 2px solid transparent;
+            background: none;
+        }
+
+        .sub-link:hover { color: #aaa; }
+        .sub-link.active {
+            color: var(--accent);
+            border-color: var(--accent);
+            background: #111;
+        }
+
+        .tab-content { display: none; padding: 40px 0; animation: fadeIn 0.3s; }
+        .tab-content.active { display: block; }
+
+        .sub-content { display: none; animation: fadeIn 0.2s; }
+        .sub-content.active { display: block; }
+
+        @keyframes fadeIn { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: translateY(0); } }
+
+        .category-title {
+            border-left: 10px solid var(--primary);
+            padding-left: 15px;
+            margin: 40px 0 20px 0;
+            font-size: 1.2rem;
+        }
+
+        .block-gallery {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+            gap: 25px;
+        }
+
+        .block-item {
+            background: #333;
+            background-image: linear-gradient(45deg, #2a2a2a 25%, transparent 25%), 
+                              linear-gradient(-45deg, #2a2a2a 25%, transparent 25%), 
+                              linear-gradient(45deg, transparent 75%, #2a2a2a 75%), 
+                              linear-gradient(-45deg, transparent 75%, #2a2a2a 75%);
+            background-size: 20px 20px;
+            background-position: 0 0, 0 10px, 10px -10px, -10px 0px;
+            padding: 20px;
+            border: 4px solid #444;
+            text-align: center;
+            cursor: pointer;
+            transition: all 0.1s ease;
+            box-shadow: 6px 6px 0px #000;
+        }
+
+        .block-item:hover { transform: translate(-2px, -2px); box-shadow: 8px 8px 0px #000; border-color: var(--primary); }
+        .block-item img { width: 128px; height: 128px; image-rendering: pixelated; margin-bottom: 15px; }
+        .block-item span { display: block; font-family: 'Press Start 2P'; font-size: 0.7rem; color: var(--accent); }
+
+        .log-entry {
+            background: var(--panel-bg);
+            border: 4px solid #444;
+            margin-bottom: 40px;
+            box-shadow: 8px 8px 0px #000;
+            overflow: hidden;
+        }
+
+        .log-header {
+            background: #111;
+            padding: 15px 25px;
+            border-bottom: 4px solid var(--primary);
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            flex-wrap: wrap;
+        }
+
+        .log-header h3 { margin: 0; font-size: 0.9rem; }
+        .log-date { font-family: 'Press Start 2P'; font-size: 0.6rem; color: var(--primary); }
+
+        .log-body { padding: 25px; }
+        .log-image { 
+            width: 100%; 
+            max-height: 300px; 
+            object-fit: cover; 
+            image-rendering: pixelated; 
+            border-bottom: 4px solid #444;
+        }
+
+        #three-canvas { width: 100%; height: 500px; cursor: move; }
+
+        .modal {
+            display: none;
+            position: fixed;
+            z-index: 1000;
+            left: 0; top: 0; width: 100%; height: 100%;
+            background-color: rgba(0,0,0,0.9);
+            justify-content: center;
+            align-items: center;
+            flex-direction: column;
+            cursor: default;
+            user-select: none;
+        }
+
+        .modal-content { 
+            width: 512px; 
+            height: 512px; 
+            image-rendering: pixelated; 
+            background-color: transparent;
+            border: none;
+            outline: none;
+            object-fit: contain;
+            display: block;
+            user-select: none;
+            -webkit-user-drag: none;
+            caret-color: transparent; /* Hides cursor if accidentally focused */
+        }
+
+        #three-container {
+            width: 512px;
+            height: 512px;
+            display: none; /* Shown via JS */
+            cursor: grab;
+        }
+        #three-container:active { cursor: grabbing; }
+
+        .modal-view-toggle {
+            display: flex;
+            gap: 10px;
+            margin-bottom: 15px;
+        }
+
+        .view-btn {
+            background: #444;
+            border: 2px solid #666;
+            color: #fff;
+            padding: 5px 15px;
+            font-family: 'Press Start 2P';
+            font-size: 0.6rem;
+            cursor: pointer;
+        }
+        .view-btn.active {
+            background: var(--primary);
+            border-color: var(--text-light);
+        }
+
+        .modal-info { text-align: center; margin-top: 20px; padding: 0 20px; max-width: 600px; }
+        .modal-info h3 { margin: 0; color: var(--accent); font-size: 2rem; }
+        .modal-info p { color: #ccc; font-size: 1.5rem; }
+        .close-modal { position: absolute; top: 20px; right: 30px; font-size: 40px; cursor: pointer; color: white; }
+
+        .download-btn {
+            display: inline-block;
+            margin-top: 15px;
+            padding: 10px 20px;
+            background: var(--primary);
+            color: #fff;
+            text-decoration: none;
+            font-family: 'Press Start 2P', cursive;
+            font-size: 0.7rem;
+            border: 2px solid var(--text-light);
+            cursor: pointer;
+            transition: background 0.2s;
+            outline: none;
+        }
+        .download-btn:hover { background: var(--primary-dark); }
+
+        .social-links { display: flex; gap: 20px; margin-top: 20px; flex-wrap: wrap; }
+        .social-btn {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            padding: 12px 24px;
+            background: #333;
+            border: 4px solid #444;
+            color: white;
+            text-decoration: none;
+            font-family: 'Press Start 2P';
+            font-size: 0.7rem;
+            box-shadow: 4px 4px 0px #000;
+        }
+        .social-btn.youtube:hover { background: #FF0000; }
+        .social-btn.twitch:hover { background: #9146FF; }
+        .social-btn.instagram:hover { background: #E1306C; }
+
+        /* New Feature Grid Styles */
+        .feature-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+            gap: 30px;
+            margin: 40px 0;
+        }
+
+        .feature-card {
+            background: var(--panel-bg);
+            border: 4px solid #444;
+            padding: 20px;
+            box-shadow: 6px 6px 0px #000;
+            transition: transform 0.2s;
+        }
+
+        .feature-card:hover {
+            transform: translateY(-5px);
+            border-color: var(--primary);
+        }
+
+        .feature-icon {
+            font-size: 2rem;
+            color: var(--accent);
+            margin-bottom: 15px;
+        }
+
+        .code-block {
+            background: #111;
+            border-left: 4px solid var(--primary);
+            padding: 15px;
+            margin-top: 15px;
+            font-family: 'Courier New', monospace;
+            font-size: 0.8rem;
+            color: #ccc;
+            overflow-x: auto;
+            white-space: pre;
+        }
+
+        .code-keyword { color: #d7ba7d; }
+        .code-type { color: #4ec9b0; }
+        .code-string { color: #ce9178; }
+        .code-comment { color: #6a9955; }
+
+        .hero-section {
+            text-align: center;
+            margin-bottom: 50px;
+            border-bottom: 4px solid #333;
+            padding-bottom: 40px;
+        }
+
+        pre { background: #000; padding: 20px; border-radius: 5px; overflow-x: auto; border-left: 5px solid var(--primary); font-family: 'Courier New', Courier, monospace; font-size: 0.9rem; }
+        footer { text-align: center; padding: 40px; background: #111; font-size: 0.9rem; color: #666; margin-top: 50px; }
+        footer a { color: var(--primary); text-decoration: none; margin: 0 10px; }
+        .btn { display: inline-block; background-color: var(--primary); color: white; padding: 12px 24px; text-decoration: none; font-family: 'Press Start 2P', cursive; font-size: 0.7rem; border: 4px solid var(--primary-dark); box-shadow: 4px 4px 0px #000; }
+        #vrIcon {
+            display: none;
+            position: fixed;
+            bottom: 20px;
+            right: 20px;
+            z-index: 1000;
+            background: #4e9a06;
+            color: white;
+            border: 4px solid white;
+            padding: 15px;
+            border-radius: 50%;
+            cursor: pointer;
+            box-shadow: 0 0 15px rgba(78, 154, 6, 0.5);
+            transition: transform 0.2s;
+        }
+        #vrIcon:hover { transform: scale(1.1); }
+        #vrIcon i { font-size: 24px; }
+
+    
+        #lore ul {
+            display: inline-block;
+            text-align: left;
+            margin: 0 auto 20px auto;
+        }
+        #lore blockquote {
+            margin: 20px auto;
+            max-width: 80%;
+        }
+        #lore .feature-card {
+            margin-left: auto;
+            margin-right: auto;
+        }
+
+    
+        /* Faction Tabs */
+        .faction-tabs {
+            margin: 40px 0;
+            width: 100%;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+        }
+        .faction-nav {
+            display: flex;
+            justify-content: center;
+            gap: 10px;
+            margin-bottom: 20px;
+            flex-wrap: wrap;
+        }
+        .faction-btn {
+            background: #222;
+            border: 2px solid #444;
+            color: #888;
+            padding: 10px 20px;
+            font-family: 'Press Start 2P', cursive;
+            font-size: 0.5rem;
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+        .faction-btn:hover { color: var(--text-light); border-color: var(--primary); }
+        .faction-btn.active {
+            background: var(--primary-dark);
+            color: white;
+            border-color: var(--primary);
+            box-shadow: 4px 4px 0px #000;
+        }
+        .faction-content {
+            display: none;
+            padding: 30px;
+            background: rgba(0,0,0,0.2);
+            border: 2px solid #444;
+            animation: fadeIn 0.3s;
+            width: 100%;
+            max-width: 800px;
+        }
+        .faction-content.active { display: block; }
+        .faction-content h3 { margin-top: 0 !important; font-size: 1.2rem; }
+
+    
+        /* Lore Imagery Styling */
+        #lore img {
+            transition: transform 0.2s ease;
+        }
+        #lore img:hover {
+            transform: scale(1.1);
+        }
+        .lore-hero h2 {
+            font-size: 3rem !important;
+        }
+
+    </style>
+</head>
+<body>
+    <button id="vrIcon" onclick="window.location.href='./vr/'" title="Enter VR (Quest Only)">
+        <i class="fas fa-vr-cardboard"></i>
+    </button>
+
+
+    <header>
+        <img src="assets/img/logo.png" alt="LatticeVeil Logo" class="logo">
+        <p style="font-family: 'Press Start 2P'; font-size: 0.8rem;">Official Developer Portal</p>
+    </header>
+
+    <nav class="tabs-nav">
+        <button class="tab-link active" onclick="openTab(event, 'home')">HOME</button>
+        <button class="tab-link" onclick="openTab(event, 'assets')">TEXTURES & MODELS</button>
+        <button class="tab-link" onclick="openTab(event, 'lore')">LORE</button>
+        <button class="tab-link" onclick="openTab(event, 'coding')">DEV LOG</button>
+        <button class="tab-link" onclick="openTab(event, 'about')">ABOUT ME</button>
+    </nav>
+
+    <div class="container"> 
+        
+        <!-- HOME TAB -->
+        <div id="home" class="tab-content active">
+            
+            <div class="hero-section">
+                <h2>The Art of the Pixel</h2>
+                <p style="max-width: 700px; margin: 0 auto 30px auto;">
+                    LatticeVeil is an experimental voxel project focused on performance and aesthetic clarity. 
+                    Built from scratch in C# using MonoGame, it pushes the boundaries of what a solo dev engine can do.
+                </p>
+                <a href="https://github.com/LatticeVeil/LatticeVeil/releases/latest" class="btn">
+                    <i class="fas fa-download"></i> DOWNLOAD GAME (LATEST)
+                </a>
+                <div style="margin-top: 15px;">
+                    <a href="https://github.com/LatticeVeil/LatticeVeil/releases/latest/download/LatticeVeil.exe" style="color: var(--primary); text-decoration: none; font-family: 'Press Start 2P'; font-size: 0.5rem; border-bottom: 2px solid var(--primary); padding-bottom: 2px;">
+                        DIRECT .EXE DOWNLOAD
+                    </a>
+                </div>
+                <br>
+                <small style="color: #666;">Available for Windows x64</small>
+            </div>
+
+            <h3 class="category-title">Engine Architecture</h3>
+            
+            <div class="feature-grid">
+                
+                <!-- Card 1: Terrain -->
+                <div class="feature-card">
+                    <div class="feature-icon"><i class="fas fa-mountain"></i></div>
+                    <h3>ðŸ”ï¸ Infinite Terrain</h3>
+                    <p>Procedural generation using multi-layered Simplex noise for realistic biomes and elevations.</p>
+                    <div class="code-block">
+<span class="code-keyword">var</span> noise = <span class="code-keyword">new</span> <span class="code-type">FastNoise</span>();
+<span class="code-keyword">float</span> height = noise.GetPerlin(x, z);
+<span class="code-comment">// Map noise to voxel types</span>
+<span class="code-keyword">if</span> (height > 0.6f) <span class="code-keyword">return</span> <span class="code-type">Block</span>.Stone;
+<span class="code-keyword">return</span> <span class="code-type">Block</span>.Grass;</div>
+                </div>
+
+                <!-- Card 2: Meshing -->
+                <div class="feature-card">
+                    <div class="feature-icon"><i class="fas fa-cubes"></i></div>
+                    <h3>ðŸ± Greedy Meshing</h3>
+                    <p>Optimized rendering that merges adjacent faces into single quads to reduce GPU draw calls.</p>
+                    <div class="code-block">
+<span class="code-comment">// Combine adjacent faces</span>
+<span class="code-keyword">for</span> (<span class="code-keyword">int</span> i = 0; i < width; i++) {
+  <span class="code-keyword">if</span> (mask[i] != <span class="code-keyword">null</span>) {
+     width++; <span class="code-comment">// Extend quad</span>
+  }
+}
+<span class="code-type">Mesh</span>.AddQuad(start, width, height);</div>
+                </div>
+
+                <!-- Card 3: Networking -->
+                <div class="feature-card">
+                    <div class="feature-icon"><i class="fas fa-network-wired"></i></div>
+                    <h3>🪐 EOS Multiplayer</h3>
+                    <p>Built on Epic Online Services for robust P2P networking and seamless lobby management.</p>
+                    <div class="code-block">
+<span class="code-keyword">var</span> options = <span class="code-keyword">new</span> <span class="code-type">JoinSessionOptions</span> {
+  SessionHandle = searchResult
+};
+_eos.Sessions.JoinSession(options, (<span class="code-keyword">ref</span> info) => {
+  <span class="code-type">Logger</span>.Log(<span class="code-string">"Joined Game!"</span>);
+});</div>
+                </div>
+
+            </div>
+
+            <h3 class="category-title">Hosting & Infrastructure</h3>
+            <div class="feature-card" style="margin-top: 20px; border-left: 10px solid #2ea44f;">
+                <div class="feature-icon" style="color: #2ea44f;"><i class="fab fa-github"></i></div>
+                <h3>ðŸ™ Powered by GitHub Pages</h3>
+                <p>
+                    LatticeVeil is proudly hosted on <strong>GitHub Pages</strong>. We chose this infrastructure for three simple reasons:
+                </p>
+                <ul style="list-style: none; padding: 0; margin: 20px 0;">
+                    <li><i class="fas fa-check" style="color: var(--primary);"></i> <strong>Integrated:</strong> Direct synchronization with our source code for instant updates.</li>
+                    <li><i class="fas fa-check" style="color: var(--primary);"></i> <strong>Performance:</strong> High-speed CDN delivery ensured by GitHub's global network.</li>
+                    <li><i class="fas fa-check" style="color: var(--primary);"></i> <strong>Sustainable:</strong> It is <strong>100% Free</strong>, allowing us to keep the project open and accessible without server overhead.</li>
+                </ul>
+            </div>
+
+            <div style="text-align: center; margin-top: 50px;">
+                <a href="https://github.com/latticeveil/Assets/releases" class="btn" style="background: #333; border-color: #666;">
+                    <i class="fas fa-box-open"></i> BROWSE ASSET PACKS
+                </a>
+            </div>
+        </div>
+
+        <!-- TEXTURES TAB -->
+        <div id="assets" class="tab-content">
+            <h2>Standard Block Library</h2>
+            <p>Our textures utilize 16x16 pixel grids with no interpolation, ensuring maximum sharpness.</p>
+            
+            <h3 class="category-title">Natural Resources</h3>
+            <div class="block-gallery" id="nat-gallery"></div>
+
+            <h3 class="category-title">Construction & Utilities</h3>
+            <div class="block-gallery" id="util-gallery"></div>
+
+
+            <h3 class="category-title">Continuist Lore Blocks</h3>
+            <div class="block-gallery" id="lore-gallery"></div>
+
+            <h3 class="category-title">Ores & Precious Minerals</h3>
+            <div class="block-gallery" id="ore-gallery"></div>
+
+            <h3 class="category-title" style="border-color: #666; color: #888;">Legacy Archive: Experimental Designs</h3>
+            <div class="block-gallery" id="legacy-gallery"></div>
+
+            <h3 class="category-title" style="border-color: #444; color: #666;">Legacy Archive: The HD Era (V1)</h3>
+            <div class="block-gallery" id="hd-gallery"></div>
+        </div>
+
+        
+                <div class="model-controls" id="model-buttons"></div>
+            </div>
+        </div>
+
+        <!-- LORE TAB -->
+
+        <div id="lore" class="tab-content" style="text-align: center; display: flex; flex-direction: column; align-items: center;">
+
+            <div class="lore-hero" style="background: linear-gradient(rgba(0,0,0,0.7), rgba(0,0,0,0.7)), url('assets/img/hero_bg.png'); background-size: cover; background-position: center; width: 100%; height: 200px; display: flex; align-items: center; justify-content: center; border: 4px solid var(--primary); margin-bottom: 40px; image-rendering: pixelated;">
+                <h2 style="margin: 0; text-shadow: 4px 4px 0px #000;">THE CONTINUIST PAPERS</h2>
+            </div>
+
+<p><em>The authoritative record of Caelum Prime.</em></p>
+<p>---</p>
+<h3 class="category-title" id="core-principles">Core Principles</h3>
+<h3>The Rule of Three: Frame / Conduit / Limiter</h3>
+<p>Every working system in LatticeVeil reality has three parts:</p>
+<ul>
+<li><strong>Frame</strong> — <em>Where the rule applies.</em> A boundary that defines scope: “Here, and not there.”</li>
+<li><strong>Conduit</strong> — <em>How the rule moves.</em> A path for flow: heat, signal, transit, resonance.</li>
+<li><strong>Limiter</strong> — <em>Where the rule stops.</em> A termination: brake, seal, cap, or refusal.</li>
+</ul>
+<p><strong>Continuist claim:</strong> You can build almost anything if you obey the Rule of Three.</p>
+<p><strong>Observed consequence:</strong> If you skip the limiter, the system can still run—but the “debt” is collected later.</p>
+<p>---</p>
+<h3 class="category-title" id="the-veil-and-the-echo">The Veil and the Echo</h3>
+<h3>The Veil</h3>
+<p>The Veil is the separation between places, states, and routes. Gates and transit systems stretch it.</p>
+<h3>The Echo</h3>
+<p>The Echo is not a demon or a god; it is a phenomenon: <strong>pressure that seeks completion</strong>.</p>
+<p>When a system is incomplete—especially when its limiter is missing—the Echo supplies a counterfeit completion so the system can run.</p>
+<p>That counterfeit always has a cost:</p>
+<ul>
+<li>attention (systems become “noticed”)</li>
+<li>instability (variance grows)</li>
+<li>repetition (loops become easier)</li>
+<li>residue (events and deaths “stick”)</li>
+</ul>
+<p><strong>Continuist field note:</strong> <em>“If a system functions without a limiter, the limiter is not absent. It has merely become external.”</em></p>
+<p>---</p>
+<h3 class="category-title" id="nullrock---nullblock-bottom-law">Nullrock / Nullblock (Bottom Law)</h3>
+
+                    <div style="margin: 20px 0;">
+                        <img src="assets/img/nullrock.png" style="width: 128px; image-rendering: pixelated; border: 4px solid var(--accent); box-shadow: 8px 8px 0px #000;">
+                    </div>
+
+<p>Nullrock is not stone. It is <strong>refusal</strong> made physical: the world’s perfect limiter.</p>
+<p>At the bottom of the world (y==0), the rules stop negotiating.</p>
+<ul>
+<li><strong>Gameplay:</strong> Nullblock is always at `y == 0`. It is <strong>unbreakable in Survival</strong>.</li>
+<li><strong>Lore:</strong> Reaching Nullrock is not reaching bedrock—it's reaching an argument you cannot win.</li>
+</ul>
+<p><strong>Continuist line:</strong> <em>“When you reach Nullrock, you are not at bedrock. You are at refusal.”</em></p>
+<p>---</p>
+<h3 class="category-title" id="main-factions">Main Factions</h3>
+
+<div class="faction-tabs">
+    <div class="faction-nav">
+        <button class="faction-btn active" onclick="openFaction(event, 'continuists')">CONTINUISTS</button>
+        <button class="faction-btn" onclick="openFaction(event, 'veilkeepers')">VEILKEEPERS</button>
+        <button class="faction-btn" onclick="openFaction(event, 'hearthward')">HEARTHWARD</button>
+        <button class="faction-btn" onclick="openFaction(event, 'ascendants')">ASCENDANTS</button>
+        <button class="faction-btn" onclick="openFaction(event, 'echo-faith')">ECHO FAITH</button>
+    </div>
+    <div id="continuists" class="faction-content active">
+        <h3>Continuists - "The Correct Shape of Things"</h3>
+        <ul>
+            <li><strong>Belief:</strong> Reality is buildable if you obey structure.</li>
+            <li><strong>Practice:</strong> Survey, regulation, reproducible craft, documentation, stable stations.</li>
+            <li><strong>How right they are:</strong> <strong>Most correct</strong> relative to the world's underlying rules.</li>
+            <li><strong>Failure mode:</strong> Arrogance; treating people like components.</li>
+        </ul>
+    </div>
+    <div id="veilkeepers" class="faction-content">
+        <h3>Veilkeepers - "Safety Through Sealing"</h3>
+        <ul>
+            <li><strong>Belief:</strong> Most doors should remain closed.</li>
+            <li><strong>Practice:</strong> Seals, containment, forbiddance, procedure, classification.</li>
+            <li><strong>How right they are:</strong> Very right about risk; can become overly restrictive.</li>
+            <li><strong>Failure mode:</strong> Stagnation; preventing progress along with disasters.</li>
+        </ul>
+    </div>
+    <div id="hearthward" class="faction-content">
+        <h3>Hearthward - "Survival Before Theory"</h3>
+        <ul>
+            <li><strong>Belief:</strong> The world is dangerous; safety is communal discipline.</li>
+            <li><strong>Practice:</strong> No gates inside town; salt before sip; listen before digging.</li>
+            <li><strong>How right they are:</strong> Practically right; keeps people alive.</li>
+            <li><strong>Failure mode:</strong> Distrust of necessary advancement.</li>
+        </ul>
+    </div>
+    <div id="ascendants" class="faction-content">
+        <h3>Ascendants - "Power Proves Truth"</h3>
+        <ul>
+            <li><strong>Belief:</strong> Limits are lies; pain is payment.</li>
+            <li><strong>Practice:</strong> Force systems to work; widen paths; sacrifice the body.</li>
+            <li><strong>How right they are:</strong> Wrong long-term; results now, catastrophe later.</li>
+            <li><strong>Failure mode:</strong> Confusing "works now" with "works safely."</li>
+        </ul>
+    </div>
+    <div id="echo-faith" class="faction-content">
+        <h3>Echo Faith - "Meaning in the Pressure"</h3>
+        <ul>
+            <li><strong>Belief:</strong> The Echo speaks; patterns are messages.</li>
+            <li><strong>Practice:</strong> Shrines, repetition, offerings, interpretation.</li>
+            <li><strong>How right:</strong> Occasionally predictive; unreliable.</li>
+            <li><strong>Failure mode:</strong> Romanticizing the phenomenon that feeds on mistakes.</li>
+        </ul>
+    </div>
+</div>
+
+<p>---</p>
+<h3 class="category-title" id="death-and-pattern-residue-continuist-classification">Death and Pattern Residue (Continuist Classification)</h3>
+<p>A person is a <strong>pattern</strong> as well as a body. When the body ends, the pattern may not dissipate cleanly.</p>
+<h3>Class I — Quiet Termination</h3>
+<p>Starvation, ordinary injury, death far from thin places.</p>
+<ul>
+<li><strong>Result:</strong> Pattern dissipates cleanly; little residue.</li>
+</ul>
+<h3>Class II — Violent Termination</h3>
+<p>Falls, drowning, burning, crushing.</p>
+<ul>
+<li><strong>Result:</strong> Sharp residue; the place “remembers” for a time.</li>
+</ul>
+<h3>Class III — Echo-Fed Termination</h3>
+<p>Death while corrupted, during unstable craft, near shrines or repeating failure loops.</p>
+<ul>
+<li><strong>Result:</strong> Pattern sticks; Echo attention increases; events can repeat as phenomena.</li>
+</ul>
+<h3>Class IV — Transit Termination</h3>
+<p>Death during gate travel or routing systems.</p>
+<ul>
+<li><strong>Result:</strong> Misfiled pattern—split, echoed, routed wrong. Veilkeepers fear this most.</li>
+</ul>
+<h3>Class V — Nullrock-Adjacent Termination</h3>
+<p>Death near the bottom law.</p>
+<ul>
+<li><strong>Result:</strong> Forced closure; residue collapses rapidly.</li>
+</ul>
+<p><strong>Continuist line:</strong> <em>“A death without closure leaves a latch undone. The world will swing the door until it breaks.”</em></p>
+<p>---</p>
+<h3 class="category-title" id="the-deep-strata-why-the-world-should-feel-deeper">The Deep Strata (Why the world should feel deeper)</h3>
+<p>Early worlds felt shallow because upper layers are easy to reconstruct.</p>
+<p>Deep layers require:</p>
+<ul>
+<li>support</li>
+<li>ventilation</li>
+<li>limiters</li>
+<li>humility to stop</li>
+</ul>
+<p>Deep places feel different because:</p>
+<ul>
+<li>pressure accumulates</li>
+<li>sound behaves wrong</li>
+<li>repetition becomes easier</li>
+<li>residue lasts longer</li>
+</ul>
+<p><strong>Hearthward diagnostic:</strong> <em>“Listen for quiet.”</em> When quiet vanishes, leave.</p>
+<p>---</p>
+<h3 class="category-title" id="the-mine-networks-abandoned-mines">The Mine Networks (Abandoned Mines)</h3>
+<p>Mines were extraction systems built by people who thought they could outwork reality.</p>
+<h3>Timber Mines (Shallow–Mid)</h3>
+<p>Fast, practical, recent. Wooden supports, simple corridors.</p>
+<ul>
+<li>Abandoned because: resources ran out; collapses increased; “quiet” became rare.</li>
+</ul>
+<h3>Stone-Braced Mines (Mid–Deep)</h3>
+<p>Engineered shafts and rooms. Continuist survey markers common.</p>
+<ul>
+<li>Abandoned because: deeper pressure demanded perfect limiters; perfect limiters were scarce.</li>
+</ul>
+<h3>Echo-Collapsed Mines (Deep)</h3>
+<p>Collapse that doesn’t look natural. Rooms that feel repeated.</p>
+<ul>
+<li>Abandoned because: the mine began to remember the miners.</li>
+</ul>
+<p><strong>Veilkeeper warning:</strong> <em>“Do not name yourself in the deep. Names linger longer than breath.”</em></p>
+<p>---</p>
+<h3 class="category-title" id="important-in-game-anchors-existing-blocks-stations">Important In-Game Anchors (Existing Blocks/Stations)</h3>
+<h3>Artificer’s Workbench (Existing in-game)</h3>
+<p>A Continuist-era station for stable craft. It is the canonical “gatecraft” / regulator station.</p>
+<p><strong>Rule:</strong> This pack references it, but does not provide its texture/asset.</p>
+<h3>Additional Lore Blocks (Texture names)</h3>
+
+                <div style="display: flex; gap: 20px; justify-content: center; margin: 20px 0; flex-wrap: wrap;">
+                    <img src="assets/img/runestone.png" title="Runestone" style="width: 64px; image-rendering: pixelated; border: 2px solid var(--primary);">
+                    <img src="assets/img/veinstone.png" title="Veinstone" style="width: 64px; image-rendering: pixelated; border: 2px solid var(--primary);">
+                    <img src="assets/img/veilglass.png" title="Veilglass" style="width: 64px; image-rendering: pixelated; border: 2px solid var(--primary);">
+                    <img src="assets/img/resonance_core.png" title="Resonance Core" style="width: 64px; image-rendering: pixelated; border: 2px solid var(--primary);">
+                    <img src="assets/img/waybound_frame.png" title="Waybound Frame" style="width: 64px; image-rendering: pixelated; border: 2px solid var(--primary);">
+                    <img src="assets/img/transit_regulator.png" title="Transit Regulator" style="width: 64px; image-rendering: pixelated; border: 2px solid var(--primary);">
+                </div>
+
+<p>These names are canonical for texture references:</p>
+<ul>
+<li>`runestone`</li>
+<li>`veinstone`</li>
+<li>`veilglass`</li>
+<li>`resonance_core`</li>
+<li>`waybound_frame`</li>
+<li>`transit_regulator`</li>
+</ul>
+<h3>Nullblock (Existing in-game)</h3>
+<ul>
+<li>Must exist at y==0 everywhere.</li>
+<li>Unbreakable in Survival.</li>
+</ul>
+<p>---</p>
+<h3 class="category-title" id="tone-guide-for-writing-more-canon-consistent-content">Tone Guide (for writing more canon-consistent content)</h3>
+<ul>
+<li>Continuists: practical, clipped, engineering tone.</li>
+<li>Veilkeepers: warnings, classifications, “seal” language.</li>
+<li>Hearthward: survival rules, community, caution.</li>
+<li>Ascendants: daring, contempt for fear, “pay the price.”</li>
+<li>Echo Faith: patterns, repetition, “the world listens.”</li>
+</ul>
+<p>---</p>
+<h3 class="category-title" id="website-usage-instructions">Website Usage Instructions</h3>
+<p>When updating the website lore page:</p>
+<p>1) Use this pack as the ONLY canon.</p>
+<p>2) Prefer concise headings + callouts.</p>
+<p>3) Link terms (Veil, Echo, Nullrock, Rule of Three) to glossary anchors where available.</p>
+            <div style="margin-top: 50px;">
+                <h3 class="category-title" id="glossary">📚 Glossary</h3>
+                
+<ul>
+<li><strong>Frame:</strong> Boundary defining where a rule applies.</li>
+<li><strong>Conduit:</strong> Path through which a rule flows.</li>
+<li><strong>Limiter:</strong> Termination/stop condition preventing runaway.</li>
+<li><strong>Veil:</strong> Separation between places/states/routes; gates stretch it.</li>
+<li><strong>Echo:</strong> Pressure seeking completion; supplies counterfeit limiters at a cost.</li>
+<li><strong>Residue:</strong> Lingering imprint after events/death; stronger in deep/thin places.</li>
+<li><strong>Nullrock / Nullblock:</strong> Bottom law at y==0; perfect refusal/limiter.</li>
+<li><strong>Thin Place:</strong> Area where repetition and residue accumulate; reality feels “worn.”</li>
+<li><strong>Gatecraft:</strong> Systems that route/transit through the Veil; must have limiters.</li>
+</ul>
+            </div>
+        </div>
+<!-- DEV LOG TAB -->
+        <div id="coding" class="tab-content">
+            <h2>Developer Logs</h2>
+
+            <nav class="sub-nav">
+                <button class="sub-link active" onclick="openSubTab(event, 'log-game')">GAME UPDATES</button>
+                <button class="sub-link" onclick="openSubTab(event, 'log-website')">WEBSITE UPDATES</button>
+            </nav>
+
+            <!-- GAME UPDATES -->
+            <div id="log-game" class="sub-content active">
+                <div class="log-entry">
+                    <div class="log-header">
+                        <h3>📜 The Continuist Papers</h3>
+                        <span class="log-date">JAN 13, 2026</span>
+                    </div>
+                    <div class="log-body">
+                        <p>A massive update to our world documentation! The lore page has been fully populated with the <strong>Continuist Papers</strong>.</p>
+                        <ul>
+                            <li><strong>Rule of Three:</strong> Frame / Conduit / Limiter</li><li><strong>Nullrock:</strong> the world’s perfect limiter at the bottom (refusal made physical)</li><li><strong>The Echo:</strong> pressure that completes incomplete systems—always with a cost</li><li><strong>Deep Strata:</strong> deeper places amplify repetition and residue</li><li><strong>Abandoned Mines:</strong> timber (shallow), stone-braced (mid/deep), echo-collapsed (deep)</li>
+                        </ul>
+                        <p>Dive deep into the history of the Ancient Architects on the <a href="#lore" onclick="openTab(event, 'lore')" style="color: var(--primary);">Lore Page</a>. 📖</p>
+                    </div>
+                </div>
+                
+                
+
+
+                <div class="log-entry">
+                    <div class="log-header">
+                        <h3>🛠️ THE ARTIFICER UPDATE (v6.0.0)</h3>
+                        <span class="log-date">JAN 13, 2026</span>
+                    </div>
+                    <div class="log-body">
+                        <p>The <strong>Artificer Update</strong> is here! This major release (v6.0.0) consolidates all assets and features into a unified, high-performance voxel experience. 🚀</p>
+                        <ul>
+                            <li><strong>🪐¨ Nullblock:</strong> The world's final layer is now canonically Nullblock, unbreakable and enforced at Y=0.</li>
+                            <li><strong>📚 Full Lore Integration:</strong> Discover the secrets of the Ancient Architects with the new inscription and tablet fragment systems.</li>
+                            <li><strong>⚒️ Artificer's Workbench:</strong> A new dedicated station for advanced gatecraft and rule-driven creation.</li>
+                            <li><strong>🧱 New Blocks & Textures:</strong> High-fidelity textures for Runestone, Veinstone, Veilglass, and Resonance Cores.</li>
+                            <li><strong>🔄 Engine Synchronization:</strong> Major version alignment across game and assets for seamless updates.</li>
+                        </ul>
+                        <p>Check out the latest files on the <a href="https://github.com/latticeveil/" style="color: var(--primary);">GitHub Repository</a>. ✨</p>
+                    </div>
+                </div>
+                <div class="log-entry">
+                    <div class="log-header">
+                        <h3>📜 The Continuist Papers - Lore Pack v1.1d</h3>
+                        <span class="log-date">JAN 13, 2026</span>
+                    </div>
+                    <div class="log-body">
+                        <p>A major lore drop focused on the Continuists, the Veil, and the rules that hold the world together. This update ships new lore data, block IDs, and texture sheets while preserving existing worlds.</p>
+                        <ul>
+                            <li><strong>Lore Systems:</strong> inscriptions, fragments, structures, loot tables, and story updates.</li>
+                            <li><strong>World Rule:</strong> Nullblock is enforced at y==0 and cannot be broken in Survival.</li>
+                            <li><strong>Gatecraft:</strong> Artificer's Workbench is the canonical station for advanced recipes.</li>
+                            <li><strong>Textures:</strong> runestone, veinstone, veilglass, resonance core, waybound frame, transit regulator.</li>
+                        </ul>
+                    </div>
+                </div>
+                <div class="log-entry">
+                    <div class="log-header">
+                        <h3>⚡ LatticeVeil v0.1.2 — EOS Recovery Patch</h3>
+                        <span class="log-date">JAN 12, 2026</span>
+                    </div>
+                    <div class="log-body">
+                        <p>Multiplayer reliability has been significantly improved. This patch addresses a race condition where the Epic Online Services (EOS) configuration would sometimes fail to initialize if the remote configuration loaded after the game engine's startup sequence.</p>
+                        <ul>
+                            <li><strong>Dynamic Polling:</strong> Integrated a background system to detect EOS config availability post-startup.</li>
+                            <li><strong>Async Initialization:</strong> Multi-threaded connection logic ensures zero-hang engine responsiveness.</li>
+                            <li><strong>Session Persistence:</strong> Automatic recovery logic keeps your lobby active without requiring a relaunch.</li>
+                        </ul>
+                    </div>
+                </div>
+                <div class="log-entry">
+                    <div class="log-header">
+                        <h3>🔧 Engine: Infrastructure & SDK Cleanup</h3>
+                        <span class="log-date">JAN 12, 2026</span>
+                    </div>
+                    <div class="log-body">
+                        <p>Streamlined the engine's core dependencies and networking infrastructure to improve build stability and connectivity.</p>
+                        <ul>
+                            <li><strong>Service Migration:</strong> Standardized all network traffic through <code>eos-service.onrender.com</code>.</li>
+                            <li><strong>Credential Fallback:</strong> Implemented robust local-to-remote fallback logic for uninterrupted P2P authentication.</li>
+                            <li><strong>SDK Optimization:</strong> Removed redundant SDK binaries to reduce the repository footprint while preserving critical runtime DLLs.</li>
+                        </ul>
+                    </div>
+                </div>
+                <div class="log-entry">
+                    <div class="log-header">
+                        <h3>🛠️ Developer Update: Unified Build Pipeline</h3>
+                        <span class="log-date">JAN 11, 2026</span>
+                    </div>
+                    <div class="log-body">
+                        <p>Revolutionized the development workflow with a new <strong>Unified Build GUI</strong>. The engine now supports automated single-file publishing, integrated project cleanup, and simplified source distribution. We also updated the <strong>ThirdParty SDK</strong> tracking to ensure community builders can compile the game directly from the source zip without missing dependencies.</p>
+                    </div>
+                </div>
+
+                <div class="log-entry">
+                    <div class="log-header">
+                        <h3>🧹 Launcher: Distribution & Asset Skip Logic</h3>
+                        <span class="log-date">JAN 10, 2026</span>
+                    </div>
+                    <div class="log-body">
+                        <p>Refined the launcher's asset synchronization protocol to reduce bandwidth overhead and improve startup times for existing users.</p>
+                        <ul>
+                            <li><strong>Smart Sync:</strong> Improved skipping logic ensures users with the latest assets aren't forced into redundant downloads.</li>
+                            <li><strong>Legacy Cleanup:</strong> Removed the deprecated <code>blocks_cubenet_atlas.png</code> from the mandatory asset manifest.</li>
+                        </ul>
+                    </div>
+                </div>
+
+                <div class="log-entry">
+                    <img src="assets/img/Screenshots_bg.png" class="log-image">
+                    <div class="log-header">
+                        <h3>🖼️ World: Environmental UI Rendering</h3>
+                        <span class="log-date">JAN 10, 2026</span>
+                    </div>
+                    <div class="log-body">
+                        <p>Restored UI consistency by synchronizing environmental backgrounds across all distribution channels. This fix ensures the Screenshots management page correctly renders its backdrop during runtime.</p>
+                    </div>
+                </div>
+
+                <div class="log-entry">
+                    <div class="log-header">
+                        <h3>📡 Multiplayer: EOS Integration Phase I</h3>
+                        <span class="log-date">JAN 05, 2026</span>
+                    </div>
+                    <div class="log-body">
+                        <p>Completed the integration of <strong>Epic Online Services (EOS)</strong>. The engine now supports cross-platform P2P networking, friend lists, and seamless session joining via host codes, alongside the classic LAN discovery system.</p>
+                    </div>
+                </div>
+
+                <div class="log-entry">
+                    <div class="log-header">
+                        <h3>🗺️ World: Advanced Greedy Meshing</h3>
+                        <span class="log-date">DEC 20, 2025</span>
+                    </div>
+                    <div class="log-body">
+                        <p>Implemented an optimized <strong>Greedy Meshing</strong> algorithm. This significantly reduces draw calls by combining adjacent voxel faces into larger quads, resulting in a 400% performance increase in complex terrain.</p>
+                    </div>
+                </div>
+
+                <div class="log-entry">
+                    <div class="log-header">
+                        <h3>🚀 Project Start: MonoGame Architecture</h3>
+                        <span class="log-date">DEC 01, 2025</span>
+                    </div>
+                    <div class="log-body">
+                        <p>Officially transitioned the project to a modern <strong>C# and MonoGame</strong> foundation. This architecture provides superior stability, easier asset management, and a robust platform for future gameplay features.</p>
+                    </div>
+                </div>
+            </div>
+
+
+            <!-- WEBSITE UPDATES -->
+            <div id="log-website" class="sub-content">
+
+                <div class="log-entry">
+                    <div class="log-header">
+                        <h3>🥽 WebXR: Immersive VR Portal Launch</h3>
+                        <span class="log-date">JAN 12, 2026</span>
+                    </div>
+                    <div class="log-body">
+                        <p>Launched an experimental <strong>WebXR Immersive Kiosk</strong>. Meta Quest 2 and 3 users can now explore a virtual voxel space directly from the developer portal, featuring internal navigation and 3D asset previews.</p>
+                    </div>
+                </div>
+
+                <div class="log-entry">
+                    <div class="log-header">
+                        <h3>📱 UX: Touch-Optimized 3D Inspection</h3>
+                        <span class="log-date">JAN 12, 2026</span>
+                    </div>
+                    <div class="log-body">
+                        <p>Optimized the 3D block inspector for mobile browsers. Implemented touch-and-drag gesture support for real-time model rotation, bringing full feature parity between desktop and mobile environments.</p>
+                    </div>
+                </div>
+                <div class="log-entry">
+                    <div class="log-header">
+                        <h3>⚖️ Legal: Privacy & Terms Implementation</h3>
+                        <span class="log-date">JAN 11, 2026</span>
+                    </div>
+                    <div class="log-body">
+                        <p>Added styled pages for the <strong>Privacy Policy</strong> and <strong>Terms of Service</strong>. These pages provide essential transparency regarding EOS integration and data handling, ensuring a compliant foundation for community growth.</p>
+                    </div>
+                </div>
+
+                <div class="log-entry">
+                    <div class="log-header">
+                        <h3>♻️ Assets: Texture Rotation (Artificer Bench)</h3>
+                        <span class="log-date">JAN 11, 2026</span>
+                    </div>
+                    <div class="log-body">
+                        <p>Moved the original <strong>Crafting Table</strong> design to the legacy archive. It has been replaced by the <strong>Artificer Bench</strong> design to better align with the project's evolving lore and technical requirements.</p>
+                    </div>
+                </div>
+
+                <div class="log-entry">
+                    <div class="log-header">
+                        <h3>🖼️ Asset Browser: Massive Preview & UI Overhaul</h3>
+                        <span class="log-date">JAN 11, 2026</span>
+                    </div>
+                    <div class="log-body">
+                        <p>Significantly upgraded the Asset Browser. The texture viewer now features a <strong>massive 512px pixel-perfect preview</strong> with transparency support and integrated download triggers for community creators.</p>
+                    </div>
+                </div>
+
+                <div class="log-entry">
+                    <div class="log-header">
+                        <h3>🧹 Repository: Migration to GitHub Organization</h3>
+                        <span class="log-date">JAN 10, 2026</span>
+                    </div>
+                    <div class="log-body">
+                        <p>Migrated all project repositories to the official <strong>@LatticeVeil</strong> organization. This unified our URL structure to <code>latticeveil.github.io</code> and streamlined our open-source contributor workflow.</p>
+                    </div>
+                </div>
+
+                <div class="log-entry">
+                    <div class="log-header">
+                        <h3>🕯️ Engine: Three.js Model Inspector</h3>
+                        <span class="log-date">JAN 10, 2026</span>
+                    </div>
+                    <div class="log-body">
+                        <p>Integrated <strong>Three.js</strong> to create a real-time web-based 3D model viewer. This tool utilizes the engine's internal UV mapping logic to allow users to preview block designs in 3D directly from the browser.</p>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- ABOUT TAB -->
+        <div id="about" class="tab-content">
+            <h2>Solo Development</h2>
+            <p>LatticeVeil is a passion project developed entirely solo. The goal is to build a modern, high-performance foundation for voxel games that respects the retro aesthetic of the past.</p>
+            
+            <div class="card" style="margin-top: 30px;">
+                <h3>🕯️— Connect with Redacted</h3>
+                <div class="social-links">
+                    <a href="https://www.youtube.com/redacted1" class="social-btn youtube" target="_blank">
+                        <i class="fab fa-youtube"></i> Redacted's YouTube
+                    </a>
+                    <a href="https://www.twitch.tv/redactedreal" class="social-btn twitch" target="_blank">
+                        <i class="fab fa-twitch"></i> Twitch
+                    </a>
+                    <a href="https://www.instagram.com/redactedreal/" class="social-btn instagram" target="_blank">
+                        <i class="fab fa-instagram"></i> Instagram
+                    </a>
+                </div>
+            </div>
+        </div>
+
+    </div>
+
+    <!-- Lightbox -->
+    <div id="textureModal" class="modal">
+        <span class="close-modal" onclick="closeModal()">&times;</span>
+        
+        <div class="modal-view-toggle">
+            <button id="view2D" class="view-btn active" onclick="setViewMode('2D')">2D NET</button>
+            <button id="view3D" class="view-btn" onclick="setViewMode('3D')">3D MODEL</button>
+        </div>
+
+        <img class="modal-content" id="modalImg">
+        <div id="three-container"></div>
+
+        <div class="modal-info">
+            <h3 id="modalName"></h3>
+            <p id="modalDesc"></p>
+            <button id="modalDownload" class="download-btn">
+                <i class="fas fa-download"></i> DOWNLOAD TEXTURE
+            </button>
+        </div>
+    </div>
+
+    <footer>
+        <p>&copy; 2026 LatticeVeil Development Team</p>
+        <p>
+            <a href="privacy.html">Privacy Policy</a> | 
+            <a href="terms.html">Terms of Service</a> | 
+            <a href="https://github.com/latticeveil/">Source Code</a>
+        </p>
+    </footer>
+
+    <script>
+        const textureData = [
+            { id: 'grass', name: 'Grass', cat: 'nat', desc: 'Lush greenery for the surface layer.' },
+            { id: 'dirt', name: 'Dirt', cat: 'nat', desc: 'Standard soil found beneath the grass.' },
+            { id: 'stone', name: 'Stone', cat: 'nat', desc: 'Dense rock forming the world\'s crust.' },
+            { id: 'sand', name: 'Sand', cat: 'nat', desc: 'Fine grains found in deserts and beaches.' },
+            { id: 'gravel', name: 'Gravel', cat: 'nat', desc: 'Loose composite of small rocks.' },
+            { id: 'wood', name: 'Wood', cat: 'nat', desc: 'Raw timber harvested from trees.' },
+            { id: 'leaves', name: 'Leaves', cat: 'nat', desc: 'Translucent foliage from the canopy.' },
+            { id: 'water', name: 'Water', cat: 'nat', desc: 'Fluid life-giving substance of the oceans.' },
+            { id: 'nullrock', name: 'Nullrock', cat: 'nat', desc: 'A mysterious, dark stone found in the void.' },
+            { id: 'plank', name: 'Plank', cat: 'util', desc: 'Refined wood for building structures.' },
+            { id: 'glass', name: 'Glass', cat: 'util', desc: 'Smelted sand, perfect for windows.' },
+            { id: 'artificer_bench', name: 'Artificer Bench', cat: 'util', desc: 'A specialized station for advanced crafting.' },
+            { id: 'runestone', name: 'Runestone', cat: 'lore', desc: 'Continuist carved stone used to anchor rites.' },
+            { id: 'veinstone', name: 'Veinstone', cat: 'lore', desc: 'Dense stone laced with Veil resonance.' },
+            { id: 'veilglass', name: 'Veilglass', cat: 'lore', desc: 'A thin, translucent barrier tuned to the Veil.' },
+            { id: 'resonance_core', name: 'Resonance Core', cat: 'lore', desc: 'The calibrated heart of a Waygate network.' },
+            { id: 'waybound_frame', name: 'Waybound Frame', cat: 'lore', desc: 'Reinforced frame that holds a gate open.' },
+            { id: 'transit_regulator', name: 'Transit Regulator', cat: 'lore', desc: 'Controls timing and stability of gate travel.' },
+            { id: 'chest', name: 'Chest', cat: 'util', desc: 'Storage for your blocks and items.' },
+            { id: 'coal', name: 'Coal', cat: 'ore', desc: 'Common fuel source found in stone layers.' },
+            { id: 'iron', name: 'Iron', cat: 'ore', desc: 'Essential metal for durable equipment.' },
+            { id: 'gold', name: 'Gold', cat: 'ore', desc: 'Rare, heavy metal for the elite.' },
+            { id: 'diamond', name: 'Diamond', cat: 'ore', desc: 'The hardest and most precious material.' },
+            { id: 'missing', name: 'Missing Texture', cat: 'legacy', desc: 'The iconic purple and black checkerboard fallback for missing assets.' },
+            { id: 'crafting_table', name: 'Crafting Table', cat: 'legacy', desc: 'The original workstation, now replaced by the Artificer Bench.' },
+            { id: 'legacy/grass_patchy', name: 'Patchy Grass', cat: 'legacy', desc: 'Experimental version with sparse grass coverage.' },
+            { id: 'legacy/hd/grass', name: 'HD Grass', cat: 'hd', desc: 'Original high-resolution grass from V1.' },
+            { id: 'legacy/hd/dirt', name: 'HD Dirt', cat: 'hd', desc: 'Original high-resolution dirt from V1.' },
+            { id: 'legacy/hd/stone', name: 'HD Stone', cat: 'hd', desc: 'Original high-resolution stone from V1.' }
+        ];
+
+        function populateGalleries() {
+            textureData.forEach(b => {
+                const container = document.getElementById(`${b.cat}-gallery`);
+                if (!container) return;
+                const div = document.createElement('div');
+                div.className = 'block-item';
+                div.onclick = () => openModal(`assets/img/${b.id}.png`, b.name, b.desc);
+                div.innerHTML = `<img src="assets/img/${b.id}.png"><span>${b.name}</span>`;
+                container.appendChild(div);
+            });
+        }
+
+        function openTab(evt, tabName) {
+            document.querySelectorAll(".tab-content").forEach(c => {
+                c.style.display = "none";
+                c.classList.remove("active");
+            });
+            document.querySelectorAll(".tab-link").forEach(l => l.classList.remove("active"));
+            document.getElementById(tabName).style.display = "block";
+            document.getElementById(tabName).classList.add("active");
+            evt.currentTarget.classList.add("active");
+            
+        }
+
+        function openSubTab(evt, subName) {
+            document.querySelectorAll(".sub-content").forEach(c => {
+                c.style.display = "none";
+                c.classList.remove("active");
+            });
+            document.querySelectorAll(".sub-link").forEach(l => l.classList.remove("active"));
+            document.getElementById(subName).style.display = "block";
+            document.getElementById(subName).classList.add("active");
+            evt.currentTarget.classList.add("active");
+        }
+
+        // --- 3D Viewer Logic ---
+        let scene, camera, renderer, cube;
+        let is3DInitialized = false;
+
+        function init3D() {
+            const container = document.getElementById('three-container');
+            scene = new THREE.Scene();
+            camera = new THREE.PerspectiveCamera(75, 1, 0.1, 1000);
+            renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+            renderer.setSize(512, 512);
+            renderer.setPixelRatio(window.devicePixelRatio);
+            container.appendChild(renderer.domElement);
+
+            const geometry = new THREE.BoxGeometry(1, 1, 1);
+            
+            // Face order in THREE.BoxGeometry: 
+            // 0: PosX (+x), 1: NegX (-x), 2: PosY (+y), 3: NegY (-y), 4: PosZ (+z), 5: NegZ (-z)
+            
+            // Tile indices from CubeNetAtlas mapping:
+            // PosX: (1,0), NegX: (1,1), PosY: (0,0), NegY: (2,0), PosZ: (0,1), NegZ: (2,1)
+            const tiles = [
+                {x: 1, y: 0}, // PosX
+                {x: 1, y: 1}, // NegX
+                {x: 0, y: 0}, // PosY
+                {x: 2, y: 0}, // NegY
+                {x: 0, y: 1}, // PosZ
+                {x: 2, y: 1}  // NegZ
+            ];
+
+            const uvAttr = geometry.attributes.uv;
+            
+            for (let i = 0; i < 6; i++) {
+                const u0 = tiles[i].x / 3;
+                const v0 = 1 - (tiles[i].y + 1) / 2;
+                const u1 = (tiles[i].x + 1) / 3;
+                const v1 = 1 - tiles[i].y / 2;
+
+                // Adjust for 0.5px bleed prevention
+                const eps = 0.001;
+                const su0 = u0 + eps, sv0 = v0 + eps, su1 = u1 - eps, sv1 = v1 - eps;
+
+                const base = i * 4;
+                
+                // standard winding for three.js BoxGeometry:
+                // vertex 0: TL, vertex 1: TR, vertex 2: BL, vertex 3: BR
+                
+                if (i === 2) { // TOP (+Y)
+                    // Rotate top texture so 'front' of block is North? 
+                    // Let's use a standard upright mapping.
+                    uvAttr.setXY(base,     su0, sv1);
+                    uvAttr.setXY(base + 1, su1, sv1);
+                    uvAttr.setXY(base + 2, su0, sv0);
+                    uvAttr.setXY(base + 3, su1, sv0);
+                } else if (i === 3) { // BOTTOM (-Y)
+                    uvAttr.setXY(base,     su0, sv1);
+                    uvAttr.setXY(base + 1, su1, sv1);
+                    uvAttr.setXY(base + 2, su0, sv0);
+                    uvAttr.setXY(base + 3, su1, sv0);
+                } else { // SIDES
+                    uvAttr.setXY(base,     su0, sv1);
+                    uvAttr.setXY(base + 1, su1, sv1);
+                    uvAttr.setXY(base + 2, su0, sv0);
+                    uvAttr.setXY(base + 3, su1, sv0);
+                }
+            }
+
+            cube = new THREE.Mesh(geometry, []);
+            scene.add(cube);
+
+            camera.position.z = 2;
+            is3DInitialized = true;
+            animate();
+
+            // Unified Input Handling
+            const onStart = (x, y) => { isDragging = true; prevMouse = { x, y }; };
+            const onEnd = () => { isDragging = false; };
+            const onMove = (x, y) => {
+                if (!isDragging) return;
+                const delta = { x: x - prevMouse.x, y: y - prevMouse.y };
+                cube.rotation.y += delta.x * 0.01;
+                cube.rotation.x += delta.y * 0.01;
+                prevMouse = { x, y };
+            };
+
+            // Mouse
+            container.onmousedown = (e) => onStart(e.clientX, e.clientY);
+            window.onmouseup = onEnd;
+            window.onmousemove = (e) => onMove(e.clientX, e.clientY);
+
+            // Touch (Mobile Fix)
+            container.ontouchstart = (e) => {
+                // Prevent scrolling when rotating model
+                if (e.target === renderer.domElement) e.preventDefault();
+                onStart(e.touches[0].clientX, e.touches[0].clientY);
+            };
+            window.ontouchend = onEnd;
+            window.ontouchmove = (e) => {
+                onMove(e.touches[0].clientX, e.touches[0].clientY);
+            };
+        }
+
+        function animate() {
+            requestAnimationFrame(animate);
+            if (cube && !window.isDragging) {
+                // Subtle auto-rotation if not interacting
+                // cube.rotation.y += 0.005;
+            }
+            renderer.render(scene, camera);
+        }
+
+        function update3DTexture(src) {
+            if (!is3DInitialized) init3D();
+            const loader = new THREE.TextureLoader();
+            loader.load(src, (tex) => {
+                tex.magFilter = THREE.NearestFilter;
+                tex.minFilter = THREE.NearestFilter;
+                const material = new THREE.MeshBasicMaterial({ map: tex, transparent: true });
+                cube.material = material;
+            });
+        }
+
+        function setViewMode(mode) {
+            const img = document.getElementById('modalImg');
+            const three = document.getElementById('three-container');
+            const btn2D = document.getElementById('view2D');
+            const btn3D = document.getElementById('view3D');
+
+            if (mode === '3D') {
+                img.style.display = 'none';
+                three.style.display = 'block';
+                btn3D.classList.add('active');
+                btn2D.classList.remove('active');
+                if (img.src) update3DTexture(img.src);
+            } else {
+                img.style.display = 'block';
+                three.style.display = 'none';
+                btn2D.classList.add('active');
+                btn3D.classList.remove('active');
+            }
+        }
+
+        function openModal(src, name, desc) {
+            document.getElementById('textureModal').style.display = "flex";
+            document.getElementById('modalImg').src = src;
+            document.getElementById('modalName').innerText = name;
+            document.getElementById('modalDesc').innerText = desc;
+            
+            // Extract just the filename relative to assets/img
+            const relativePath = src.split('assets/img/')[1]; 
+            const absoluteUrl = 'https://latticeveil.github.io/assets/img/' + relativePath;
+            const filename = name.toLowerCase().replace(/\s+/g, '_') + '.png';
+
+            const dlBtn = document.getElementById('modalDownload');
+            const newBtn = dlBtn.cloneNode(true);
+            dlBtn.parentNode.replaceChild(newBtn, dlBtn);
+            
+            newBtn.onclick = (e) => {
+                e.stopPropagation();
+                const a = document.createElement('a');
+                a.href = absoluteUrl;
+                a.download = filename;
+                a.target = '_blank';
+                document.body.appendChild(a);
+                a.click();
+                document.body.removeChild(a);
+            };
+
+            // Reset to 2D view on open
+            setViewMode('2D');
+            // Reset cube rotation
+            if (cube) { cube.rotation.set(0.4, 0.4, 0); }
+        }
+
+        function closeModal() { 
+            document.getElementById('textureModal').style.display = "none"; 
+        }
+
+        populateGalleries();
+        // WebXR / Quest Detection
+        async function checkVR() {
+            const isDebug = window.location.search.includes('debugvr=1');
+            const isQuest = /OculusBrowser|Quest/i.test(navigator.userAgent);
+            const vrSupported = navigator.xr && await navigator.xr.isSessionSupported('immersive-vr');
+            
+            if (isDebug || (isQuest && vrSupported)) {
+                document.getElementById('vrIcon').style.display = 'block';
+            }
+        }
+        checkVR();
+
+        // Sync Tabs with URL Hash
+        function syncTab() {
+            const hash = window.location.hash.replace('#', '');
+            if (hash && document.getElementById(hash)) {
+                const btn = Array.from(document.querySelectorAll('.tab-link')).find(l => 
+                    l.textContent.toLowerCase().includes(hash.toLowerCase()) || 
+                    (hash === 'coding' && l.textContent.includes('DEV LOG')) ||
+                    (hash === 'assets' && l.textContent.includes('TEXTURES'))
+                );
+                if (btn) btn.click();
+            }
+        }
+        window.addEventListener('hashchange', syncTab);
+        syncTab();
+
+    
+        function openFaction(evt, factionId) {
+            const container = evt.currentTarget.parentElement.parentElement;
+            container.querySelectorAll(".faction-content").forEach(c => c.classList.remove("active"));
+            container.querySelectorAll(".faction-btn").forEach(b => b.classList.remove("active"));
+            document.getElementById(factionId).classList.add("active");
+            evt.currentTarget.classList.add("active");
+        }
+
+    </script>
+
+</body>
+</html>
+
+
+
+
+
