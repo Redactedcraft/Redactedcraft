@@ -54,3 +54,8 @@ AI HELPER/
 # Experimental files (local development only)
 Experimental/
 !Experimental/README.md
+
+# Local-only planning and scratch assets
+docs/
+*.backup
+Gamemode icons.png
