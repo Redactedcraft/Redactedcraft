@@ -24,11 +24,13 @@ public sealed class ScreenshotsScreen : IScreen
     private readonly Logger _log;
 
     private Texture2D? _bg;
+    private Texture2D? _panel;
     private readonly Button _openFolderBtn;
     private readonly Button _deleteBtn;
     private readonly Button _backBtn;
 
     private Rectangle _viewport;
+    private Rectangle _panelRect;
     private Rectangle _contentRect;
     private float _scroll;
     private int _contentHeight;
@@ -68,7 +70,8 @@ public sealed class ScreenshotsScreen : IScreen
 
         try
         {
-            _bg = _assets.LoadTexture("textures/menu/backgrounds/Screenshots_bg.png");
+            _bg = _assets.LoadTexture("textures/menu/backgrounds/singleplayer_bg.png"); // Use existing background
+            _panel = _assets.LoadTexture("textures/menu/GUIS/Singleplayer_GUI.png"); // Use existing GUI
             _backBtn.Texture = _assets.LoadTexture("textures/menu/buttons/Back.png");
             _deleteBtn.Texture = _assets.LoadTexture("textures/menu/buttons/DeleteDefault.png");
         }
@@ -84,23 +87,46 @@ public sealed class ScreenshotsScreen : IScreen
     {
         _viewport = viewport;
 
-        var margin = 20;
-        var buttonH = 48;
-        var buttonW = 220;
-        var bottomY = viewport.Bottom - margin - buttonH;
-        var deleteSize = buttonH * 2;
-        var deleteY = bottomY - (deleteSize - buttonH);
+        // Use standard panel dimensions (1300x700) like other screens
+        var panelW = Math.Min(1300, viewport.Width - 20);
+        var panelH = Math.Min(700, viewport.Height - 30);
+        var panelX = viewport.X + (viewport.Width - panelW) / 2;
+        var panelY = viewport.Y + (viewport.Height - panelH) / 2;
+        _panelRect = new Rectangle(panelX, panelY, panelW, panelH);
 
-        _openFolderBtn.Bounds = new Rectangle(viewport.X + margin, bottomY, buttonW, buttonH);
-        _deleteBtn.Bounds = new Rectangle(viewport.X + (viewport.Width - deleteSize) / 2, deleteY, deleteSize, deleteSize);
-        _backBtn.Bounds = new Rectangle(viewport.Right - buttonW - margin, bottomY, buttonW, buttonH);
+        var pad = 12;
+        var buttonRowH = _font.LineHeight + 10;
+        var buttonRowY = panelY + panelH - pad - buttonRowH;
+        
+        // Position back button with standard scale (240f) to match other screens
+        var backBtnMargin = 20;
+        var backBtnBaseW = Math.Max(_backBtn.Texture?.Width ?? 0, 320);
+        var backBtnBaseH = Math.Max(_backBtn.Texture?.Height ?? 0, (int)(backBtnBaseW * 0.28f));
+        var backBtnScale = Math.Min(1f, Math.Min(240f / backBtnBaseW, 240f / backBtnBaseH)); // Match SettingsScreen
+        var backBtnW = Math.Max(1, (int)Math.Round(backBtnBaseW * backBtnScale));
+        var backBtnH_calc = Math.Max(1, (int)Math.Round(backBtnBaseH * backBtnScale));
+        _backBtn.Bounds = new Rectangle(
+            viewport.X + backBtnMargin, 
+            viewport.Bottom - backBtnMargin - backBtnH_calc, 
+            backBtnW, 
+            backBtnH_calc
+        );
+        
+        // Position other buttons in the panel
+        var availableWidth = panelW - pad * 2;
+        var folderButtonW = availableWidth / 2;
+        _openFolderBtn.Bounds = new Rectangle(panelX + pad, buttonRowY, folderButtonW, buttonRowH);
+        
+        // Make Delete button bigger and square
+        var deleteButtonSize = buttonRowH * 2; // Make it twice as big
+        _deleteBtn.Bounds = new Rectangle(panelX + pad + folderButtonW + 10, buttonRowY - (deleteButtonSize - buttonRowH) / 2, deleteButtonSize, deleteButtonSize);
 
         var titleHeight = _font.LineHeight * 2 + 10;
         _contentRect = new Rectangle(
-            viewport.X + margin,
-            viewport.Y + titleHeight + margin,
-            viewport.Width - margin * 2,
-            bottomY - (viewport.Y + titleHeight + margin) - margin);
+            panelX + pad + 75, // Move 2.5 inches (75px) to the right (60 + 15)
+            panelY + pad + titleHeight + 60, // Move 2 inches (60px) lower
+            panelW - pad * 2 - 75 - 75, // Reduce width by additional 2.5 inches (75px) from right total
+            buttonRowY - (panelY + pad + titleHeight + 60) - 10 - 180); // Adjust height for lower position
 
         RebuildLayout();
     }
@@ -136,9 +162,13 @@ public sealed class ScreenshotsScreen : IScreen
 
         sb.Begin(samplerState: SamplerState.PointClamp, transformMatrix: UiLayout.Transform);
 
+        // Draw GUI panel
+        if (_panel is not null)
+            sb.Draw(_panel, _panelRect, Color.White);
+
         var title = "SCREENSHOTS";
         var count = _items.Count == 1 ? "1 FILE" : $"{_items.Count} FILES";
-        var titlePos = new Vector2(_viewport.X + 20, _viewport.Y + 20);
+        var titlePos = new Vector2(_panelRect.X + 20, _panelRect.Y + 20);
         _font.DrawString(sb, title, titlePos, Color.White);
         _font.DrawString(sb, count, new Vector2(titlePos.X, titlePos.Y + _font.LineHeight + 4), Color.White);
 

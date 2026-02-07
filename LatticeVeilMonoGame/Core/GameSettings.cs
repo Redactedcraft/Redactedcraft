@@ -13,6 +13,8 @@ public sealed class GameSettings
 {
     private const int EnumCurrentSettings = -1;
     private const uint EnumDisplaySettingsRawMode = 0x00000002;
+    public const int RenderDistanceMin = 4;
+    public const int EngineRenderDistanceMax = 10;
 
     [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Auto)]
     private struct DEVMODE
@@ -69,7 +71,8 @@ public sealed class GameSettings
     public string QualityPreset { get; set; } = "MEDIUM";
     public float Brightness { get; set; } = 1f;
     public int FieldOfView { get; set; } = 70;
-    public int RenderDistanceChunks { get; set; } = 10;
+    public int RenderDistanceChunks { get; set; } = EngineRenderDistanceMax;
+    public bool ShowSeedInfoInWorldList { get; set; } = false;
 
     // Launcher
     public bool KeepLauncherOpen { get; set; } = true;
@@ -107,7 +110,9 @@ public sealed class GameSettings
         ["Inventory"] = Keys.E,
         ["DropItem"] = Keys.Q,
         ["GiveItem"] = Keys.F,
-        ["Pause"] = Keys.Escape
+        ["Pause"] = Keys.Escape,
+        ["Chat"] = Keys.T,
+        ["Command"] = Keys.OemQuestion
     };
 
     // Packs
@@ -150,7 +155,7 @@ public sealed class GameSettings
         s.GuiScale = ClampRange(s.GuiScale, 0.75f, 2.0f);
         s.Brightness = ClampRange(s.Brightness, 0.5f, 1.5f);
         s.FieldOfView = Math.Clamp(s.FieldOfView, 60, 110);
-        s.RenderDistanceChunks = Math.Clamp(s.RenderDistanceChunks, 4, 24);
+        s.RenderDistanceChunks = Math.Clamp(s.RenderDistanceChunks, RenderDistanceMin, EngineRenderDistanceMax);
         s.MouseSensitivity = ClampRange(s.MouseSensitivity, 0.0005f, 0.01f);
         s.QualityPreset = NormalizeQuality(s.QualityPreset);
         s.AudioInputDeviceId ??= "";
@@ -442,12 +447,10 @@ public sealed class GameSettings
 
     public static int GetSafeRenderDistance(string renderer, bool advancedMode)
     {
-        var maxByRenderer = renderer == "Vulkan" ? 16 : 24;
-        var safeMax = 16;
-        
+        var rendererCap = renderer == "Vulkan" ? 16 : 24;
+        var engineCap = Math.Min(EngineRenderDistanceMax, rendererCap);
         if (advancedMode)
-            return Math.Clamp(16, 4, maxByRenderer); // Use fixed 16 as recommended for now
-        else
-            return Math.Clamp(safeMax, 4, maxByRenderer);
+            return Math.Clamp(engineCap, RenderDistanceMin, engineCap);
+        return Math.Clamp(engineCap, RenderDistanceMin, engineCap);
     }
 }

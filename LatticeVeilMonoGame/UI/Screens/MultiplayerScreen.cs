@@ -108,13 +108,13 @@ public sealed class MultiplayerScreen : IScreen
     {
         _viewport = viewport;
 
-        var panelW = Math.Min(640, (int)(viewport.Width * 0.85f));
-        var panelH = Math.Min(360, (int)(viewport.Height * 0.75f));
+        var panelW = Math.Min(1300 - 60, viewport.Width - 20); // Shrink by 2 inches (60px)
+        var panelH = Math.Min(700 - 60, viewport.Height - 30); // Shrink by 2 inches (60px)
         var panelX = viewport.X + (viewport.Width - panelW) / 2;
         var panelY = viewport.Y + (viewport.Height - panelH) / 2;
         _panelRect = new Rectangle(panelX, panelY, panelW, panelH);
 
-        var pad = 12;
+        var pad = 12 + 30; // Move content inward by 1 inch (30px)
         var headerH = _font.LineHeight + 8;
         _infoRect = new Rectangle(panelX + pad, panelY + pad, panelW - pad * 2, headerH);
 
@@ -127,32 +127,37 @@ public sealed class MultiplayerScreen : IScreen
         _tabOnlineRect = new Rectangle(_tabLanRect.Right + 4, _tabLanRect.Y, (_listRect.Width - 12) / 2, _tabLanRect.Height);
         _listBodyRect = new Rectangle(_listRect.X, _listRect.Y + listHeaderH, _listRect.Width, Math.Max(0, _listRect.Height - listHeaderH));
 
-		var gap = 8;
+		var gap = 20; // Increased gap to prevent button overlap
 		if (_tab == MultiplayerTab.Online)
 		{
 			_refreshBtn.Visible = false;
 			_yourIdBtn.Visible = true;
 
-			var buttonW = (_buttonRowRect.Width - gap * 2) / 3;
-			_hostBtn.Bounds = new Rectangle(_buttonRowRect.X, _buttonRowRect.Y, buttonW, buttonRowH);
-			_joinBtn.Bounds = new Rectangle(_hostBtn.Bounds.Right + gap, _buttonRowRect.Y, buttonW, buttonRowH);
-			_yourIdBtn.Bounds = new Rectangle(_joinBtn.Bounds.Right + gap, _buttonRowRect.Y, buttonW, buttonRowH);
+			// Match button bounds to their textures with proper spacing
+			_hostBtn.Bounds = new Rectangle(_buttonRowRect.X, _buttonRowRect.Y, _hostBtn.Texture?.Width ?? 0, _hostBtn.Texture?.Height ?? 0);
+			_joinBtn.Bounds = new Rectangle(_hostBtn.Bounds.Right + gap, _buttonRowRect.Y, _joinBtn.Texture?.Width ?? 0, _joinBtn.Texture?.Height ?? 0);
+			_yourIdBtn.Bounds = new Rectangle(_joinBtn.Bounds.Right + gap, _buttonRowRect.Y, _yourIdBtn.Texture?.Width ?? 0, _yourIdBtn.Texture?.Height ?? 0);
 		}
 		else
 		{
 			_refreshBtn.Visible = true;
 			_yourIdBtn.Visible = false;
 
-			var buttonW = (_buttonRowRect.Width - gap * 2) / 3;
-			_refreshBtn.Bounds = new Rectangle(_buttonRowRect.X, _buttonRowRect.Y, buttonW, buttonRowH);
-			_hostBtn.Bounds = new Rectangle(_refreshBtn.Bounds.Right + gap, _buttonRowRect.Y, buttonW, buttonRowH);
-			_joinBtn.Bounds = new Rectangle(_hostBtn.Bounds.Right + gap, _buttonRowRect.Y, buttonW, buttonRowH);
+			// Match button bounds to their textures with proper spacing
+			_refreshBtn.Bounds = new Rectangle(_buttonRowRect.X, _buttonRowRect.Y, _refreshBtn.Texture?.Width ?? 0, _refreshBtn.Texture?.Height ?? 0);
+			_hostBtn.Bounds = new Rectangle(_refreshBtn.Bounds.Right + gap, _buttonRowRect.Y, _hostBtn.Texture?.Width ?? 0, _hostBtn.Texture?.Height ?? 0);
+			_joinBtn.Bounds = new Rectangle(_hostBtn.Bounds.Right + gap, _buttonRowRect.Y, _joinBtn.Texture?.Width ?? 0, _joinBtn.Texture?.Height ?? 0);
 		}
 
         var margin = 20;
-        var backW = Math.Min(220, (int)(viewport.Width * 0.3f));
-        var backH = Math.Max(_font.LineHeight * 2, (int)(backW * 0.22f));
-        _backBtn.Bounds = new Rectangle(viewport.X + margin, viewport.Bottom - margin - backH, backW, backH);
+        // Standard back button with proper aspect ratio positioned in bottom-left corner
+        var backBtnMargin = 20;
+        var backBtnBaseW = Math.Max(_backBtn.Texture?.Width ?? 0, 320);
+        var backBtnBaseH = Math.Max(_backBtn.Texture?.Height ?? 0, (int)(backBtnBaseW * 0.28f));
+        var backBtnScale = Math.Min(1f, Math.Min(240f / backBtnBaseW, 240f / backBtnBaseH)); // Match SettingsScreen
+        var backBtnW = Math.Max(1, (int)Math.Round(backBtnBaseW * backBtnScale));
+        var backBtnH = Math.Max(1, (int)Math.Round(backBtnBaseH * backBtnScale));
+        _backBtn.Bounds = new Rectangle(viewport.X + backBtnMargin, viewport.Bottom - backBtnMargin - backBtnH, backBtnW, backBtnH);
     }
 
     public void Update(GameTime gameTime, InputState input)
@@ -196,7 +201,6 @@ public sealed class MultiplayerScreen : IScreen
         sb.Begin(samplerState: SamplerState.PointClamp);
 
         if (_bg is not null) sb.Draw(_bg, UiLayout.WindowViewport, Color.White);
-        else sb.Draw(_pixel, UiLayout.WindowViewport, new Color(0, 0, 0));
 
         sb.End();
 
@@ -212,14 +216,58 @@ public sealed class MultiplayerScreen : IScreen
         sb.End();
     }
 
+    private void DrawNinePatch(SpriteBatch sb, Texture2D texture, Rectangle destination)
+    {
+        if (texture == null) return;
+        
+        // Define the border sizes (adjust these based on your GUI texture)
+        const int borderSize = 16;
+        
+        var source = new Rectangle(0, 0, texture.Width, texture.Height);
+        
+        // Create the 9 patches
+        var patches = new[]
+        {
+            // Corners
+            new Rectangle(source.X, source.Y, borderSize, borderSize), // top-left
+            new Rectangle(source.X + borderSize, source.Y, source.Width - borderSize * 2, borderSize), // top-middle
+            new Rectangle(source.Right - borderSize, source.Y, borderSize, borderSize), // top-right
+            new Rectangle(source.X, source.Y + borderSize, borderSize, source.Height - borderSize * 2), // left-middle
+            new Rectangle(source.X + borderSize, source.Y + borderSize, source.Width - borderSize * 2, source.Height - borderSize * 2), // center
+            new Rectangle(source.Right - borderSize, source.Y + borderSize, borderSize, source.Height - borderSize * 2), // right-middle
+            new Rectangle(source.X, source.Bottom - borderSize, borderSize, borderSize), // bottom-left
+            new Rectangle(source.X + borderSize, source.Bottom - borderSize, source.Width - borderSize * 2, borderSize), // bottom-middle
+            new Rectangle(source.Right - borderSize, source.Bottom - borderSize, borderSize, borderSize) // bottom-right
+        };
+        
+        var destPatches = new[]
+        {
+            // Corners
+            new Rectangle(destination.X, destination.Y, borderSize, borderSize), // top-left
+            new Rectangle(destination.X + borderSize, destination.Y, destination.Width - borderSize * 2, borderSize), // top-middle
+            new Rectangle(destination.Right - borderSize, destination.Y, borderSize, borderSize), // top-right
+            new Rectangle(destination.X, destination.Y + borderSize, borderSize, destination.Height - borderSize * 2), // left-middle
+            new Rectangle(destination.X + borderSize, destination.Y + borderSize, destination.Width - borderSize * 2, destination.Height - borderSize * 2), // center
+            new Rectangle(destination.Right - borderSize, destination.Y + borderSize, borderSize, destination.Height - borderSize * 2), // right-middle
+            new Rectangle(destination.X, destination.Bottom - borderSize, borderSize, borderSize), // bottom-left
+            new Rectangle(destination.X + borderSize, destination.Bottom - borderSize, destination.Width - borderSize * 2, borderSize), // bottom-middle
+            new Rectangle(destination.Right - borderSize, destination.Bottom - borderSize, borderSize, borderSize) // bottom-right
+        };
+        
+        // Draw all patches
+        for (int i = 0; i < 9; i++)
+        {
+            if (destPatches[i].Width > 0 && destPatches[i].Height > 0)
+                sb.Draw(texture, destPatches[i], patches[i], Color.White);
+        }
+    }
+
     private void DrawPanel(SpriteBatch sb)
     {
         if (_panel is not null)
-            sb.Draw(_panel, _panelRect, Color.White);
+            DrawNinePatch(sb, _panel, _panelRect);
         else
             sb.Draw(_pixel, _panelRect, new Color(0, 0, 0, 180));
-
-        DrawBorder(sb, _panelRect, Color.White);
     }
 
     private void DrawInfo(SpriteBatch sb)

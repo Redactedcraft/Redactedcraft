@@ -84,7 +84,7 @@ public sealed class MultiplayerHostScreen : IScreen
             _bg = _assets.LoadTexture("textures/menu/backgrounds/MultiplayerHost_bg.png");
             _panel = _assets.LoadTexture("textures/menu/GUIS/MultiplayerHost_GUI.png");
             _createBtn.Texture = _assets.LoadTexture("textures/menu/buttons/CreateWorld.png");
-            _backBtn.Texture = _assets.LoadTexture("textures/menu/buttons/SingleplayerBack.png");
+            _backBtn.Texture = _assets.LoadTexture("textures/menu/buttons/Back.png");
         }
         catch (Exception ex)
         {
@@ -137,10 +137,26 @@ public sealed class MultiplayerHostScreen : IScreen
         var buttonY = _panelRect.Bottom - margin - buttonH;
         var startX = _panelRect.X + (_panelRect.Width - totalW) / 2;
 
-        _createBtn.Bounds = new Rectangle(startX, buttonY, buttonW, buttonH);
-        _deleteBtn.Bounds = new Rectangle(_createBtn.Bounds.Right + gap, buttonY, buttonH, buttonH);
-        _hostBtn.Bounds = new Rectangle(_deleteBtn.Bounds.Right + gap, buttonY, buttonW, buttonH);
-        _backBtn.Bounds = new Rectangle(_hostBtn.Bounds.Right + gap, buttonY, buttonW, buttonH);
+        // Position back button in bottom-left corner of full screen with proper aspect ratio
+        var backBtnMargin = 20;
+        var backBtnBaseW = Math.Max(_backBtn.Texture?.Width ?? 0, 320);
+        var backBtnBaseH = Math.Max(_backBtn.Texture?.Height ?? 0, (int)(backBtnBaseW * 0.28f));
+        var backBtnScale = Math.Min(1f, Math.Min(240f / backBtnBaseW, 240f / backBtnBaseH));
+        var backBtnW = Math.Max(1, (int)Math.Round(backBtnBaseW * backBtnScale));
+        var backBtnH = Math.Max(1, (int)Math.Round(backBtnBaseH * backBtnScale));
+        _backBtn.Bounds = new Rectangle(
+            viewport.X + backBtnMargin, 
+            viewport.Bottom - backBtnMargin - backBtnH, 
+            backBtnW, 
+            backBtnH
+        );
+        
+        // Adjust other buttons to account for back button position
+        var availableWidth = _panelRect.Width - backBtnW - backBtnMargin * 2 - gap * 2;
+        var hostButtonW = availableWidth / 3;
+        _createBtn.Bounds = new Rectangle(_panelRect.X + backBtnW + backBtnMargin * 2, buttonY, hostButtonW, buttonH);
+        _deleteBtn.Bounds = new Rectangle(_createBtn.Bounds.Right + gap, buttonY, hostButtonW, buttonH);
+        _hostBtn.Bounds = new Rectangle(_deleteBtn.Bounds.Right + gap, buttonY, hostButtonW, buttonH);
 
         ClampScroll();
     }
@@ -351,17 +367,8 @@ public sealed class MultiplayerHostScreen : IScreen
 
     private void OpenCreateWorld()
     {
-        _menus.Push(new CreateWorldScreen(
-            _menus,
-            _assets,
-            _font,
-            _pixel,
-            _log,
-            _profile,
-            _graphics,
-            onCreated: _ => RefreshWorlds(),
-            worldsDir: Paths.MultiplayerWorldsDir,
-            enterWorldAfterCreate: false), _viewport);
+        _log.Info("Opening Create World screen with new world generation system");
+        _menus.Push(new CreateWorldScreen(_menus, _assets, _font, _pixel, _log, _profile, _graphics, OnWorldCreated), _viewport);
     }
 
     private void DeleteSelectedWorld()
@@ -400,6 +407,17 @@ public sealed class MultiplayerHostScreen : IScreen
         {
             _log.Warn($"Failed to delete multiplayer world {entry.DisplayName}: {ex.Message}");
             ShowStatus("DELETE FAILED");
+        }
+    }
+
+    private void OnWorldCreated(string worldName)
+    {
+        RefreshWorlds();
+        if (!string.IsNullOrWhiteSpace(worldName))
+        {
+            var idx = _worlds.FindIndex(w => string.Equals(w.DisplayName, worldName, StringComparison.OrdinalIgnoreCase));
+            if (idx >= 0)
+                _selectedIndex = idx;
         }
     }
 

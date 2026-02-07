@@ -1,6 +1,0 @@
-resonance_core.png
-runestone.png
-transit_regulator.png
-veilglass.png
-veinstone.png
-waybound_frame.png

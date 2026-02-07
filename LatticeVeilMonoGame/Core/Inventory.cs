@@ -19,7 +19,7 @@ public sealed class Inventory
     private readonly HotbarSlot[] _grid = new HotbarSlot[GridSize];
     private bool _sandboxCatalogBuilt;
 
-    public GameMode Mode { get; private set; } = GameMode.Sandbox;
+    public GameMode Mode { get; private set; } = GameMode.Artificer;
 
     public int SelectedIndex { get; set; }
 
@@ -32,11 +32,17 @@ public sealed class Inventory
 
     public void SetMode(GameMode mode)
     {
+        var wasArtificer = Mode == GameMode.Artificer;
         Mode = mode;
-        if (Mode == GameMode.Sandbox)
+        if (Mode == GameMode.Artificer)
+        {
             ClampSandboxStacks();
-        if (Mode == GameMode.Sandbox)
             EnsureSandboxCatalog();
+            return;
+        }
+
+        if (wasArtificer)
+            ExitSandboxCatalog();
     }
 
     public void Select(int index)
@@ -83,7 +89,7 @@ public sealed class Inventory
         }
 
         // 3. Sandbox mode: just set it in current slot if not found
-        if (Mode == GameMode.Sandbox)
+        if (Mode == GameMode.Artificer)
         {
             _hotbar[SelectedIndex].Id = id;
             _hotbar[SelectedIndex].Count = 1;
@@ -123,7 +129,7 @@ public sealed class Inventory
     {
         if (amount <= 0)
             return true;
-        if (Mode == GameMode.Sandbox)
+        if (Mode == GameMode.Artificer)
             return true;
 
         ref var slot = ref _hotbar[SelectedIndex];
@@ -141,7 +147,7 @@ public sealed class Inventory
 
     private static int GetMaxStack(BlockId id, GameMode mode)
     {
-        if (mode == GameMode.Sandbox)
+        if (mode == GameMode.Artificer)
             return 1;
         return ToolIds.Contains(id) ? 1 : DefaultStackSize;
     }
@@ -249,6 +255,19 @@ public sealed class Inventory
         }
 
         _sandboxCatalogBuilt = true;
+    }
+
+    private void ExitSandboxCatalog()
+    {
+        // Creative catalog occupies the grid; clear it when returning to gameplay modes
+        // so drops can be picked up and stacked normally.
+        for (int i = 0; i < _grid.Length; i++)
+        {
+            _grid[i].Id = BlockId.Air;
+            _grid[i].Count = 0;
+        }
+
+        _sandboxCatalogBuilt = false;
     }
 
     /// <summary>

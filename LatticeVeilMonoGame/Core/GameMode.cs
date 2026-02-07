@@ -2,6 +2,7 @@ namespace LatticeVeilMonoGame.Core;
 
 public enum GameMode
 {
-    Sandbox,
-    Survival
+    Artificer,
+    Veilwalker,
+    Veilseer
 }

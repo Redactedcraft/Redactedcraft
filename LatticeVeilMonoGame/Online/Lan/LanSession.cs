@@ -23,7 +23,16 @@ public enum LanMessageType : byte
     ChunkData = 7,
     WorldSyncComplete = 8,
     ItemSpawn = 9,
-    ItemPickup = 10
+    ItemPickup = 10,
+    Chat = 11
+}
+
+public enum LanChatKind : byte
+{
+    Chat = 0,
+    Emote = 1,
+    Whisper = 2,
+    System = 3
 }
 
 public readonly struct LanWorldInfo
@@ -93,6 +102,15 @@ public readonly struct LanChunkData
     public byte[] Blocks { get; init; }
 }
 
+public readonly struct LanChatMessage
+{
+    public int FromPlayerId { get; init; }
+    public int ToPlayerId { get; init; } // -1 for broadcast
+    public LanChatKind Kind { get; init; }
+    public string Text { get; init; }
+    public long TimestampUtc { get; init; }
+}
+
 public interface ILanSession : IDisposable
 {
     bool IsHost { get; }
@@ -102,10 +120,12 @@ public interface ILanSession : IDisposable
     void SendBlockSet(int x, int y, int z, byte id);
     void SendItemSpawn(LanItemSpawn item);
     void SendItemPickup(int itemId);
+    void SendChat(LanChatMessage message);
     bool TryDequeuePlayerState(out LanPlayerState state);
     bool TryDequeueBlockSet(out LanBlockSet block);
     bool TryDequeueItemSpawn(out LanItemSpawn item);
     bool TryDequeueItemPickup(out LanItemPickup pickup);
+    bool TryDequeueChat(out LanChatMessage message);
     bool TryDequeuePlayerList(out LanPlayerList list);
     bool TryDequeueChunkData(out LanChunkData chunk);
     bool TryDequeueWorldSyncComplete(out bool complete);
@@ -121,6 +141,7 @@ public sealed class LanHostSession : ILanSession
     private readonly ConcurrentQueue<LanBlockSet> _blockSets = new();
     private readonly ConcurrentQueue<LanItemSpawn> _itemSpawns = new();
     private readonly ConcurrentQueue<LanItemPickup> _itemPickups = new();
+    private readonly ConcurrentQueue<LanChatMessage> _chatMessages = new();
     private readonly ConcurrentQueue<LanPlayerList> _playerLists = new();
     private readonly ConcurrentQueue<LanChunkData> _chunkData = new();
     private readonly ConcurrentQueue<bool> _worldSyncComplete = new();
@@ -183,10 +204,26 @@ public sealed class LanHostSession : ILanSession
         BroadcastItemPickup(pickup);
     }
 
+    public void SendChat(LanChatMessage message)
+    {
+        var normalized = new LanChatMessage
+        {
+            FromPlayerId = LocalPlayerId,
+            ToPlayerId = message.ToPlayerId,
+            Kind = message.Kind,
+            Text = message.Text ?? string.Empty,
+            TimestampUtc = message.TimestampUtc <= 0 ? DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() : message.TimestampUtc
+        };
+
+        _chatMessages.Enqueue(normalized);
+        BroadcastChat(normalized);
+    }
+
     public bool TryDequeuePlayerState(out LanPlayerState state) => _playerStates.TryDequeue(out state);
     public bool TryDequeueBlockSet(out LanBlockSet block) => _blockSets.TryDequeue(out block);
     public bool TryDequeueItemSpawn(out LanItemSpawn item) => _itemSpawns.TryDequeue(out item);
     public bool TryDequeueItemPickup(out LanItemPickup pickup) => _itemPickups.TryDequeue(out pickup);
+    public bool TryDequeueChat(out LanChatMessage message) => _chatMessages.TryDequeue(out message);
     public bool TryDequeuePlayerList(out LanPlayerList list) => _playerLists.TryDequeue(out list);
     public bool TryDequeueChunkData(out LanChunkData chunk) => _chunkData.TryDequeue(out chunk);
     public bool TryDequeueWorldSyncComplete(out bool complete) => _worldSyncComplete.TryDequeue(out complete);
@@ -249,6 +286,20 @@ public sealed class LanHostSession : ILanSession
                         var pickup = msg.Value.ItemPickup;
                         _itemPickups.Enqueue(pickup);
                         BroadcastItemPickup(pickup);
+                        break;
+                    case LanMessageType.Chat:
+                        var chat = msg.Value.Chat;
+                        var normalized = new LanChatMessage
+                        {
+                            FromPlayerId = client.Id,
+                            ToPlayerId = chat.ToPlayerId,
+                            Kind = chat.Kind,
+                            Text = chat.Text ?? string.Empty,
+                            TimestampUtc = chat.TimestampUtc <= 0 ? DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() : chat.TimestampUtc
+                        };
+                        if (normalized.ToPlayerId < 0 || normalized.ToPlayerId == LocalPlayerId || normalized.FromPlayerId == LocalPlayerId)
+                            _chatMessages.Enqueue(normalized);
+                        BroadcastChat(normalized);
                         break;
                 }
             }
@@ -316,6 +367,20 @@ public sealed class LanHostSession : ILanSession
         {
             foreach (var client in _clients.Values)
                 LanWire.SendItemPickup(client, pickup);
+        }
+    }
+
+    private void BroadcastChat(LanChatMessage chat)
+    {
+        lock (_clientLock)
+        {
+            foreach (var client in _clients.Values)
+            {
+                if (chat.ToPlayerId >= 0 && chat.ToPlayerId != client.Id && chat.FromPlayerId != client.Id)
+                    continue;
+
+                LanWire.SendChat(client, chat);
+            }
         }
     }
 
@@ -477,6 +542,19 @@ public sealed class LanHostSession : ILanSession
             });
         }
 
+        public static void SendChat(ClientState client, LanChatMessage chat)
+        {
+            Write(client, bw =>
+            {
+                bw.Write((byte)LanMessageType.Chat);
+                bw.Write(chat.FromPlayerId);
+                bw.Write(chat.ToPlayerId);
+                bw.Write((byte)chat.Kind);
+                bw.Write(chat.TimestampUtc);
+                bw.Write(chat.Text ?? string.Empty);
+            });
+        }
+
         public static void SendPlayerList(ClientState client, LanPlayerList list)
         {
             Write(client, bw =>
@@ -560,6 +638,7 @@ public sealed class LanClientSession : ILanSession
     private readonly ConcurrentQueue<LanBlockSet> _blockSets = new();
     private readonly ConcurrentQueue<LanItemSpawn> _itemSpawns = new();
     private readonly ConcurrentQueue<LanItemPickup> _itemPickups = new();
+    private readonly ConcurrentQueue<LanChatMessage> _chatMessages = new();
     private readonly ConcurrentQueue<LanPlayerList> _playerLists = new();
     private readonly ConcurrentQueue<LanChunkData> _chunkData = new();
     private readonly ConcurrentQueue<bool> _worldSyncComplete = new();
@@ -665,6 +744,7 @@ public sealed class LanClientSession : ILanSession
     public bool TryDequeueBlockSet(out LanBlockSet block) => _blockSets.TryDequeue(out block);
     public bool TryDequeueItemSpawn(out LanItemSpawn item) => _itemSpawns.TryDequeue(out item);
     public bool TryDequeueItemPickup(out LanItemPickup pickup) => _itemPickups.TryDequeue(out pickup);
+    public bool TryDequeueChat(out LanChatMessage message) => _chatMessages.TryDequeue(out message);
     public bool TryDequeuePlayerList(out LanPlayerList list) => _playerLists.TryDequeue(out list);
     public bool TryDequeueChunkData(out LanChunkData chunk) => _chunkData.TryDequeue(out chunk);
     public bool TryDequeueWorldSyncComplete(out bool complete) => _worldSyncComplete.TryDequeue(out complete);
@@ -703,6 +783,22 @@ public sealed class LanClientSession : ILanSession
         });
     }
 
+    public void SendChat(LanChatMessage message)
+    {
+        if (!IsConnected)
+            return;
+
+        Write(bw =>
+        {
+            bw.Write((byte)LanMessageType.Chat);
+            bw.Write(LocalPlayerId);
+            bw.Write(message.ToPlayerId);
+            bw.Write((byte)message.Kind);
+            bw.Write(message.TimestampUtc <= 0 ? DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() : message.TimestampUtc);
+            bw.Write(message.Text ?? string.Empty);
+        });
+    }
+
     private async Task ReadLoop(CancellationToken token)
     {
         try
@@ -726,6 +822,9 @@ public sealed class LanClientSession : ILanSession
                         break;
                     case LanMessageType.ItemPickup:
                         _itemPickups.Enqueue(msg.Value.ItemPickup);
+                        break;
+                    case LanMessageType.Chat:
+                        _chatMessages.Enqueue(msg.Value.Chat);
                         break;
                     case LanMessageType.PlayerList:
                         _playerLists.Enqueue(msg.Value.PlayerList);
@@ -791,6 +890,7 @@ public readonly struct LanMessage
     public LanBlockSet BlockSet { get; init; }
     public LanItemSpawn ItemSpawn { get; init; }
     public LanItemPickup ItemPickup { get; init; }
+    public LanChatMessage Chat { get; init; }
     public LanPlayerList PlayerList { get; init; }
     public LanChunkData ChunkData { get; init; }
     public bool WorldSyncComplete { get; init; }
@@ -885,6 +985,19 @@ public static class LanReader
                     ItemPickup = new LanItemPickup
                     {
                         ItemId = br.ReadInt32()
+                    }
+                };
+            case LanMessageType.Chat:
+                return new LanMessage
+                {
+                    Type = type,
+                    Chat = new LanChatMessage
+                    {
+                        FromPlayerId = br.ReadInt32(),
+                        ToPlayerId = br.ReadInt32(),
+                        Kind = (LanChatKind)br.ReadByte(),
+                        TimestampUtc = br.ReadInt64(),
+                        Text = br.ReadString()
                     }
                 };
             case LanMessageType.PlayerList:

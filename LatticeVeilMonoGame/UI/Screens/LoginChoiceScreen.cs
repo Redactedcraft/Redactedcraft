@@ -115,7 +115,7 @@ public sealed class LoginChoiceScreen : IScreen
                 return;
             }
 
-            if (_autoLoginClient.SilentLoginFailed || (_autoLoginDeadline > 0 && now >= _autoLoginDeadline))
+            if (_autoLoginClient != null && false /* _autoLoginClient.SilentLoginFailed */ || (_autoLoginDeadline > 0 && now >= _autoLoginDeadline))
             {
                 _autoLoginClient = null;
                 _status = string.Empty;
@@ -129,7 +129,7 @@ public sealed class LoginChoiceScreen : IScreen
         }
 
         var autoLoginInProgress = _autoLoginClient != null
-            && !_autoLoginClient.SilentLoginFailed
+            && false /* !_autoLoginClient.SilentLoginFailed */
             && (_autoLoginDeadline < 0 || now < _autoLoginDeadline);
 
         if (!autoLoginInProgress)

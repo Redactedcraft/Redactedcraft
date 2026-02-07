@@ -1,4 +1,6 @@
 using System;
+using System.Diagnostics;
+using System.IO;
 using Microsoft.Xna.Framework;
 using Microsoft.Xna.Framework.Graphics;
 using Microsoft.Xna.Framework.Input;
@@ -88,12 +90,30 @@ public sealed class ProfileScreen : IScreen
         _nameRect = new Rectangle(x, y + _font.LineHeight + 6, _panelRect.Width - 36, _font.LineHeight + 18);
 
         var buttonRowY = _panelRect.Bottom - 58;
-        var buttonW = Math.Min(180, (_panelRect.Width - 36 - 16) / 3);
+        var originalButtonW = Math.Min(180, (_panelRect.Width - 36 - 16) / 3);
         var buttonH = Math.Max(44, _font.LineHeight * 2);
 
-        _saveBtn.Bounds = new Rectangle(_panelRect.X + 18, buttonRowY, buttonW, buttonH);
-        _clearBtn.Bounds = new Rectangle(_saveBtn.Bounds.Right + 8, buttonRowY, buttonW, buttonH);
-        _backBtn.Bounds = new Rectangle(_clearBtn.Bounds.Right + 8, buttonRowY, buttonW, buttonH);
+        // Position back button in bottom-left corner of full screen with proper aspect ratio
+        var backBtnMargin = 20;
+        var backBtnBaseW = Math.Max(_backBtn.Texture?.Width ?? 0, 320);
+        var backBtnBaseH = Math.Max(_backBtn.Texture?.Height ?? 0, (int)(backBtnBaseW * 0.28f));
+        var backBtnScale = Math.Min(1f, Math.Min(240f / backBtnBaseW, 240f / backBtnBaseH));
+        var backBtnW = Math.Max(1, (int)Math.Round(backBtnBaseW * backBtnScale));
+        var backBtnH = Math.Max(1, (int)Math.Round(backBtnBaseH * backBtnScale));
+        _backBtn.Bounds = new Rectangle(
+            viewport.X + backBtnMargin, 
+            viewport.Bottom - backBtnMargin - backBtnH, 
+            backBtnW, 
+            backBtnH
+        );
+        
+        // Center save and clear buttons
+        var gap = 8;
+        var availableWidth = _panelRect.Width - gap;
+        var buttonW = availableWidth / 2;
+        var centerX = _panelRect.X + (_panelRect.Width - (buttonW * 2 + gap)) / 2;
+        _saveBtn.Bounds = new Rectangle(centerX, buttonRowY, buttonW, buttonH);
+        _clearBtn.Bounds = new Rectangle(centerX + buttonW + gap, buttonRowY, buttonW, buttonH);
     }
 
     public void Update(GameTime gameTime, InputState input)
@@ -143,11 +163,20 @@ public sealed class ProfileScreen : IScreen
         sb.Begin(samplerState: SamplerState.PointClamp, transformMatrix: UiLayout.Transform);
 
         if (_panel is not null)
-            sb.Draw(_panel, _panelRect, Color.White);
+        {
+            // Scale GUI background up 3 inches (90px) + 1 inch (30px) horizontally + 1 inch (30px) vertically without moving buttons
+            var scaledRect = new Rectangle(
+                _panelRect.X - 60, // Additional 1 inch (30px) left
+                _panelRect.Y - 60, // Additional 1 inch (30px) upward
+                _panelRect.Width + 120, // Additional 1 inch (30px) total horizontal
+                _panelRect.Height + 120 // Additional 1 inch (30px) total vertical
+            );
+            sb.Draw(_panel, scaledRect, Color.White);
+        }
         else
             sb.Draw(_pixel, _panelRect, new Color(0, 0, 0, 200));
 
-        DrawBorder(sb, _panelRect, Color.White);
+        // Remove white border comment - no longer drawing border
 
         var x = _panelRect.X + 18;
         var y = _panelRect.Y + 16;

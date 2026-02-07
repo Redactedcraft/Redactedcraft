@@ -1,10 +1,13 @@
 using System;
+using System.Diagnostics;
+using System.IO;
 using Microsoft.Xna.Framework;
 using Microsoft.Xna.Framework.Graphics;
 using Microsoft.Xna.Framework.Input;
 using LatticeVeilMonoGame.Core;
 using LatticeVeilMonoGame.Online.Eos;
 using LatticeVeilMonoGame.UI;
+using LatticeVeilMonoGame.UI.Screens;
 
 namespace LatticeVeilMonoGame.UI.Screens;
 
@@ -28,6 +31,9 @@ public sealed class MainMenuScreen : IScreen
     private Button _quitBtn;
     private Button _profileBtn;
     private Button _screenshotBtn;
+    
+    // New UI manager for precise positioning
+    private UIManager? _uiManager;
 
     private Rectangle _viewport;
     private bool _assetsMissing;
@@ -57,8 +63,15 @@ public sealed class MainMenuScreen : IScreen
         _settings = GameSettings.LoadOrCreate(_log);
         _graphics = graphics;
 
+        // Initialize UI manager for precise positioning
+        _uiManager = new UIManager(_viewport);
+        _uiManager.CreateMainMenuLayout();
+        _log.Info("UI Manager initialized with tight button spacing");
+
+        // Create buttons using UI Manager for proper positioning
         _singleBtn = new Button("SINGLEPLAYER", () => _menus.Push(new SingleplayerScreen(_menus, _assets, _font, _pixel, _log, _profile, _graphics), _viewport));
-        
+        _singleBtn.Bounds = _uiManager.GetButtonBounds("singleplayer");
+
         if (_isOffline)
         {
             _multiBtn = new Button("MULTIPLAYER", () => _offlineMessageUntil = 3.0);
@@ -68,11 +81,20 @@ public sealed class MainMenuScreen : IScreen
         {
             _multiBtn = new Button("MULTIPLAYER", () => _menus.Push(new MultiplayerScreen(_menus, _assets, _font, _pixel, _log, _profile, _graphics, _eosClient), _viewport));
         }
+        _multiBtn.Bounds = _uiManager.GetButtonBounds("multiplayer");
 
         _optionsBtn = new Button("OPTIONS", () => _menus.Push(new OptionsScreen(_menus, _assets, _font, _pixel, _log, _graphics), _viewport));
+        _optionsBtn.Bounds = _uiManager.GetButtonBounds("options");
+
         _quitBtn = new Button("QUIT", () => _menus.Pop());
+        _quitBtn.Bounds = _uiManager.GetButtonBounds("quit");
+
         _profileBtn = new Button("PROFILE", () => _menus.Push(new ProfileScreen(_menus, _assets, _font, _pixel, _log, _profile, _graphics, _eosClient), _viewport));
+        _profileBtn.Bounds = _uiManager.GetButtonBounds("profile");
+
         _screenshotBtn = new Button("SCREENSHOTS", () => _menus.Push(new ScreenshotsScreen(_menus, _assets, _font, _pixel, _log), _viewport));
+        _screenshotBtn.Bounds = _uiManager.GetButtonBounds("screenshots");
+
         try
         {
             _bg = _assets.LoadTexture("textures/menu/backgrounds/MainMenu.png");
@@ -81,6 +103,7 @@ public sealed class MainMenuScreen : IScreen
             _optionsBtn.Texture = _assets.LoadTexture("textures/menu/buttons/options.png");
             _quitBtn.Texture = _assets.LoadTexture("textures/menu/buttons/Quit.png");
             _profileBtn.Texture = _assets.LoadTexture("textures/menu/buttons/Profile.png");
+            _screenshotBtn.Texture = _assets.LoadTexture("textures/menu/buttons/screenshots.png");
         }
         catch (Exception ex)
         {
@@ -93,26 +116,28 @@ public sealed class MainMenuScreen : IScreen
     public void OnResize(Rectangle viewport)
     {
         _viewport = viewport;
-
-        var buttonW = Math.Min(420, (int)(viewport.Width * 0.55f));
-        var buttonH = (int)(buttonW * 0.18f);
-        var centerX = viewport.X + viewport.Width / 2;
-        var gap = 18;
-        var totalHeight = buttonH * 4 + gap * 3;
-        var startY = viewport.Y + (viewport.Height - totalHeight) / 2;
-
-        _singleBtn.Bounds = new Rectangle(centerX - buttonW / 2, startY + 0 * (buttonH + gap), buttonW, buttonH);
-        _multiBtn.Bounds = new Rectangle(centerX - buttonW / 2, startY + 1 * (buttonH + gap), buttonW, buttonH);
-        _optionsBtn.Bounds = new Rectangle(centerX - buttonW / 2, startY + 2 * (buttonH + gap), buttonW, buttonH);
-        _quitBtn.Bounds = new Rectangle(centerX - buttonW / 2, startY + 3 * (buttonH + gap), buttonW, buttonH);
-
-        var iconSize = _font.LineHeight * 3;
-        var margin = 20;
-        _profileBtn.Bounds = new Rectangle(viewport.X + margin, viewport.Bottom - iconSize - margin, iconSize, iconSize);
-
-        var smallW = Math.Min(240, (int)(viewport.Width * 0.35f));
-        var smallH = _font.LineHeight * 2 + 10;
-        _screenshotBtn.Bounds = new Rectangle(viewport.Right - smallW - margin, viewport.Bottom - smallH - margin, smallW, smallH);
+        
+        // Update virtual resolution system
+        VirtualResolution.Update(viewport);
+        
+        // Update UI manager with new viewport
+        if (_uiManager != null)
+        {
+            _uiManager = new UIManager(_viewport);
+            _uiManager.CreateMainMenuLayout();
+            
+            // Update button bounds with new positions (already converted to screen coords)
+            _singleBtn.Bounds = _uiManager.GetButtonBounds("singleplayer");
+            _multiBtn.Bounds = _uiManager.GetButtonBounds("multiplayer");
+            _optionsBtn.Bounds = _uiManager.GetButtonBounds("options");
+            _quitBtn.Bounds = _uiManager.GetButtonBounds("quit");
+            _profileBtn.Bounds = _uiManager.GetButtonBounds("profile");
+            _screenshotBtn.Bounds = _uiManager.GetButtonBounds("screenshots");
+            
+            _log.Info($"Virtual Resolution updated: {VirtualResolution.VirtualWidth}x{VirtualResolution.VirtualHeight} -> {viewport.Width}x{viewport.Height}");
+            _log.Info($"Scale: {VirtualResolution.ScaleX:F2}x{VirtualResolution.ScaleY:F2}");
+            _log.Info(_uiManager.GetLayoutInfo());
+        }
     }
 
     public void Update(GameTime gameTime, InputState input)
@@ -153,7 +178,7 @@ public sealed class MainMenuScreen : IScreen
 
         sb.End();
 
-        sb.Begin(samplerState: SamplerState.PointClamp, transformMatrix: UiLayout.Transform);
+        sb.Begin(samplerState: SamplerState.PointClamp, transformMatrix: VirtualResolution.ScaleMatrix);
 
         _singleBtn.Draw(sb, _pixel, _font);
         _multiBtn.Draw(sb, _pixel, _font);

@@ -43,6 +43,10 @@ public sealed class Game1 : Game
     private double _lastStallLogSeconds = -1;
     private const double StallThresholdSeconds = 2.0;
     private const double StallLogCooldownSeconds = 10.0;
+    private Vector2 _smoothedLookDelta = Vector2.Zero;
+    private const float CaptureDeltaSmoothing = 0.45f;
+    private const int CaptureDeltaClampPixels = 180;
+    private const float CaptureDeltaClampRadians = 0.45f;
 
 	public PlayerProfile Profile => _profile;
 
@@ -58,6 +62,7 @@ public sealed class Game1 : Game
 
         // Create GraphicsDeviceManager with configured backend
         _graphics = new GraphicsDeviceManager(this);
+        IsFixedTimeStep = false; // Variable timestep helps avoid visible camera stepping when frames fluctuate.
         IsMouseVisible = true;
         Window.AllowUserResizing = false;
         Window.Title = Paths.IsDevBuild ? "[DEV] LatticeVeil" : "LatticeVeil";
@@ -117,7 +122,6 @@ public sealed class Game1 : Game
 
         _font = new PixelFont(_pixel, scale: 2);
         _assets = new AssetLoader(GraphicsDevice, _log);
-
 
         // EOS Device-ID only (no login UI).
         // TEMPORARILY DISABLED TO FIX LOADING SCREEN HANG
@@ -225,6 +229,7 @@ public sealed class Game1 : Game
 
         // Global quit (Alt+F4 is handled by OS; Esc handled in screens)
         _menus.Update(gameTime, _input);
+        
         HandleSmoke(gameTime);
         if (!_exitRequested && _menus.Count == 0)
         {
@@ -249,6 +254,7 @@ public sealed class Game1 : Game
         }
 
         _menus.Draw(_spriteBatch, UiLayout.Viewport);
+        
         if (_screenshotRequested)
         {
             TakeScreenshot(gameTime);
@@ -365,18 +371,25 @@ public sealed class Game1 : Game
             if (_ignoreNextCaptureDelta)
             {
                 _input.SetLookDelta(Vector2.Zero);
+                _smoothedLookDelta = Vector2.Zero;
                 _ignoreNextCaptureDelta = false;
             }
             else
             {
                 var sensitivity = Math.Clamp(_settings.MouseSensitivity, 0.0005f, 0.01f);
-                var delta = new Vector2(deltaPx.X * sensitivity, deltaPx.Y * sensitivity);
-                _input.SetLookDelta(delta);
+                var clampedPxX = Math.Clamp(deltaPx.X, -CaptureDeltaClampPixels, CaptureDeltaClampPixels);
+                var clampedPxY = Math.Clamp(deltaPx.Y, -CaptureDeltaClampPixels, CaptureDeltaClampPixels);
+                var delta = new Vector2(clampedPxX * sensitivity, clampedPxY * sensitivity);
+                delta.X = Math.Clamp(delta.X, -CaptureDeltaClampRadians, CaptureDeltaClampRadians);
+                delta.Y = Math.Clamp(delta.Y, -CaptureDeltaClampRadians, CaptureDeltaClampRadians);
+                _smoothedLookDelta = Vector2.Lerp(_smoothedLookDelta, delta, CaptureDeltaSmoothing);
+                _input.SetLookDelta(_smoothedLookDelta);
             }
             Mouse.SetPosition(_captureCenter.X, _captureCenter.Y);
         }
         else
         {
+            _smoothedLookDelta = Vector2.Zero;
             _input.SetLookDelta(Vector2.Zero);
         }
     }
@@ -386,6 +399,7 @@ public sealed class Game1 : Game
         _mouseCaptured = true;
         _captureOwner = screen;
         _ignoreNextCaptureDelta = true;
+        _smoothedLookDelta = Vector2.Zero;
         IsMouseVisible = false;
 
         var viewport = GraphicsDevice.Viewport;
@@ -402,6 +416,7 @@ public sealed class Game1 : Game
         _mouseCaptured = false;
         IsMouseVisible = true;
         _ignoreNextCaptureDelta = false;
+        _smoothedLookDelta = Vector2.Zero;
         _input.SetLookDelta(Vector2.Zero);
 
         try

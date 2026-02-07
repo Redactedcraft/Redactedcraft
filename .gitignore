@@ -50,3 +50,7 @@ temp*/
 # AI helper files (never commit AI HELPER to repo)
 AI HELPER/
 .ai-helper*/
+
+# Experimental files (local development only)
+Experimental/
+!Experimental/README.md

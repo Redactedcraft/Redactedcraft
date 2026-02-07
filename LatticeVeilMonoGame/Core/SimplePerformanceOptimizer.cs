@@ -100,15 +100,13 @@ public static class AdvancedPerformanceOptimizer
     /// </summary>
     private static void OptimizeCpuUsage()
     {
-        // Set thread pool size
-        ThreadPool.SetMinThreads(_optimalThreadCount, _optimalThreadCount);
-        ThreadPool.SetMaxThreads(_optimalThreadCount * 2, _optimalThreadCount * 2);
-        
-        // Optimize garbage collection
-        // GCSettings.LargeObjectHeapCompactionMode = GCLargeObjectHeapCompactionMode.CompactOnce;
-        // GCSettings.LatencyMode = GCLatencyMode.SustainedLowLatency;
-        
-        _log.Info($"🖥️  CPU Optimized: {_optimalThreadCount} threads, optimized GC");
+        // Keep runtime defaults for max threads; only raise minimum workers if currently lower.
+        ThreadPool.GetMinThreads(out var minWorkers, out var minIo);
+        var targetWorkers = Math.Max(minWorkers, Math.Max(1, _optimalThreadCount));
+        if (targetWorkers > minWorkers)
+            ThreadPool.SetMinThreads(targetWorkers, minIo);
+
+        _log.Info($"🖥️  CPU Optimized: min workers {minWorkers} -> {targetWorkers}");
     }
     
     /// <summary>
@@ -116,13 +114,9 @@ public static class AdvancedPerformanceOptimizer
     /// </summary>
     private static void OptimizeMemoryUsage()
     {
-        // Configure garbage collection for gaming
-        GC.Collect(0, GCCollectionMode.Optimized);
-        GC.WaitForPendingFinalizers();
-        GC.Collect(0, GCCollectionMode.Optimized);
-        
+        // Avoid forced collections here; they can create visible frame hitches.
         _memoryOptimizationsEnabled = true;
-        _log.Info("💾 Memory Optimized: Optimized GC");
+        _log.Info("💾 Memory Optimized: no forced GC at startup");
     }
     
     /// <summary>

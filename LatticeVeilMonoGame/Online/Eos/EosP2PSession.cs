@@ -34,6 +34,7 @@ public sealed class EosP2PHostSession : ILanSession
     private readonly ConcurrentQueue<LanBlockSet> _blockSets = new();
     private readonly ConcurrentQueue<LanItemSpawn> _itemSpawns = new();
     private readonly ConcurrentQueue<LanItemPickup> _itemPickups = new();
+    private readonly ConcurrentQueue<LanChatMessage> _chatMessages = new();
     private readonly ConcurrentQueue<LanPlayerList> _playerLists = new();
     private readonly ConcurrentQueue<LanChunkData> _chunkData = new();
     private readonly ConcurrentQueue<bool> _worldSyncComplete = new();
@@ -103,6 +104,27 @@ public sealed class EosP2PHostSession : ILanSession
 #endif
     }
 
+    public void SendChat(LanChatMessage message)
+    {
+#if EOS_SDK
+        if (!IsConnected)
+            return;
+
+        var normalized = new LanChatMessage
+        {
+            FromPlayerId = LocalPlayerId,
+            ToPlayerId = message.ToPlayerId,
+            Kind = message.Kind,
+            Text = message.Text ?? string.Empty,
+            TimestampUtc = message.TimestampUtc <= 0 ? DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() : message.TimestampUtc
+        };
+        _chatMessages.Enqueue(normalized);
+        BroadcastChat(normalized);
+#else
+        // No-op when EOS SDK is not available
+#endif
+    }
+
     public void SendPlayerState(Vector3 position, float yaw, float pitch, byte status)
     {
 #if EOS_SDK
@@ -159,6 +181,16 @@ public sealed class EosP2PHostSession : ILanSession
         return _itemPickups.TryDequeue(out pickup);
 #else
         pickup = default;
+        return false;
+#endif
+    }
+
+    public bool TryDequeueChat(out LanChatMessage message)
+    {
+#if EOS_SDK
+        return _chatMessages.TryDequeue(out message);
+#else
+        message = default;
         return false;
 #endif
     }
@@ -303,6 +335,22 @@ public sealed class EosP2PHostSession : ILanSession
                         _itemPickups.Enqueue(pickup);
                         BroadcastItemPickup(pickup);
                         break;
+                    case LanMessageType.Chat:
+                        if (!TryGetClient(peerId, out var sender))
+                            break;
+                        var chat = msg.Chat;
+                        var normalized = new LanChatMessage
+                        {
+                            FromPlayerId = sender.Id,
+                            ToPlayerId = chat.ToPlayerId,
+                            Kind = chat.Kind,
+                            Text = chat.Text ?? string.Empty,
+                            TimestampUtc = chat.TimestampUtc <= 0 ? DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() : chat.TimestampUtc
+                        };
+                        if (normalized.ToPlayerId < 0 || normalized.ToPlayerId == LocalPlayerId || normalized.FromPlayerId == LocalPlayerId)
+                            _chatMessages.Enqueue(normalized);
+                        BroadcastChat(normalized);
+                        break;
                 }
             }
         }
@@ -374,6 +422,20 @@ public sealed class EosP2PHostSession : ILanSession
         {
             foreach (var client in _clients.Values)
                 EosP2PWire.SendItemPickup(_p2p, _localUserId, client.PeerId, _socketId, pickup, _log);
+        }
+    }
+
+    private void BroadcastChat(LanChatMessage chat)
+    {
+        lock (_clientLock)
+        {
+            foreach (var client in _clients.Values)
+            {
+                if (chat.ToPlayerId >= 0 && chat.ToPlayerId != client.Id && chat.FromPlayerId != client.Id)
+                    continue;
+
+                EosP2PWire.SendChat(_p2p, _localUserId, client.PeerId, _socketId, chat, _log);
+            }
         }
     }
 
@@ -504,6 +566,7 @@ public sealed class EosP2PClientSession : ILanSession
     private readonly ConcurrentQueue<LanBlockSet> _blockSets = new();
     private readonly ConcurrentQueue<LanItemSpawn> _itemSpawns = new();
     private readonly ConcurrentQueue<LanItemPickup> _itemPickups = new();
+    private readonly ConcurrentQueue<LanChatMessage> _chatMessages = new();
     private readonly ConcurrentQueue<LanPlayerList> _playerLists = new();
     private readonly ConcurrentQueue<LanChunkData> _chunkData = new();
     private readonly ConcurrentQueue<bool> _worldSyncComplete = new();
@@ -659,6 +722,26 @@ public sealed class EosP2PClientSession : ILanSession
 #endif
     }
 
+    public void SendChat(LanChatMessage message)
+    {
+#if EOS_SDK
+        if (!IsConnected)
+            return;
+
+        var normalized = new LanChatMessage
+        {
+            FromPlayerId = LocalPlayerId,
+            ToPlayerId = message.ToPlayerId,
+            Kind = message.Kind,
+            Text = message.Text ?? string.Empty,
+            TimestampUtc = message.TimestampUtc <= 0 ? DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() : message.TimestampUtc
+        };
+        EosP2PWire.SendChat(_p2p, _localUserId, _hostUserId, _socketId, normalized, _log);
+#else
+        // No-op when EOS SDK is not available
+#endif
+    }
+
 
     public bool TryDequeuePlayerState(out LanPlayerState state)
     {
@@ -696,6 +779,16 @@ public sealed class EosP2PClientSession : ILanSession
         return _itemPickups.TryDequeue(out pickup);
 #else
         pickup = default;
+        return false;
+#endif
+    }
+
+    public bool TryDequeueChat(out LanChatMessage message)
+    {
+#if EOS_SDK
+        return _chatMessages.TryDequeue(out message);
+#else
+        message = default;
         return false;
 #endif
     }
@@ -779,6 +872,9 @@ public sealed class EosP2PClientSession : ILanSession
                         break;
                     case LanMessageType.ItemPickup:
                         _itemPickups.Enqueue(msg.ItemPickup);
+                        break;
+                    case LanMessageType.Chat:
+                        _chatMessages.Enqueue(msg.Chat);
                         break;
                     case LanMessageType.PlayerList:
                         _playerLists.Enqueue(msg.PlayerList);
@@ -947,6 +1043,20 @@ internal static class EosP2PWire
         {
             bw.Write((byte)LanMessageType.ItemPickup);
             bw.Write(pickup.ItemId);
+        }, log);
+        SendRaw(p2p, localUserId, remoteUserId, socketId, payload, PacketReliability.ReliableOrdered, log);
+    }
+
+    public static void SendChat(P2PInterface p2p, ProductUserId localUserId, ProductUserId remoteUserId, SocketId socketId, LanChatMessage chat, Logger log)
+    {
+        var payload = BuildPayload(bw =>
+        {
+            bw.Write((byte)LanMessageType.Chat);
+            bw.Write(chat.FromPlayerId);
+            bw.Write(chat.ToPlayerId);
+            bw.Write((byte)chat.Kind);
+            bw.Write(chat.TimestampUtc);
+            bw.Write(chat.Text ?? string.Empty);
         }, log);
         SendRaw(p2p, localUserId, remoteUserId, socketId, payload, PacketReliability.ReliableOrdered, log);
     }
@@ -1171,6 +1281,20 @@ internal static class EosP2PWire
                     ItemPickup = new LanItemPickup
                     {
                         ItemId = br.ReadInt32()
+                    }
+                };
+                return true;
+            case LanMessageType.Chat:
+                msg = new LanMessage
+                {
+                    Type = type,
+                    Chat = new LanChatMessage
+                    {
+                        FromPlayerId = br.ReadInt32(),
+                        ToPlayerId = br.ReadInt32(),
+                        Kind = (LanChatKind)br.ReadByte(),
+                        TimestampUtc = br.ReadInt64(),
+                        Text = br.ReadString()
                     }
                 };
                 return true;

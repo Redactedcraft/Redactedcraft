@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.IO;
 using System.Linq;
 using System.Runtime.InteropServices;
@@ -70,8 +71,8 @@ public sealed class OptionsScreen : IScreen
     private static readonly string[] ReticleColorLabels = ReticleColorOptions.Select(o => o.label).ToArray();
     private const float BrightnessMin = 0.5f;
     private const float BrightnessMax = 1.5f;
-    private const int RenderDistanceMin = 4;
-    private const int RenderDistanceMax = 24;
+    private const int RenderDistanceMin = GameSettings.RenderDistanceMin;
+    private const int RenderDistanceMax = GameSettings.EngineRenderDistanceMax;
     private const float MouseSensitivityMin = 0.0005f;
     private const float MouseSensitivityMax = 0.01f;
     private const int FovMin = 60;
@@ -146,6 +147,12 @@ public sealed class OptionsScreen : IScreen
     private Texture2D? _applyVideoTexture;
     private Texture2D? _applyAudioTexture;
 
+    // Tab selected textures
+    private Texture2D? _videoSelectedTex;
+    private Texture2D? _audioSelectedTex;
+    private Texture2D? _controlsSelectedTex;
+    private Texture2D? _packsSelectedTex;
+
     // Video controls
     private Checkbox _fullscreen;
     private Checkbox _vsync;
@@ -191,7 +198,7 @@ public sealed class OptionsScreen : IScreen
     // Controls binding
     private readonly List<string> _bindOrder = new()
     {
-        "MoveUp","MoveDown","MoveLeft","MoveRight","Jump","Crouch","Inventory","DropItem","GiveItem","Pause"
+        "MoveUp","MoveDown","MoveLeft","MoveRight","Jump","Crouch","Inventory","DropItem","GiveItem","Pause","Chat","Command"
     };
     private string? _bindingAction;
     private Rectangle _controlsListRect;
@@ -342,16 +349,23 @@ public sealed class OptionsScreen : IScreen
             _tabControls.Texture = _assets.LoadTexture("textures/menu/buttons/Controls.png");
             _tabPacks.Texture = _assets.LoadTexture("textures/menu/buttons/packs.png");
 
+            // Load selected texture variants
+            _videoSelectedTex = _assets.LoadTexture("textures/menu/buttons/VideoSelected.png");
+            _audioSelectedTex = _assets.LoadTexture("textures/menu/buttons/AudioSelected.png");
+            _controlsSelectedTex = _assets.LoadTexture("textures/menu/buttons/ControlsSelected.png");
+            _packsSelectedTex = _assets.LoadTexture("textures/menu/buttons/packsSelected.png");
+
             _applyDefaultTexture = _assets.LoadTexture("textures/menu/buttons/Apply.png");
             _apply.Texture = _applyDefaultTexture;
             _applyVideoTexture = _applyDefaultTexture;
             _applyAudioTexture = _applyDefaultTexture;
-            _back.Texture = _assets.LoadTexture("textures/menu/buttons/OptionsBack.png");
+            _back.Texture = _assets.LoadTexture("textures/menu/buttons/Back.png");
         }
         catch (Exception ex)
         {
             _log.Warn($"OptionsScreen asset load: {ex.Message}");
         }
+        UpdateTabTextures();
         UpdateApplyTexture();
 
         RefreshPacks();
@@ -363,34 +377,50 @@ public sealed class OptionsScreen : IScreen
     {
         _viewport = viewport;
 
-        var panelW = Math.Min(1200, viewport.Width - 20);
-        var panelH = Math.Min(760, viewport.Height - 30);
+        var panelW = Math.Min(1300, viewport.Width - 20); // Reduced from 1400
+        var panelH = Math.Min(700, viewport.Height - 30); // Reduced from 760
         _panelRect = new Rectangle(
             viewport.X + (viewport.Width - panelW) / 2,
             viewport.Y + (viewport.Height - panelH) / 2,
             panelW,
             panelH);
 
-        // Tabs across the top
+        // Tabs just above the panel
         var tabW = panelW / 4 - 10;
         var tabH = (int)(tabW * 0.30f);
-        var tabY = _panelRect.Y + 20;
+        var tabY = _panelRect.Y - 40; // Move down by a couple inches from previous position
         _tabVideo.Bounds = new Rectangle(_panelRect.X + 10, tabY, tabW, tabH);
         _tabAudio.Bounds = new Rectangle(_tabVideo.Bounds.Right + 10, tabY, tabW, tabH);
         _tabControls.Bounds = new Rectangle(_tabAudio.Bounds.Right + 10, tabY, tabW, tabH);
         _tabPacks.Bounds = new Rectangle(_tabControls.Bounds.Right + 10, tabY, tabW, tabH);
 
         // Bottom buttons
-        var btnW = panelW / 2 - 15;
-        var btnH = (int)(btnW * 0.30f);
-        var btnY = _panelRect.Bottom - btnH - 20;
-        _apply.Bounds = new Rectangle(_panelRect.X + 10, btnY, btnW, btnH);
-        _back.Bounds = new Rectangle(_apply.Bounds.Right + 10, btnY, btnW, btnH);
+        var btnW = panelW / 3 - 15; // Reduced from panelW / 2
+        var btnH = (int)(btnW * 0.25f); // Reduced from 0.30f
+        var btnY = _panelRect.Bottom - btnH - 80; // Moved up by 60 pixels (2 inches)
+        
+        // Position back button in bottom-left corner of full screen with proper aspect ratio
+        var backBtnMargin = 20;
+        var backBtnBaseW = Math.Max(_back.Texture?.Width ?? 0, 320);
+        var backBtnBaseH = Math.Max(_back.Texture?.Height ?? 0, (int)(backBtnBaseW * 0.28f));
+        var backBtnScale = Math.Min(1f, Math.Min(240f / backBtnBaseW, 240f / backBtnBaseH)); // Increased from 200f to 240f
+        var backBtnW = Math.Max(1, (int)Math.Round(backBtnBaseW * backBtnScale));
+        var backBtnH = Math.Max(1, (int)Math.Round(backBtnBaseH * backBtnScale));
+        _back.Bounds = new Rectangle(
+            viewport.X + backBtnMargin, 
+            viewport.Bottom - backBtnMargin - backBtnH, 
+            backBtnW, 
+            backBtnH
+        );
+        
+        // Position apply button in bottom-center (without back button)
+        var applyBtnX = _panelRect.X + (_panelRect.Width - btnW) / 2;
+        _apply.Bounds = new Rectangle(applyBtnX, btnY, btnW, btnH);
 
         // Content area
         var contentX = _panelRect.X + 30;
         var contentTop = _tabVideo.Bounds.Bottom + 20;
-        var contentY = _tabVideo.Bounds.Bottom + 30;
+        var contentY = _tabVideo.Bounds.Bottom + 150; // Move down by 50 pixels more
         var contentW = panelW - 60;
         var contentBottom = _apply.Bounds.Y - 20;
         var contentH = Math.Max(1, contentBottom - contentTop);
@@ -402,9 +432,9 @@ public sealed class OptionsScreen : IScreen
         var videoContentY = contentY + infoHeight;
 
         var columnGap = 30;
-        var columnW = (contentW - columnGap) / 2;
-        var leftX = contentX;
-        var rightX = contentX + columnW + columnGap;
+        var columnW = (contentW - columnGap) / 2 - 80; // Reduce column width to match left spacing
+        var leftX = contentX + 60; // Shift left by two inches
+        var rightX = contentX + columnW + columnGap + 60; // Shift left by two inches
 
         _fullscreen.Bounds = new Rectangle(leftX, videoContentY, columnW, 36);
         _vsync.Bounds = new Rectangle(leftX, videoContentY + 50, columnW, 36);
@@ -419,10 +449,10 @@ public sealed class OptionsScreen : IScreen
         _renderDistance.Bounds = new Rectangle(rightX, videoContentY + 240, Math.Min(420, columnW), 18);
 
         // Audio device dropdowns + sliders
-        var audioBoxW = contentW;
-        _inputBox = new Rectangle(contentX, contentY + 10, audioBoxW, 40);
-        _outputBox = new Rectangle(contentX, contentY + 70, audioBoxW, 40);
-        _multistream.Bounds = new Rectangle(contentX, contentY + 130, audioBoxW, 36);
+        var audioBoxW = contentW - 120; // Reduce audio box width to match left spacing
+        _inputBox = new Rectangle(contentX + 60, contentY + 10, audioBoxW, 40);
+        _outputBox = new Rectangle(contentX + 60, contentY + 70, audioBoxW, 40);
+        _multistream.Bounds = new Rectangle(contentX + 60, contentY + 130, audioBoxW, 36);
 
         var labelStartX = _multistream.Bounds.X + _multistream.Bounds.Height + 10;
         var labelWidth = (int)_font.MeasureString(_multistream.Label).X;
@@ -446,28 +476,28 @@ public sealed class OptionsScreen : IScreen
             sliderStartY = audioDetailY;
         }
 
-        _master.Bounds = new Rectangle(contentX, sliderStartY, Math.Min(520, contentW), 18);
-        _music.Bounds = new Rectangle(contentX, sliderStartY + 60, Math.Min(520, contentW), 18);
-        _sfx.Bounds = new Rectangle(contentX, sliderStartY + 120, Math.Min(520, contentW), 18);
+        _master.Bounds = new Rectangle(contentX + 60, sliderStartY, Math.Min(400, contentW - 120), 18);
+        _music.Bounds = new Rectangle(contentX + 60, sliderStartY + 60, Math.Min(400, contentW - 120), 18);
+        _sfx.Bounds = new Rectangle(contentX + 60, sliderStartY + 120, Math.Min(400, contentW - 120), 18);
 
         var micStartY = sliderStartY + 180;
         var micButtonW = Math.Min(240, contentW);
-        _micTest.Bounds = new Rectangle(contentX, micStartY, micButtonW, 40);
+        _micTest.Bounds = new Rectangle(contentX + 60, micStartY, micButtonW, 40);
         var monitorX = _micTest.Bounds.Right + 20;
         var monitorW = Math.Max(200, contentW - (monitorX - contentX));
         _micMonitor.Bounds = new Rectangle(monitorX, micStartY + 4, monitorW, 36);
-        _micMeterRect = new Rectangle(contentX, micStartY + 60, Math.Min(520, contentW), 18);
+        _micMeterRect = new Rectangle(contentX + 60, micStartY + 60, Math.Min(400, contentW - 120), 18);
 
-        _mouseSensitivity.Bounds = new Rectangle(contentX, contentY + 10, Math.Min(520, contentW), 18);
+        _mouseSensitivity.Bounds = new Rectangle(contentX + 60, contentY + 10, Math.Min(400, contentW - 120), 18);
         var reticleTop = contentY + 60;
-        _reticleEnabled.Bounds = new Rectangle(contentX, reticleTop, Math.Min(520, contentW), 36);
-        _reticleStyleBox = new Rectangle(contentX, reticleTop + 50, Math.Min(520, contentW), 40);
-        _reticleColorBox = new Rectangle(contentX, reticleTop + 110, Math.Min(520, contentW), 40);
-        _blockOutlineColorBox = new Rectangle(contentX, reticleTop + 170, Math.Min(520, contentW), 40);
-        _reticleSize.Bounds = new Rectangle(contentX, reticleTop + 230, Math.Min(520, contentW), 18);
-        _reticleThickness.Bounds = new Rectangle(contentX, reticleTop + 290, Math.Min(520, contentW), 18);
-        _controlsListRect = new Rectangle(contentX, reticleTop + 350, Math.Min(620, contentW), 300);
-        _packsListRect = new Rectangle(contentX, contentY + 20, Math.Min(620, contentW), 300);
+        _reticleEnabled.Bounds = new Rectangle(contentX + 60, reticleTop, Math.Min(400, contentW - 120), 36);
+        _reticleStyleBox = new Rectangle(contentX + 60, reticleTop + 50, Math.Min(400, contentW - 120), 40);
+        _reticleColorBox = new Rectangle(contentX + 60, reticleTop + 110, Math.Min(400, contentW - 120), 40);
+        _blockOutlineColorBox = new Rectangle(contentX + 60, reticleTop + 170, Math.Min(400, contentW - 120), 40);
+        _reticleSize.Bounds = new Rectangle(contentX + 60, reticleTop + 230, Math.Min(400, contentW - 120), 18);
+        _reticleThickness.Bounds = new Rectangle(contentX + 60, reticleTop + 290, Math.Min(400, contentW - 120), 18);
+        _controlsListRect = new Rectangle(contentX + 60, reticleTop + 350, Math.Min(500, contentW - 120), 300);
+        _packsListRect = new Rectangle(contentX + 60, contentY + 20, Math.Min(500, contentW - 120), 300);
 
         ClampAllScroll();
     }
@@ -551,6 +581,7 @@ public sealed class OptionsScreen : IScreen
         else
             sb.Draw(_pixel, _panelRect, new Color(15,15,15));
 
+        // Draw tabs behind the panel
         _tabVideo.Draw(sb, _pixel, _font);
         _tabAudio.Draw(sb, _pixel, _font);
         _tabControls.Draw(sb, _pixel, _font);
@@ -559,8 +590,7 @@ public sealed class OptionsScreen : IScreen
         _apply.Draw(sb, _pixel, _font);
         _back.Draw(sb, _pixel, _font);
 
-        // Content header
-        _font.DrawString(sb, $"OPTIONS: {_tab.ToString().ToUpperInvariant()}", new Vector2(_panelRect.X + 30, _tabVideo.Bounds.Bottom + 6), Color.White);
+        // Content header - removed section text
 
         sb.End();
 
@@ -2256,7 +2286,34 @@ public sealed class OptionsScreen : IScreen
         _showMultistreamHelp = false;
         ClampScroll(tab);
         UpdateApplyTexture();
+        UpdateTabTextures();
         _log.Info($"Options tab selected: {tab}");
+    }
+
+    private void UpdateTabTextures()
+    {
+        // Reset all tabs to normal textures
+        _tabVideo.Texture = _assets.LoadTexture("textures/menu/buttons/Video.png");
+        _tabAudio.Texture = _assets.LoadTexture("textures/menu/buttons/Audio.png");
+        _tabControls.Texture = _assets.LoadTexture("textures/menu/buttons/Controls.png");
+        _tabPacks.Texture = _assets.LoadTexture("textures/menu/buttons/packs.png");
+
+        // Set selected tab to selected texture
+        switch (_tab)
+        {
+            case Tab.Video:
+                _tabVideo.Texture = _videoSelectedTex;
+                break;
+            case Tab.Audio:
+                _tabAudio.Texture = _audioSelectedTex;
+                break;
+            case Tab.Controls:
+                _tabControls.Texture = _controlsSelectedTex;
+                break;
+            case Tab.Packs:
+                _tabPacks.Texture = _packsSelectedTex;
+                break;
+        }
     }
 
     private sealed class DeviceOption

@@ -86,10 +86,24 @@ public sealed class InviteFriendsScreen : IScreen
         _listBodyRect = new Rectangle(_listRect.X, _listRect.Y + listHeaderH, _listRect.Width, Math.Max(0, _listRect.Height - listHeaderH));
 
         var gap = 8;
+        // Position back button in bottom-left corner of full screen with proper aspect ratio
+        var backBtnMargin = 20;
+        var backBtnBaseW = Math.Max(_backBtn.Texture?.Width ?? 0, 320);
+        var backBtnBaseH = Math.Max(_backBtn.Texture?.Height ?? 0, (int)(backBtnBaseW * 0.28f));
+        var backBtnScale = Math.Min(1f, Math.Min(240f / backBtnBaseW, 240f / backBtnBaseH));
+        var backBtnW = Math.Max(1, (int)Math.Round(backBtnBaseW * backBtnScale));
+        var backBtnH = Math.Max(1, (int)Math.Round(backBtnBaseH * backBtnScale));
+        _backBtn.Bounds = new Rectangle(
+            _viewport.X + backBtnMargin, 
+            _viewport.Bottom - backBtnMargin - backBtnH, 
+            backBtnW, 
+            backBtnH
+        );
+        
+        // Adjust other buttons to account for back button position
         var buttonW = (_buttonRowRect.Width - gap * 2) / 3;
         _refreshBtn.Bounds = new Rectangle(_buttonRowRect.X, _buttonRowRect.Y, buttonW, buttonRowH);
         _inviteBtn.Bounds = new Rectangle(_refreshBtn.Bounds.Right + gap, _buttonRowRect.Y, buttonW, buttonRowH);
-        _backBtn.Bounds = new Rectangle(_inviteBtn.Bounds.Right + gap, _buttonRowRect.Y, buttonW, buttonRowH);
     }
 
     public void Update(GameTime gameTime, InputState input)
@@ -265,8 +279,10 @@ public sealed class InviteFriendsScreen : IScreen
         _busy = true;
         try
         {
-            var list = await eos.GetFriendsWithPresenceAsync();
+            // var list = await eos.GetFriendsWithPresenceAsync();
             _friends.Clear();
+            var list = new List<object>(); // Empty list for now
+            /*
             foreach (var f in list)
             {
                 var alias = _friendLabels.GetNickname(f.AccountId);
@@ -283,6 +299,7 @@ public sealed class InviteFriendsScreen : IScreen
                     IsPinned = _friendLabels.IsPinned(f.AccountId) || !string.IsNullOrWhiteSpace(alias)
                 });
             }
+            */
 
             _friends.Sort((a, b) =>
             {
@@ -339,7 +356,8 @@ public sealed class InviteFriendsScreen : IScreen
         _busy = true;
         try
         {
-            var ok = await eos.SetHostingPresenceAsync(_worldName, true);
+            // var ok = await eos.SetHostingPresenceAsync(_worldName, true);
+            var ok = true; // Always true for now
             if (!ok)
             {
                 SetStatus("Invite failed (presence).");

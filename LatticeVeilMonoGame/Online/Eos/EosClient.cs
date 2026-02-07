@@ -131,7 +131,7 @@ public sealed class EosClient : IDisposable
         false;
 #endif
 
-    public bool SilentLoginFailed => _silentLoginFailed;
+    // public bool SilentLoginFailed => _silentLoginFailed;
 
 #if EOS_SDK
     public ProductUserId? LocalProductUserIdHandle => _localUserId;
@@ -372,7 +372,7 @@ public sealed class EosClient : IDisposable
         {
             _log.Info("EOS silent login requires UI; waiting for user action.");
             _silentLoginOnly = false;
-            _silentLoginFailed = true;
+            // _silentLoginFailed = true;
             ResetLoginState();
             return;
         }

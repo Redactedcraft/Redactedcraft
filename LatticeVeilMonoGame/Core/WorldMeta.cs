@@ -15,7 +15,15 @@ public sealed class WorldMeta
 
     [JsonPropertyName("gameMode")]
     [JsonConverter(typeof(JsonStringEnumConverter))]
-    public GameMode GameMode { get; set; } = GameMode.Sandbox;
+    public GameMode GameMode { get; set; } = GameMode.Artificer;
+
+    [JsonPropertyName("initialGameMode")]
+    [JsonConverter(typeof(JsonStringEnumConverter))]
+    public GameMode InitialGameMode { get; set; } = GameMode.Artificer;
+
+    [JsonPropertyName("currentWorldGameMode")]
+    [JsonConverter(typeof(JsonStringEnumConverter))]
+    public GameMode CurrentWorldGameMode { get; set; } = GameMode.Artificer;
 
     [JsonPropertyName("generator")]
     public string Generator { get; set; } = "flat_v1";
@@ -32,17 +40,39 @@ public sealed class WorldMeta
     [JsonPropertyName("playerCollision")]
     public bool PlayerCollision { get; set; } = true;
 
+    [JsonPropertyName("hasCustomSpawn")]
+    public bool HasCustomSpawn { get; set; }
+
+    [JsonPropertyName("spawnX")]
+    public int SpawnX { get; set; }
+
+    [JsonPropertyName("spawnY")]
+    public int SpawnY { get; set; }
+
+    [JsonPropertyName("spawnZ")]
+    public int SpawnZ { get; set; }
+
+    [JsonPropertyName("enableMultipleHomes")]
+    public bool EnableMultipleHomes { get; set; } = true;
+
+    [JsonPropertyName("maxHomesPerPlayer")]
+    public int MaxHomesPerPlayer { get; set; } = 8;
+
     public static WorldMeta CreateFlat(string name, GameMode mode, int width, int height, int depth, int seed)
     {
         return new WorldMeta
         {
             Name = name,
             GameMode = mode,
+            InitialGameMode = mode,
+            CurrentWorldGameMode = mode,
             Generator = "flat_v1",
             Seed = seed,
             CreatedAt = DateTimeOffset.UtcNow.ToString("O"),
             Size = new WorldSize { Width = width, Height = height, Depth = depth },
-            PlayerCollision = true
+            PlayerCollision = true,
+            EnableMultipleHomes = true,
+            MaxHomesPerPlayer = 8
         };
     }
 
@@ -50,6 +80,7 @@ public sealed class WorldMeta
     {
         try
         {
+            GameMode = CurrentWorldGameMode;
             if (string.IsNullOrWhiteSpace(CreatedAt))
                 CreatedAt = DateTimeOffset.UtcNow.ToString("O");
 
@@ -86,8 +117,32 @@ public sealed class WorldMeta
                 Seed = ReadInt(root, "seed") ?? ReadInt(root, "Seed") ?? 0,
                 CreatedAt = ReadString(root, "created_at") ?? ReadString(root, "createdAt") ?? ReadString(root, "CreatedAt") ?? string.Empty,
                 GameMode = ParseMode(ReadString(root, "gameMode") ?? ReadString(root, "Mode") ?? ReadString(root, "mode")),
-                PlayerCollision = ReadBool(root, "playerCollision") ?? ReadBool(root, "PlayerCollision") ?? true
+                PlayerCollision = ReadBool(root, "playerCollision") ?? ReadBool(root, "PlayerCollision") ?? true,
+                HasCustomSpawn = ReadBool(root, "hasCustomSpawn") ?? ReadBool(root, "HasCustomSpawn") ?? false,
+                SpawnX = ReadInt(root, "spawnX") ?? ReadInt(root, "SpawnX") ?? 0,
+                SpawnY = ReadInt(root, "spawnY") ?? ReadInt(root, "SpawnY") ?? 0,
+                SpawnZ = ReadInt(root, "spawnZ") ?? ReadInt(root, "SpawnZ") ?? 0,
+                EnableMultipleHomes = ReadBool(root, "enableMultipleHomes") ?? ReadBool(root, "EnableMultipleHomes") ?? true,
+                MaxHomesPerPlayer = ReadInt(root, "maxHomesPerPlayer") ?? ReadInt(root, "MaxHomesPerPlayer") ?? 8
             };
+
+            meta.MaxHomesPerPlayer = Math.Clamp(meta.MaxHomesPerPlayer, 1, 32);
+            if (!meta.EnableMultipleHomes)
+                meta.MaxHomesPerPlayer = 1;
+
+            meta.InitialGameMode = ParseMode(
+                ReadString(root, "initialGameMode")
+                ?? ReadString(root, "InitialGameMode")
+                ?? ReadString(root, "initial_mode")
+                ?? meta.GameMode.ToString());
+
+            meta.CurrentWorldGameMode = ParseMode(
+                ReadString(root, "currentWorldGameMode")
+                ?? ReadString(root, "CurrentWorldGameMode")
+                ?? ReadString(root, "current_mode")
+                ?? meta.GameMode.ToString());
+
+            meta.GameMode = meta.CurrentWorldGameMode;
 
             var size = ReadSize(root);
             if (size != null)
@@ -122,12 +177,12 @@ public sealed class WorldMeta
     private static GameMode ParseMode(string? value)
     {
         if (string.IsNullOrWhiteSpace(value))
-            return GameMode.Sandbox;
+            return GameMode.Artificer;
 
         if (Enum.TryParse<GameMode>(value, ignoreCase: true, out var parsed))
             return parsed;
 
-        return GameMode.Sandbox;
+        return GameMode.Artificer;
     }
 
     private static string? ReadString(JsonElement element, string name)

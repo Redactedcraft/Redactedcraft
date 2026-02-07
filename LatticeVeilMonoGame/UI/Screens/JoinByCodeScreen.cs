@@ -91,9 +91,8 @@ public sealed class JoinByCodeScreen : IScreen
     {
         _viewport = viewport;
 
-        var panelW = Math.Min(640, (int)(viewport.Width * 0.85f));
-		// Slightly taller so we can show a saved friends list.
-		var panelH = Math.Min(430, (int)(viewport.Height * 0.75f));
+        var panelW = Math.Min(540, (int)(viewport.Width * 0.65f));
+		var panelH = Math.Min(430, (int)(viewport.Height * 0.65f));
         var panelX = viewport.X + (viewport.Width - panelW) / 2;
         var panelY = viewport.Y + (viewport.Height - panelH) / 2;
         _panelRect = new Rectangle(panelX, panelY, panelW, panelH);
@@ -111,11 +110,25 @@ public sealed class JoinByCodeScreen : IScreen
         _buttonRowRect = new Rectangle(panelX + pad, _panelRect.Bottom - pad - buttonRowH, panelW - pad * 2, buttonRowH);
 
         var gap = 10;
-		var buttonW = (_buttonRowRect.Width - gap * 3) / 4;
+		// Position back button in bottom-left corner of full screen with proper aspect ratio
+		var backBtnMargin = 20;
+		var backBtnBaseW = Math.Max(_backBtn.Texture?.Width ?? 0, 320);
+		var backBtnBaseH = Math.Max(_backBtn.Texture?.Height ?? 0, (int)(backBtnBaseW * 0.28f));
+		var backBtnScale = Math.Min(1f, Math.Min(240f / backBtnBaseW, 240f / backBtnBaseH));
+		var backBtnW = Math.Max(1, (int)Math.Round(backBtnBaseW * backBtnScale));
+		var backBtnH = Math.Max(1, (int)Math.Round(backBtnBaseH * backBtnScale));
+		_backBtn.Bounds = new Rectangle(
+			viewport.X + backBtnMargin, 
+			viewport.Bottom - backBtnMargin - backBtnH, 
+			backBtnW, 
+			backBtnH
+		);
+		
+		// Adjust other buttons to account for back button position
+		var buttonW = (_buttonRowRect.Width - gap * 3) / 3;
 		_joinBtn.Bounds = new Rectangle(_buttonRowRect.X, _buttonRowRect.Y, buttonW, buttonRowH);
 		_pasteBtn.Bounds = new Rectangle(_joinBtn.Bounds.Right + gap, _buttonRowRect.Y, buttonW, buttonRowH);
 		_saveFriendBtn.Bounds = new Rectangle(_pasteBtn.Bounds.Right + gap, _buttonRowRect.Y, buttonW, buttonRowH);
-		_backBtn.Bounds = new Rectangle(_saveFriendBtn.Bounds.Right + gap, _buttonRowRect.Y, buttonW, buttonRowH);
 
 		RebuildFriendButtons();
     }

@@ -1,3 +1,4 @@
+using System;
 using System.Collections.Generic;
 using Microsoft.Xna.Framework;
 using Microsoft.Xna.Framework.Graphics;
@@ -9,16 +10,48 @@ public static class VoxelMesherGreedy
     public static ChunkMesh BuildChunkMesh(VoxelWorld world, VoxelChunkData chunk, CubeNetAtlas atlas, Logger log)
     {
         // Normal mesh with full greedy optimization
-        return BuildChunkMeshInternal(world, chunk, atlas, log, useGreedyOptimization: true);
+        return BuildChunkMeshInternal(chunk, atlas, log, useGreedyOptimization: true, world.GetBlock);
     }
 
     public static ChunkMesh BuildChunkMeshFast(VoxelWorld world, VoxelChunkData chunk, CubeNetAtlas atlas, Logger log)
     {
         // C) Fast mesh - no greedy merge, no neighbor dependency
-        return BuildChunkMeshInternal(world, chunk, atlas, log, useGreedyOptimization: false);
+        return BuildChunkMeshInternal(chunk, atlas, log, useGreedyOptimization: false, world.GetBlock);
     }
 
-    private static ChunkMesh BuildChunkMeshInternal(VoxelWorld world, VoxelChunkData chunk, CubeNetAtlas atlas, Logger log, bool useGreedyOptimization)
+    /// <summary>
+    /// Priority mesh path used for interaction feedback.
+    /// It snapshots chunk blocks once and avoids expensive world-lock reads for interior neighbors.
+    /// </summary>
+    public static ChunkMesh BuildChunkMeshPriority(VoxelWorld world, VoxelChunkData chunk, CubeNetAtlas atlas, Logger log)
+    {
+        var sizeX = VoxelChunkData.ChunkSizeX;
+        var sizeY = VoxelChunkData.ChunkSizeY;
+        var sizeZ = VoxelChunkData.ChunkSizeZ;
+
+        var originX = chunk.Coord.X * sizeX;
+        var originY = chunk.Coord.Y * sizeY;
+        var originZ = chunk.Coord.Z * sizeZ;
+
+        var localBlocks = new byte[sizeX, sizeY, sizeZ];
+        chunk.CopyBlocksTo(localBlocks);
+
+        byte GetBlockLocalOrWorld(int wx, int wy, int wz)
+        {
+            var lx = wx - originX;
+            var ly = wy - originY;
+            var lz = wz - originZ;
+            if ((uint)lx < sizeX && (uint)ly < sizeY && (uint)lz < sizeZ)
+                return localBlocks[lx, ly, lz];
+
+            return world.GetBlock(wx, wy, wz);
+        }
+
+        // Keep priority path fast (no greedy merge) but geometry-identical to normal meshing.
+        return BuildChunkMeshInternal(chunk, atlas, log, useGreedyOptimization: false, GetBlockLocalOrWorld);
+    }
+
+    private static ChunkMesh BuildChunkMeshInternal(VoxelChunkData chunk, CubeNetAtlas atlas, Logger log, bool useGreedyOptimization, Func<int, int, int, byte> getBlock)
     {
         var opaque = new List<VertexPositionTexture>();
         var transparent = new List<VertexPositionTexture>();
@@ -59,8 +92,8 @@ public static class VoxelMesherGreedy
                         var by = originY + x[1] + q[1];
                         var bz = originZ + x[2] + q[2];
 
-                        var a = world.GetBlock(ax, ay, az);
-                        var b = world.GetBlock(bx, by, bz);
+                        var a = getBlock(ax, ay, az);
+                        var b = getBlock(bx, by, bz);
                         mask[n++] = BuildMaskCell(a, b, d, atlas);
                     }
                 }

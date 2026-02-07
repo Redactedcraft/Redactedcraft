@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.IO;
 using System.IO.Compression;
 using System.Text.Json;
@@ -7,13 +8,22 @@ namespace LatticeVeilMonoGame.Core;
 
 public sealed class PlayerWorldState
 {
-    public int Version { get; set; } = 1;
+    private const int CurrentVersion = 4;
+
+    public int Version { get; set; } = CurrentVersion;
     public string Username { get; set; } = "";
     public float PosX { get; set; }
     public float PosY { get; set; }
     public float PosZ { get; set; }
     public float Yaw { get; set; }
     public float Pitch { get; set; }
+    public bool IsFlying { get; set; }
+    public GameMode CurrentGameMode { get; set; } = GameMode.Artificer;
+    public bool HasHome { get; set; }
+    public float HomeX { get; set; }
+    public float HomeY { get; set; }
+    public float HomeZ { get; set; }
+    public List<PlayerHomeState> Homes { get; set; } = new();
     public int SelectedIndex { get; set; }
     public HotbarSlot[] Hotbar { get; set; } = new HotbarSlot[Inventory.HotbarSize];
 
@@ -43,6 +53,7 @@ public sealed class PlayerWorldState
     {
         try
         {
+            Version = CurrentVersion;
             var safeName = SanitizeUsername(Username);
             var playersDir = Path.Combine(worldPath, "players");
             Directory.CreateDirectory(playersDir);
@@ -59,6 +70,12 @@ public sealed class PlayerWorldState
             bw.Write(PosZ);
             bw.Write(Yaw);
             bw.Write(Pitch);
+            bw.Write(IsFlying);
+            bw.Write((byte)CurrentGameMode);
+            bw.Write(HasHome);
+            bw.Write(HomeX);
+            bw.Write(HomeY);
+            bw.Write(HomeZ);
             bw.Write(SelectedIndex);
 
             var slots = Hotbar ?? Array.Empty<HotbarSlot>();
@@ -68,6 +85,19 @@ public sealed class PlayerWorldState
             {
                 bw.Write((byte)slots[i].Id);
                 bw.Write(slots[i].Count);
+            }
+
+            var homes = Homes ?? new List<PlayerHomeState>();
+            var homeCount = Math.Min(homes.Count, 255);
+            bw.Write((byte)homeCount);
+            for (int i = 0; i < homeCount; i++)
+            {
+                var home = homes[i] ?? new PlayerHomeState();
+                bw.Write(home.Name ?? string.Empty);
+                bw.Write(home.PosX);
+                bw.Write(home.PosY);
+                bw.Write(home.PosZ);
+                bw.Write(home.IconBlockId ?? string.Empty);
             }
         }
         catch (Exception ex)
@@ -122,6 +152,16 @@ public sealed class PlayerWorldState
             state.PosZ = br.ReadSingle();
             state.Yaw = br.ReadSingle();
             state.Pitch = br.ReadSingle();
+            if (state.Version >= 2)
+                state.IsFlying = br.ReadBoolean();
+            if (state.Version >= 3)
+            {
+                state.CurrentGameMode = (GameMode)br.ReadByte();
+                state.HasHome = br.ReadBoolean();
+                state.HomeX = br.ReadSingle();
+                state.HomeY = br.ReadSingle();
+                state.HomeZ = br.ReadSingle();
+            }
             state.SelectedIndex = br.ReadInt32();
 
             var count = br.ReadByte();
@@ -131,6 +171,37 @@ public sealed class PlayerWorldState
                 var id = (BlockId)br.ReadByte();
                 var c = br.ReadInt32();
                 state.Hotbar[i] = new HotbarSlot { Id = id, Count = c };
+            }
+
+            if (state.Version >= 4)
+            {
+                var homeCount = br.ReadByte();
+                state.Homes = new List<PlayerHomeState>(homeCount);
+                for (int i = 0; i < homeCount; i++)
+                {
+                    var home = new PlayerHomeState
+                    {
+                        Name = br.ReadString(),
+                        PosX = br.ReadSingle(),
+                        PosY = br.ReadSingle(),
+                        PosZ = br.ReadSingle(),
+                        IconBlockId = br.ReadString()
+                    };
+                    if (!string.IsNullOrWhiteSpace(home.Name))
+                        state.Homes.Add(home);
+                }
+            }
+
+            // Backward migration from single-home fields.
+            if (state.Homes.Count == 0 && state.HasHome)
+            {
+                state.Homes.Add(new PlayerHomeState
+                {
+                    Name = "home",
+                    PosX = state.HomeX,
+                    PosY = state.HomeY,
+                    PosZ = state.HomeZ
+                });
             }
 
             return true;
@@ -157,8 +228,26 @@ public sealed class PlayerWorldState
                 PosY = ReadFloat(root, "PosY") ?? 0f,
                 PosZ = ReadFloat(root, "PosZ") ?? 0f,
                 Yaw = ReadFloat(root, "Yaw") ?? 0f,
-                Pitch = ReadFloat(root, "Pitch") ?? 0f
+                Pitch = ReadFloat(root, "Pitch") ?? 0f,
+                IsFlying = ReadBool(root, "IsFlying") ?? false,
+                CurrentGameMode = ParseGameModeToken(ReadString(root, "CurrentGameMode") ?? ReadString(root, "GameMode")),
+                HasHome = ReadBool(root, "HasHome") ?? false,
+                HomeX = ReadFloat(root, "HomeX") ?? 0f,
+                HomeY = ReadFloat(root, "HomeY") ?? 0f,
+                HomeZ = ReadFloat(root, "HomeZ") ?? 0f,
+                Homes = ReadHomes(root)
             };
+
+            if (state.Homes.Count == 0 && state.HasHome)
+            {
+                state.Homes.Add(new PlayerHomeState
+                {
+                    Name = "home",
+                    PosX = state.HomeX,
+                    PosY = state.HomeY,
+                    PosZ = state.HomeZ
+                });
+            }
 
             if (TryGetProperty(root, "Inventory", out var inv) && TryGetProperty(inv, "Slots", out var slots) && slots.ValueKind == JsonValueKind.Array)
             {
@@ -223,6 +312,17 @@ public sealed class PlayerWorldState
         return prop.ValueKind == JsonValueKind.Number && prop.TryGetInt32(out var v) ? v : null;
     }
 
+    private static bool? ReadBool(JsonElement element, string name)
+    {
+        if (!TryGetProperty(element, name, out var prop))
+            return null;
+        if (prop.ValueKind == JsonValueKind.True)
+            return true;
+        if (prop.ValueKind == JsonValueKind.False)
+            return false;
+        return null;
+    }
+
     private static bool TryGetProperty(JsonElement element, string name, out JsonElement value)
     {
         foreach (var prop in element.EnumerateObject())
@@ -237,4 +337,59 @@ public sealed class PlayerWorldState
         value = default;
         return false;
     }
+
+    private static List<PlayerHomeState> ReadHomes(JsonElement root)
+    {
+        var homes = new List<PlayerHomeState>();
+        if (!TryGetProperty(root, "Homes", out var homesNode) && !TryGetProperty(root, "homes", out homesNode))
+            return homes;
+        if (homesNode.ValueKind != JsonValueKind.Array)
+            return homes;
+
+        foreach (var node in homesNode.EnumerateArray())
+        {
+            var name = ReadString(node, "Name") ?? ReadString(node, "name") ?? string.Empty;
+            if (string.IsNullOrWhiteSpace(name))
+                continue;
+
+            homes.Add(new PlayerHomeState
+            {
+                Name = name.Trim(),
+                PosX = ReadFloat(node, "PosX") ?? ReadFloat(node, "x") ?? 0f,
+                PosY = ReadFloat(node, "PosY") ?? ReadFloat(node, "y") ?? 0f,
+                PosZ = ReadFloat(node, "PosZ") ?? ReadFloat(node, "z") ?? 0f,
+                IconBlockId = ReadString(node, "IconBlockId") ?? ReadString(node, "iconBlockId") ?? string.Empty
+            });
+        }
+
+        return homes;
+    }
+
+    private static GameMode ParseGameModeToken(string? value)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+            return GameMode.Artificer;
+
+        var token = value.Trim();
+        if (Enum.TryParse<GameMode>(token, true, out var parsed))
+            return parsed;
+
+        token = token.ToLowerInvariant();
+        return token switch
+        {
+            "creative" or "c" or "1" => GameMode.Artificer,
+            "survival" or "s" or "0" => GameMode.Veilwalker,
+            "spectator" or "sp" or "3" => GameMode.Veilseer,
+            _ => GameMode.Artificer
+        };
+    }
+}
+
+public sealed class PlayerHomeState
+{
+    public string Name { get; set; } = "home";
+    public float PosX { get; set; }
+    public float PosY { get; set; }
+    public float PosZ { get; set; }
+    public string IconBlockId { get; set; } = string.Empty;
 }
