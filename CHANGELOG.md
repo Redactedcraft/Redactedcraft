@@ -1,5 +1,17 @@
 # LatticeVeil Changelog
 
+## V8.0.0 - Texture Pack Refresh (2026-02-09)
+
+### Assets & Presentation
+- Synced `Assets/textures` release content from `LatticeVeilMonoGame/Defaults/Assets/textures`.
+- Updated world creation, pause/menu GUI, and gamemode button/icon textures to the latest art set.
+- Added new texture assets required by recent gameplay/UI updates (including water bucket and new selected-state button variants).
+- Removed deprecated texture files that are no longer used by the current UI pipeline.
+
+### Distribution
+- Refreshed `Assets.zip` in the latest `latticeveil/Assets` release so launcher downloads use the new texture set.
+- Release runtime path remains `Documents\\LatticeVeil\\Assets`.
+
 ## V8.0.0 - Cacheforge Update (2026-02-08)
 
 ### Performance & Loading
