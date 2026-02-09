@@ -10,6 +10,7 @@ using System.Net.NetworkInformation;
 using System.Net.Sockets;
 using System.Net.Http;
 using System.Net.Http.Json;
+using System.Text.Json;
 using System.Drawing;
 using DColor = System.Drawing.Color;
 using DFont = System.Drawing.Font;
@@ -60,6 +61,8 @@ public sealed class LauncherForm : Form
     private const int LogTailMaxLines = 400;
     private const int LogLineMaxChars = 300;
     private const bool EpicLoginInGameOnly = true;
+    private const string DefaultAllowlistUrl = "https://raw.githubusercontent.com/latticeveil/OnlineService/main/allowlist.json";
+    private static readonly JsonSerializerOptions JsonOptions = new() { PropertyNameCaseInsensitive = true };
 
     private Process? _gameProcess;
 
@@ -140,6 +143,21 @@ public sealed class LauncherForm : Form
     private string? _epicProductUserId;
     private string? _epicDisplayNameShown;
     private bool _epicLoginRequested;
+    private bool _onlineFunctional;
+    private bool _releaseHashAllowed;
+    private string _onlineStatusDetail = "Checking online services...";
+
+    private sealed class ReleaseAllowlist
+    {
+        public string[] AllowedClientExeSha256 { get; set; } = Array.Empty<string>();
+    }
+
+    private readonly struct OnlineStartupStatus
+    {
+        public bool OnlineFunctional { get; init; }
+        public bool ReleaseHashAllowed { get; init; }
+        public string Detail { get; init; }
+    }
 
     public LauncherForm(Logger log, PlayerProfile profile)
     {
@@ -196,6 +214,7 @@ public sealed class LauncherForm : Form
 
         // If the game was somehow launched outside the launcher, reflect that.
         RefreshGameProcessState();
+        BeginStartupOnlineChecks();
 
         _log.Info("Launcher UI ready.");
     }
@@ -374,9 +393,25 @@ public sealed class LauncherForm : Form
             {
                 var mode = (_launchModeBox.SelectedItem as string) ?? "Online";
                 if (string.Equals(mode, "Offline", StringComparison.OrdinalIgnoreCase))
+                {
                     StartAssetCheckAndLaunch("--offline");
+                }
                 else
+                {
+                    if (!_onlineFunctional || !_releaseHashAllowed)
+                    {
+                        var reason = string.IsNullOrWhiteSpace(_onlineStatusDetail)
+                            ? "Online services are unavailable for this build."
+                            : _onlineStatusDetail;
+                        MessageBox.Show(
+                            reason,
+                            "Online Unavailable",
+                            MessageBoxButtons.OK,
+                            MessageBoxIcon.Warning);
+                        return;
+                    }
                     StartAssetCheckAndLaunch(BuildOnlineLaunchArgs());
+                }
             }
             else
                 ConfirmAndKillGame();
@@ -433,9 +468,10 @@ public sealed class LauncherForm : Form
 
     private void BuildOnlineSection()
     {
-        _onlineHeader.Text = "Online";
+        _onlineHeader.Text = "OFFLINE/LAN";
         _onlineHeader.AutoSize = true;
-        _onlineHeader.Font = new DFont(Font, System.Drawing.FontStyle.Bold);
+        _onlineHeader.Font = new DFont(Font.FontFamily, 10f, System.Drawing.FontStyle.Bold);
+        _onlineHeader.ForeColor = DColor.Red;
         _right.Controls.Add(_onlineHeader);
 
         _hubLoginBtn.Text = "LOGIN WITH EPIC";
@@ -456,7 +492,7 @@ public sealed class LauncherForm : Form
         _hubResetBtn.Click += async (_, _) => await EpicSwitchUserAsync();
         _right.Controls.Add(_hubResetBtn);
 
-        _hubStatusLabel.Text = EpicLoginInGameOnly ? "Epic login is handled in-game." : "Epic: Not logged in";
+        _hubStatusLabel.Text = _onlineStatusDetail;
         _hubStatusLabel.AutoSize = true;
         _right.Controls.Add(_hubStatusLabel);
 
@@ -480,7 +516,8 @@ public sealed class LauncherForm : Form
 
         _title.AutoSize = true;
         _title.Location = new DPoint(44, 12);
-        _title.Text = (Paths.IsDevBuild ? "[DEV] " : string.Empty) + "Lattice Launcher - closing does not start the game";
+        _title.Text = (Paths.IsDevBuild ? "[DEV] " : string.Empty) + "Lattice Launcher";
+        _title.Font = new DFont(Font.FontFamily, 12f, System.Drawing.FontStyle.Bold);
 
         _closeBtn.Text = "X";
         _closeBtn.Width = 40;
@@ -846,9 +883,296 @@ public sealed class LauncherForm : Form
         }
     }
 
+    private void BeginStartupOnlineChecks()
+    {
+        Task.Run(() =>
+        {
+            var status = EvaluateOnlineStartupStatus();
+            try
+            {
+                BeginInvoke(new Action(() =>
+                {
+                    _onlineFunctional = status.OnlineFunctional;
+                    _releaseHashAllowed = status.ReleaseHashAllowed;
+                    _onlineStatusDetail = status.Detail;
+                    ApplyOnlineStatusVisuals();
+                }));
+            }
+            catch
+            {
+                // Best-effort if form is closing.
+            }
+        });
+    }
+
+    private OnlineStartupStatus EvaluateOnlineStartupStatus()
+    {
+        var hashAllowed = VerifyCurrentExecutableHash(out var hashDetail);
+
+        var config = EosConfig.Load(_log);
+        if (config != null)
+            SeedEosEnvironment(config);
+
+        var eosReady = EosRuntimeStatus.IsSdkCompiled() && config != null;
+
+        var detail = eosReady
+            ? (hashAllowed ? "EOS ready. Official build verified." : "EOS ready, but this build is not allowlisted for official online.")
+            : "EOS unavailable. Using OFFLINE/LAN mode.";
+
+        if (!string.IsNullOrWhiteSpace(hashDetail))
+            detail = $"{detail} {hashDetail}";
+
+        return new OnlineStartupStatus
+        {
+            OnlineFunctional = eosReady && hashAllowed,
+            ReleaseHashAllowed = hashAllowed,
+            Detail = detail.Trim()
+        };
+    }
+
+    private void SeedEosEnvironment(EosConfig config)
+    {
+        Environment.SetEnvironmentVariable("EOS_PRODUCT_ID", config.ProductId);
+        Environment.SetEnvironmentVariable("EOS_SANDBOX_ID", config.SandboxId);
+        Environment.SetEnvironmentVariable("EOS_DEPLOYMENT_ID", config.DeploymentId);
+        Environment.SetEnvironmentVariable("EOS_CLIENT_ID", config.ClientId);
+        Environment.SetEnvironmentVariable("EOS_CLIENT_SECRET", config.ClientSecret);
+        Environment.SetEnvironmentVariable("EOS_PRODUCT_NAME", config.ProductName);
+        Environment.SetEnvironmentVariable("EOS_PRODUCT_VERSION", config.ProductVersion);
+        Environment.SetEnvironmentVariable("EOS_LOGIN_MODE", string.IsNullOrWhiteSpace(config.LoginMode) ? "deviceid" : config.LoginMode);
+    }
+
+    private bool VerifyCurrentExecutableHash(out string detail)
+    {
+        detail = string.Empty;
+
+        var exePath = Environment.ProcessPath;
+        if (string.IsNullOrWhiteSpace(exePath) || !File.Exists(exePath))
+        {
+            detail = "Could not resolve launcher executable path for hash verification.";
+            return false;
+        }
+
+        string hash;
+        try
+        {
+            using var stream = File.OpenRead(exePath);
+            using var sha256 = SHA256.Create();
+            hash = Convert.ToHexString(sha256.ComputeHash(stream)).ToLowerInvariant();
+        }
+        catch (Exception ex)
+        {
+            detail = $"Hash verification failed: {ex.Message}";
+            return false;
+        }
+
+        if (!TryLoadAllowedHashes(out var allowedHashes, out var source, out var loadError))
+        {
+            detail = string.IsNullOrWhiteSpace(loadError)
+                ? "Allowlist not found."
+                : $"Allowlist unavailable ({loadError}).";
+            return false;
+        }
+
+        var isAllowed = false;
+        for (var i = 0; i < allowedHashes.Count; i++)
+        {
+            if (!string.Equals(allowedHashes[i], hash, StringComparison.OrdinalIgnoreCase))
+                continue;
+            isAllowed = true;
+            break;
+        }
+
+        detail = isAllowed
+            ? $"Release hash verified ({source})."
+            : $"Release hash rejected ({source}).";
+
+        return isAllowed;
+    }
+
+    private bool TryLoadAllowedHashes(out List<string> hashes, out string source, out string error)
+    {
+        hashes = new List<string>();
+        source = "none";
+        error = string.Empty;
+
+        var pathFromEnv = (Environment.GetEnvironmentVariable("LV_ALLOWLIST_PATH") ?? string.Empty).Trim();
+        if (!string.IsNullOrWhiteSpace(pathFromEnv) && TryLoadAllowlistFromFile(pathFromEnv, out hashes, out error))
+        {
+            source = "LV_ALLOWLIST_PATH";
+            return true;
+        }
+
+        var projectRoot = TryFindProjectRoot();
+        if (!string.IsNullOrWhiteSpace(projectRoot))
+        {
+            var localRepoAllowlist = Path.Combine(projectRoot, "OnlineService", "allowlist.json");
+            if (TryLoadAllowlistFromFile(localRepoAllowlist, out hashes, out error))
+            {
+                source = "OnlineService/allowlist.json";
+                return true;
+            }
+        }
+
+        var appBaseAllowlist = Path.Combine(AppContext.BaseDirectory, "allowlist.json");
+        if (TryLoadAllowlistFromFile(appBaseAllowlist, out hashes, out error))
+        {
+            source = "AppBase/allowlist.json";
+            return true;
+        }
+
+        var allowlistUrl = (Environment.GetEnvironmentVariable("LV_ALLOWLIST_URL") ?? string.Empty).Trim();
+        if (string.IsNullOrWhiteSpace(allowlistUrl))
+            allowlistUrl = DefaultAllowlistUrl;
+
+        if (TryLoadAllowlistFromUrl(allowlistUrl, out hashes, out error))
+        {
+            source = allowlistUrl;
+            return true;
+        }
+
+        return false;
+    }
+
+    private bool TryLoadAllowlistFromFile(string path, out List<string> hashes, out string error)
+    {
+        hashes = new List<string>();
+        error = string.Empty;
+
+        try
+        {
+            if (!File.Exists(path))
+            {
+                error = $"missing file {path}";
+                return false;
+            }
+
+            var json = File.ReadAllText(path);
+            var model = JsonSerializer.Deserialize<ReleaseAllowlist>(json, JsonOptions);
+            if (model?.AllowedClientExeSha256 == null || model.AllowedClientExeSha256.Length == 0)
+            {
+                error = $"no hashes in {path}";
+                return false;
+            }
+
+            for (var i = 0; i < model.AllowedClientExeSha256.Length; i++)
+            {
+                var value = (model.AllowedClientExeSha256[i] ?? string.Empty).Trim().ToLowerInvariant();
+                if (string.IsNullOrWhiteSpace(value))
+                    continue;
+                hashes.Add(value);
+            }
+
+            if (hashes.Count == 0)
+            {
+                error = $"no valid hashes in {path}";
+                return false;
+            }
+
+            return true;
+        }
+        catch (Exception ex)
+        {
+            error = ex.Message;
+            return false;
+        }
+    }
+
+    private bool TryLoadAllowlistFromUrl(string url, out List<string> hashes, out string error)
+    {
+        hashes = new List<string>();
+        error = string.Empty;
+
+        if (string.IsNullOrWhiteSpace(url))
+        {
+            error = "url empty";
+            return false;
+        }
+
+        try
+        {
+            using var client = new HttpClient { Timeout = TimeSpan.FromSeconds(3) };
+            var json = client.GetStringAsync(url).GetAwaiter().GetResult();
+            var model = JsonSerializer.Deserialize<ReleaseAllowlist>(json, JsonOptions);
+            if (model?.AllowedClientExeSha256 == null || model.AllowedClientExeSha256.Length == 0)
+            {
+                error = "no hashes in url payload";
+                return false;
+            }
+
+            for (var i = 0; i < model.AllowedClientExeSha256.Length; i++)
+            {
+                var value = (model.AllowedClientExeSha256[i] ?? string.Empty).Trim().ToLowerInvariant();
+                if (string.IsNullOrWhiteSpace(value))
+                    continue;
+                hashes.Add(value);
+            }
+
+            if (hashes.Count == 0)
+            {
+                error = "no valid hashes in url payload";
+                return false;
+            }
+
+            return true;
+        }
+        catch (Exception ex)
+        {
+            error = ex.Message;
+            return false;
+        }
+    }
+
+    private static string? TryFindProjectRoot()
+    {
+        static string? FindFrom(string startPath)
+        {
+            try
+            {
+                var dir = new DirectoryInfo(startPath);
+                for (var i = 0; i < 10 && dir != null; i++)
+                {
+                    if (File.Exists(Path.Combine(dir.FullName, "LatticeVeil.sln")))
+                        return dir.FullName;
+                    dir = dir.Parent;
+                }
+            }
+            catch
+            {
+                // Ignore lookup failure.
+            }
+
+            return null;
+        }
+
+        string currentDir;
+        try
+        {
+            currentDir = Directory.GetCurrentDirectory();
+        }
+        catch
+        {
+            currentDir = string.Empty;
+        }
+
+        var cwdRoot = FindFrom(currentDir);
+        if (!string.IsNullOrWhiteSpace(cwdRoot))
+            return cwdRoot;
+
+        return FindFrom(AppContext.BaseDirectory);
+    }
+
+    private void ApplyOnlineStatusVisuals()
+    {
+        _onlineHeader.Text = _onlineFunctional ? "ONLINE" : "OFFLINE/LAN";
+        _onlineHeader.ForeColor = _onlineFunctional ? DColor.LimeGreen : DColor.Red;
+        _hubStatusLabel.Text = _onlineStatusDetail;
+    }
+
     private void UpdateHubStatus(string text)
     {
-        _hubStatusLabel.Text = text;
+        _onlineStatusDetail = text;
+        ApplyOnlineStatusVisuals();
     }
 
     private async Task OnEpicLoginClicked()
@@ -1912,6 +2236,7 @@ public sealed class LauncherForm : Form
             ApplyIconImages(DColor.FromArgb(24, 24, 24), DColor.FromArgb(86, 170, 120));
         }
 
+        ApplyOnlineStatusVisuals();
         SetLaunchButtonState(GetGameState());
     }
 
