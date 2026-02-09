@@ -1,6 +1,6 @@
 {
   "version": "1.0",
-  "base_url": "https://raw.githubusercontent.com/LatticeVeil/LatticeVeil/main/Assets/",
+  "base_url": "https://raw.githubusercontent.com/latticeveil/Assets/main/Assets/",
   "files": [
     {
       "path": "textures/blocks/stone.png",
