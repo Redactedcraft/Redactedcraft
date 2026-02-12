@@ -17,7 +17,12 @@ eos.public.json
 eos.config.json
 eos.*.secret.json
 *.secret.json
+EOS-Service*.env
 official_build.sig
+Artifacts/Render/*.env
+Artifacts/Render/*.secret.json
+Artifacts/Render/*.secret.env
+Artifacts/Render/render-gate.env
 LatticeVeil_project/eos.private.json
 LatticeVeil_project/eos.public.json
 LatticeVeil_project/eos.config.json
@@ -33,6 +38,7 @@ LatticeVeil_project/eos.config.json
 !README.md
 !CHANGELOG.md
 !RELEASE_TEMPLATE.md
+!OFFICIAL_ONLINE_SERVICE_TERMS.md
 
 # Executable files
 *.exe
@@ -44,6 +50,10 @@ LatticeVeil_project/eos.config.json
 *.tmp
 *.cache
 *.log
+.env
+.env.*
+*.env
+!*.example.env
 Thumbs.db
 Desktop.ini
 

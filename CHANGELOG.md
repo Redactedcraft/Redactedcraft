@@ -1,35 +1,31 @@
 # LatticeVeil Changelog
 
-## V8.0.0 - Texture Pack Refresh (2026-02-09)
+## V8.0.0 - Worldforge Convergence (2026-02-12)
 
-### Assets & Presentation
-- Synced `Assets/textures` release content from `LatticeVeilMonoGame/Defaults/Assets/textures`.
-- Updated world creation, pause/menu GUI, and gamemode button/icon textures to the latest art set.
-- Added new texture assets required by recent gameplay/UI updates (including water bucket and new selected-state button variants).
-- Removed deprecated texture files that are no longer used by the current UI pipeline.
+### World Generation and Loading
+- Finalized spawn-first generation flow so initial world bring-up is deterministic around spawn.
+- Kept chunk mesh caching active for faster return loads and reduced visible chunk pop-in.
+- Consolidated create-time worldgen toggles and removed legacy runtime startup generation path.
+- Continued cache freshness/version enforcement to avoid stale chunk mesh reuse.
 
-### Distribution
-- Refreshed `Assets.zip` in the latest `latticeveil/Assets` release so launcher downloads use the new texture set.
-- Release runtime path remains `Documents\\LatticeVeil\\Assets`.
+### Multiplayer and Online Gate
+- Stabilized online gate ticket handoff from launcher to game process.
+- Kept official online restricted to allowlisted builds via server-side validation.
+- Preserved LAN fallback behavior when gate verification is denied or unavailable.
+- Maintained friend/join-by-code flow improvements and host-side command control updates.
 
-## V8.0.0 - Cacheforge Update (2026-02-08)
+### Launcher and Asset Delivery
+- Launcher now preserves user assets unless install is required or `Reset Assets` is explicitly used.
+- Asset reset path continues to support full delete/reinstall for reliable recovery.
+- Assets release feed remains `Assets.zip` from `latticeveil/Assets`.
+- Runtime assets continue to load from `Documents\\LatticeVeil\\Assets`.
 
-### Performance & Loading
-- Spawn-first pipeline now front-loads generation work around spawn before gameplay begins.
-- Spawn chunk meshes are cached to disk through `ChunkMeshCache`, so returning to existing worlds with warm cache data loads nearly instantly.
-- Streaming, prewarm, and job budgets were tuned to reduce hitching and visible chunk pop-in during movement.
+### Release Packaging
+- Main release artifacts standardized to:
+  - `LatticeVeilMonoGame.exe`
+  - `LatticeVeil-v8.0.0-worldforge-convergence-win-x64.zip`
+  - `LatticeVeil-v8.0.0-worldforge-convergence-source-safe.zip`
+- No rebuild required for this release finalization; existing release EXE is used as-is.
 
-### World Creation
-- World creation keeps generation work in the create flow instead of runtime gameplay startup.
-- Create World now includes generation toggles for structures, caves, and ores.
-- Multiple Homes creation options and UI groundwork were added for upcoming worldgen and progression extensions.
-
-### Engine & Infrastructure
-- Runtime world generation flow on the in-world screen was removed/stubbed in favor of the spawn-first creation pipeline.
-- `ChunkMeshCache` now uses explicit versioning and freshness checks to avoid stale mesh reuse.
-- Asset and cache plumbing was refreshed to support deterministic cache reuse across join/rejoin cycles.
-
-### Known Issues / Next
-- First-time joins on uncached worlds still incur generation and cache warm-up time.
-- Continue validating cache invalidation paths after large terrain-generation changes.
-- Next milestone includes broader worldgen module hooks and additional profile-safe online hosting diagnostics.
+### Compatibility Note
+- Older multiplayer world saves may not be compatible with this release due to world synchronization and worldgen pipeline changes.

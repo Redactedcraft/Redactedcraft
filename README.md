@@ -1,210 +1,143 @@
 # LatticeVeil Project
 
-A voxel-based survival game with advanced world generation, multiplayer support, and rich lore.
+LatticeVeil is a voxel survival game with procedural world generation, EOS-backed online play, and moddable user assets.
 
-## 🎮 **About LatticeVeil**
+## Current Release
 
-LatticeVeil is a sophisticated voxel game featuring:
-- **Advanced World Generation** - Biomes, terrain smoothing, and procedural generation
-- **Survival Mode** - Health, hunger, combat, and environmental hazards
-- **Multiplayer Support** - LAN and EOS-based multiplayer
-- **Rich Lore** - Deep world-building and story elements
+- Version: `v8.0.0`
+- Release name: `Worldforge Convergence`
+- Platform: Windows x64 (`net8.0-windows`, single-file EXE)
 
-### **Project Management (Local Only)**
-- **🧪 Experimental Section**: `Experimental/` - Local development tools (NOT pushed to GitHub)
-  - **GitHub Integration**: `Experimental/GitHub/` - Repository management GUI
-  - **Development Tools**: Various utilities for development
-  - **Testing Tools**: Experimental testing framework
+This release ships without changing game protocol contracts. It focuses on worldgen/loading stability, multiplayer fixes, and launcher/asset reliability.
 
-> **Note**: The `Experimental/` directory contains project management tools only and is excluded from Git. See `PROJECT_STRUCTURE.md` for complete structure.
+## Distribution Model
 
-## 🎮 **Current Features**
+Player-facing release artifacts are:
 
-### **✅ Implemented (V8.0.0 "Cacheforge Update")**
-- Advanced voxel world generation with biomes
-- Chunk loading optimization with priority queuing
-- Desert biome with terrain smoothing
-- Professional world builder with SharpNoise integration
-- Complete plugin architecture (5 integrated plugins)
-- Comprehensive lore system (25KB document)
-- GUI Designer for UI layout
+- `LatticeVeilMonoGame.exe`
+- `LatticeVeil-v8.0.0-worldforge-convergence-win-x64.zip`
+- `LatticeVeil-v8.0.0-worldforge-convergence-source-safe.zip`
 
-### **🚧 In Development**
-- Survival mechanics (health, hunger, combat)
-- Crafting system with UI interface
-- Tool durability and effectiveness
-- Equipment and armor system
-- Mob spawning and AI
-- Progression system (Attunement)
+Assets are distributed through the separate `latticeveil/Assets` release feed as `Assets.zip`.
 
-## 📚 **Documentation**
+## Assets Behavior
 
-- **📋 [Development Log](DEVELOPMENT_LOG.md)** - Complete development history
-- **📋 [Project Structure](PROJECT_STRUCTURE.md)** - Complete file organization
-- **📋 [Documentation Index](docs/README.md)** - Documentation overview
-- **🔧 [Master Development Plan](docs/implementation/MASTER_DEVELOPMENT_PLAN.md)** - Complete roadmap
-- **📖 [Game Lore](docs/lore/LORE.md)** - World-building and story elements
+Runtime asset path:
 
-## 🔧 **Build System**
+- `Documents/LatticeVeil/Assets`
 
-### **Quick Build**
-```powershell
-# Launch build GUI
-.\BuildGUI.ps1
+Launcher behavior:
 
-# Or use command line
-.\Tools\build_and_release.ps1
-```
+- Installs assets automatically if required files are missing.
+- Does not force overwrite on normal launch when assets are already present.
+- `Reset Assets` performs a full reinstall (delete/replace flow) of official defaults.
 
-### **Build Components**
-- **Build GUI**: `BuildGUI.ps1` - Visual build interface
-- **Build Tool**: `build/Builder/` - C# build application
-- **Scripts**: `Tools/` - PowerShell automation scripts
-- **Assets**: `assets/` - Images and layout configurations
+Compatibility notice:
 
-## 🔐 **EOS Config (Secure Split)**
+- Older multiplayer world saves may not be compatible with this release due to worldgen and sync pipeline changes.
 
-LatticeVeil now uses a split EOS config model:
+## Build and Local Dev
 
-- `eos.public.json` (safe identifiers only, no secret)
-- `eos.private.json` (secret-only, not committed)
-- `eos.public.example.json` (committed placeholder template)
-
-Load order:
-
-1. Public config:
-   - `EOS_PUBLIC_CONFIG_PATH`
-   - `<repo>/eos.public.json`
-   - `%USERPROFILE%/Documents/LatticeVeil/Config/eos.public.json`
-   - `AppContext.BaseDirectory/eos.public.json`
-2. Secret:
-   - `EOS_CLIENT_SECRET` (recommended)
-   - `EOS_PRIVATE_CONFIG_PATH`
-   - `<repo>/eos.private.json`
-   - `%USERPROFILE%/Documents/LatticeVeil/Config/eos.private.json`
-   - `AppContext.BaseDirectory/eos.private.json` (official runtime only)
-
-If config is missing or incomplete, EOS is disabled and LAN remains available.
-
-### Migrate legacy combined config once
+Run the build GUI:
 
 ```powershell
-.\Tools\migrate-eos-config.ps1
+.\Tools\BuildGUI.ps1
 ```
 
-This splits legacy `eos.config.json` into public/private files locally.
+Output staging:
 
-## 🌐 **Official Online Gate (Optional but Recommended)**
+- `DEV/LatticeVeilMonoGame.exe`
+- `RELEASE/LatticeVeilMonoGame.exe`
 
-Official online ecosystem features can be protected by a gate ticket.
-LAN/offline still works without gate.
+Both are single-file self-contained publishes. `BuildNonce` metadata is stamped by build tools to support allowlist/hash workflows.
 
-Client environment variables:
+## Official Online Gate
 
-- `LV_GATE_URL` - Gate server base URL (example: `https://your-gate.example.com`)
-- `LV_GATE_REQUIRED` - `1` to enforce official ticket for online ecosystem features
-- `LV_OFFICIAL_PROOF_PATH` - Optional path to `official_build.sig` (defaults to app directory)
+Official online access is protected by server-side gate validation.
 
-When gate is required and verification fails, official online actions are disabled with:
+Flow:
 
-`Official online disabled (unverified build). LAN still available.`
+1. Launcher requests a gate ticket for the local EXE hash.
+2. Game process receives a pre-authorized ticket from launcher.
+3. EOS host validates peer tickets using `POST /ticket/validate`.
+4. If gate verification fails, game falls back to LAN-only behavior.
 
-Gate server environment variables:
+Important:
+
+- Secrets are not shipped in client artifacts.
+- Official EOS private credentials remain server-side on Render.
+- Public forks can run offline/LAN or their own EOS/gate backend, but not the official backend unless explicitly allowlisted.
+
+See `OFFICIAL_ONLINE_SERVICE_TERMS.md` for policy and restrictions.
+
+### Client Environment Variables
+
+- `LV_GATE_URL`
+- `LV_GATE_DEFAULT_URL`
+- `LV_EOS_CONFIG_URL`
+- `LV_GATE_REQUIRED`
+- `LV_REQUIRE_LAUNCHER_HANDSHAKE`
+- `LV_ALLOWLIST_URL`
+- `LV_OFFICIAL_PROOF_PATH`
+- `LV_DEV_ONLINE_KEY`
+
+### Gate Server Environment Variables
 
 - `GATE_JWT_SIGNING_KEY` (required)
-- `GITHUB_ALLOWLIST_REPO` (example: `latticeveil/online-allowlist`)
-- `GITHUB_ALLOWLIST_PATH` (default: `allowlist.json`)
-- `GITHUB_ALLOWLIST_BRANCH` (default: `main`)
-- `GITHUB_TOKEN` (server-side only)
-- Optional: `GATE_TICKET_MINUTES`, `GATE_ISSUER`, `GATE_AUDIENCE`, `ALLOWLIST_FILE`
+- `GATE_ADMIN_TOKEN` (required for admin runtime endpoints)
+- `EOS_PRODUCT_ID`
+- `EOS_SANDBOX_ID`
+- `EOS_DEPLOYMENT_ID`
+- `EOS_CLIENT_ID`
+- `EOS_CLIENT_SECRET`
+- `GATE_VERIFICATION_MODE`
+- `GATE_EXPECTED_SANDBOX_ID`
+- `GATE_EXPECTED_DEPLOYMENT_ID`
+- `GATE_PUBLIC_ID_POLICY`
+- `GATE_DEV_KEY` (optional)
+- `ALLOWLIST_SOURCE`
+- `ALLOWLIST_JSON_PATH` (recommended)
 
-Run local gate server:
+Template:
+
+- `GateServer/render.example.env`
+
+## EOS Config Split
+
+The project supports split EOS config files:
+
+- `eos.public.json` (safe IDs only)
+- `eos.private.json` (secret material, never commit)
+- `eos.public.example.json` (tracked placeholder template)
+
+If EOS config is unavailable, EOS is disabled and LAN remains available.
+
+## Runtime Hash Rotation (No Redeploy)
+
+Maintainer workflow only:
 
 ```powershell
-dotnet run --project GateServer/GateServer.csproj
+$env:GATE_ADMIN_TOKEN = "<your-admin-token>"
+.\Tools\UpdateGateHash.ps1 -BuildType release -Target auto -ShowRuntime
 ```
 
-## 🎯 **Development Status**
+Or GUI:
 
-**Version**: V8.0.0 "Cacheforge Update"  
-**Framework**: .NET 8.0 Windows  
-**Rendering**: MonoGame DesktopGL (OpenGL)  
-**Status**: Release Ready - Foundation Complete, Survival Features In Progress
+```powershell
+.\Tools\UpdateGateHashGUI.ps1
+```
 
-### **Next Priority**
-1. **Phase 1**: Health, Hunger, Combat systems (2-3 weeks)
-2. **Phase 2**: Crafting UI and Tool system (2-3 weeks)  
-3. **Phase 3**: Food resources and world enhancements (3-4 weeks)
-4. **Phase 4**: Advanced features and polish (4-6 weeks)
+This updates runtime allowlist memory on the gate service. A Render restart clears runtime overrides unless persisted in source allowlist config.
 
-See [MASTER_DEVELOPMENT_PLAN.md](docs/implementation/MASTER_DEVELOPMENT_PLAN.md) for complete roadmap.
+## Contributing
 
-## 🌍 **Game World**
+1. Fork the repository.
+2. Create a branch.
+3. Implement and test changes.
+4. Submit a pull request.
 
-### **Lore Integration**
-- **Complete Canon**: 25KB lore document with 4 sections
-- **5 Living Factions**: Continuists, Veilkeepers, Hearthward, Ascendants, Echo Faith
-- **Rule of Three**: Frame/Conduit/Limiter fundamental laws
-- **Echo System**: Pressure-based completion mechanics
+## License
 
-### **World Generation**
-- **9 Biome Types**: Natural, organic generation
-- **Advanced Terrain**: Ridged noise and domain warping
-- **Structure System**: 7 structure types with loot
-- **Resource Distribution**: Balanced ore and material placement
-
-## 📊 **Technical Specifications**
-
-- **Target Framework**: net8.0-windows
-- **Platform**: x64
-- **Rendering**: OpenGL (Vulkan removed)
-- **Build Configuration**: Release with self-contained publishing
-- **Output**: Single executable (LatticeVeilMonoGame.exe)
-- **Plugin Architecture**: Extensible modular system
-
-## 🔌 **Plugin Ecosystem**
-
-- **SharpNoise Plugin**: Professional noise generation (0.12.1.1)
-- **Advanced Terrain Plugin**: Ridged noise and domain warping
-- **Biome Diversity Plugin**: 8 biome types with natural transitions
-- **Performance Plugin**: Hardware-adaptive optimization
-- **Safety Plugin**: Multiple safety layers for world stability
-
-## � **Release Assets**
-
-- **Executable**: Self-contained single executable
-- **Dependencies**: All plugins included (no external dependencies)
-- **Platform**: Windows x64 only
-- **Size**: Optimized for distribution
-
----
-
-**Last Updated**: 2026-02-03  
-**Version**: V8.0.0 "Cacheforge Update"  
-**Next Milestone**: Survival Mode Implementation
-
-## 🤝 **Contributing**
-
-1. Fork the repository
-2. Create a feature branch
-3. Implement your changes
-4. Test thoroughly
-5. Submit a pull request
-
-## 📄 **License**
-
-This project is licensed under the terms specified in the LICENSE file.
-
-## 🔗 **Links**
-
-- **Documentation**: [docs/README.md](docs/README.md)
-- **Implementation Plans**: [docs/implementation/SURVIVAL_PLANS.md](docs/implementation/SURVIVAL_PLANS.md)
-- **Game Lore**: [docs/lore/LORE_COMPANION.md](docs/lore/LORE_COMPANION.md)
-- **Project Organization**: [docs/project/PROJECT_ORGANIZATION.md](docs/project/PROJECT_ORGANIZATION.md)
-
----
-
-**Version**: V8.0.0 "Cacheforge Update"  
-**Status**: Active Development  
-**Last Updated**: 2026-01-31
+This repository is MIT licensed (`LICENSE`).
+Official hosted backend access is governed separately by `OFFICIAL_ONLINE_SERVICE_TERMS.md`.
 
