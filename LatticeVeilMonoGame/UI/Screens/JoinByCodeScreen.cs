@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.IO;
+using System.Linq;
 using System.Threading.Tasks;
 using WinClipboard = System.Windows.Forms.Clipboard;
 using Microsoft.Xna.Framework;
@@ -15,12 +16,14 @@ using LatticeVeilMonoGame.UI;
 namespace LatticeVeilMonoGame.UI.Screens;
 
 /// <summary>
-/// Join an EOS-hosted game by manually entering the host code (EOS ProductUserId).
+/// Join an online-hosted game by host code, friend code, or reserved username.
 /// </summary>
 public sealed class JoinByCodeScreen : IScreen
 {
     private const int MaxCodeLength = 96;
     private const double PresenceRefreshIntervalSeconds = 5.0;
+    private const double CanonicalSyncRetrySeconds = 8.0;
+    private const double MissingEndpointRetrySeconds = 45.0;
 
     private readonly MenuStack _menus;
     private readonly AssetLoader _assets;
@@ -39,6 +42,9 @@ public sealed class JoinByCodeScreen : IScreen
 
 	private readonly List<Button> _friendJoinBtns = new();
 	private readonly List<Button> _friendRemoveBtns = new();
+    private readonly object _friendButtonsLock = new();
+    private readonly object _presenceApplyLock = new();
+    private Dictionary<string, GatePresenceEntry>? _pendingPresenceByJoinCode;
 
     private Texture2D? _bg;
     private Texture2D? _panel;
@@ -53,6 +59,10 @@ public sealed class JoinByCodeScreen : IScreen
     private string _code = string.Empty;
 
     private bool _busy;
+    private bool _canonicalSyncInProgress;
+    private bool _canonicalSeedAttempted;
+    private bool _friendsEndpointUnavailable;
+    private double _nextCanonicalSyncAttempt;
     private bool _presenceBusy;
     private double _lastPresenceRefresh = -100;
     private string _localUsername = string.Empty;
@@ -60,7 +70,7 @@ public sealed class JoinByCodeScreen : IScreen
     private double _now;
     private string _status = string.Empty;
     private double _statusUntil;
-    private readonly Dictionary<string, EosFriendSnapshot> _friendPresenceByJoinCode = new(StringComparer.OrdinalIgnoreCase);
+    private readonly Dictionary<string, GatePresenceEntry> _friendPresenceByJoinCode = new(StringComparer.OrdinalIgnoreCase);
 
     public JoinByCodeScreen(MenuStack menus, AssetLoader assets, PixelFont font, Texture2D pixel, Logger log, PlayerProfile profile,
         global::Microsoft.Xna.Framework.GraphicsDeviceManager graphics, EosClient? eos, string? initialCode)
@@ -82,7 +92,7 @@ public sealed class JoinByCodeScreen : IScreen
 
         _joinBtn = new Button("JOIN", () => _ = JoinAsync()) { BoldText = true };
         _pasteBtn = new Button("PASTE", PasteFromClipboard) { BoldText = true };
-		_saveFriendBtn = new Button("SAVE FRIEND", () => SaveFriend()) { BoldText = true };
+		_saveFriendBtn = new Button("SAVE FRIEND", () => _ = SaveFriendAsync()) { BoldText = true };
         _backBtn = new Button("BACK", () => _menus.Pop()) { BoldText = true };
 
         try
@@ -101,22 +111,27 @@ public sealed class JoinByCodeScreen : IScreen
     {
         _viewport = viewport;
 
-        var panelW = Math.Min(540, (int)(viewport.Width * 0.65f));
-		var panelH = Math.Min(430, (int)(viewport.Height * 0.65f));
+        var panelW = Math.Min(980, viewport.Width - 90);
+		var panelH = Math.Min(650, viewport.Height - 120);
         var panelX = viewport.X + (viewport.Width - panelW) / 2;
         var panelY = viewport.Y + (viewport.Height - panelH) / 2;
         _panelRect = new Rectangle(panelX, panelY, panelW, panelH);
 
-        var pad = 14;
-        var labelH = _font.LineHeight + 4;
-        _codeRect = new Rectangle(panelX + pad, panelY + pad + labelH + 10, panelW - pad * 2, _font.LineHeight + 14);
+        var pad = 20;
+        var titleH = _font.LineHeight + 10;
+        var labelH = _font.LineHeight + 6;
+        var inputH = _font.LineHeight + 14;
+        var codeY = panelY + pad + titleH + labelH + 6;
+        _codeRect = new Rectangle(panelX + pad, codeY, panelW - pad * 2, inputH);
 
-		// Friends list area (below code box, above the bottom buttons)
-		var friendsY = _codeRect.Bottom + 12;
-		var friendsH = Math.Max(90, _panelRect.Bottom - pad - (_font.LineHeight + 10) - friendsY - 12);
+		// Reserve a stable block for identity/status lines to avoid crowding.
+        var infoBlockY = _codeRect.Bottom + 8;
+        var infoBlockH = (_font.LineHeight + 2) * 3 + 8;
+		var friendsY = infoBlockY + infoBlockH + 8;
+        var buttonRowH = _font.LineHeight + 14;
+		var friendsH = Math.Max(140, _panelRect.Bottom - pad - buttonRowH - 12 - friendsY);
 		_friendsRect = new Rectangle(panelX + pad, friendsY, panelW - pad * 2, friendsH);
 
-        var buttonRowH = _font.LineHeight + 10;
         _buttonRowRect = new Rectangle(panelX + pad, _panelRect.Bottom - pad - buttonRowH, panelW - pad * 2, buttonRowH);
 
         var gap = 10;
@@ -167,6 +182,9 @@ public sealed class JoinByCodeScreen : IScreen
         }
 
         RefreshLocalIdentity();
+        ApplyPendingPresenceRefresh();
+        if (!_busy && !_canonicalSyncInProgress && _now >= _nextCanonicalSyncAttempt)
+            _ = SyncCanonicalFriendsAsync(seedFromLocal: !_canonicalSeedAttempted);
         if (!_busy && !_presenceBusy && _now - _lastPresenceRefresh >= PresenceRefreshIntervalSeconds)
             _ = RefreshFriendPresenceAsync();
 
@@ -182,8 +200,9 @@ public sealed class JoinByCodeScreen : IScreen
 		_saveFriendBtn.Update(input);
 		_backBtn.Update(input);
 
-		foreach (var b in _friendJoinBtns) b.Update(input);
-		foreach (var b in _friendRemoveBtns) b.Update(input);
+        GetFriendButtonSnapshots(out var friendJoinButtons, out var friendRemoveButtons);
+		foreach (var b in friendJoinButtons) b.Update(input);
+		foreach (var b in friendRemoveButtons) b.Update(input);
 
         if (_statusUntil > 0 && _now > _statusUntil)
         {
@@ -204,23 +223,28 @@ public sealed class JoinByCodeScreen : IScreen
 
         sb.Begin(samplerState: SamplerState.PointClamp, transformMatrix: UiLayout.Transform);
 
-        if (_panel is not null) sb.Draw(_panel, _panelRect, Color.White);
-        else sb.Draw(_pixel, _panelRect, new Color(0, 0, 0, 180));
+        if (_panel is not null)
+        {
+            sb.Draw(_panel, _panelRect, Color.White);
+        }
+        else
+        {
+            sb.Draw(_pixel, _panelRect, new Color(0, 0, 0, 180));
+            DrawBorder(sb, _panelRect, Color.White);
+        }
 
-        DrawBorder(sb, _panelRect, Color.White);
-
-        var title = "JOIN ONLINE (EOS)";
+        var title = "JOIN ONLINE";
         var tSize = _font.MeasureString(title);
         var tPos = new Vector2(_panelRect.Center.X - tSize.X / 2f, _panelRect.Y + 12);
         DrawTextBold(sb, title, tPos, Color.White);
 
-        var label = "HOST CODE (ProductUserId)";
+        var label = "HOST CODE / FRIEND CODE / USERNAME";
         _font.DrawString(sb, label, new Vector2(_codeRect.X, _codeRect.Y - _font.LineHeight - 6), Color.White);
 
         sb.Draw(_pixel, _codeRect, _codeActive ? new Color(35, 35, 35, 230) : new Color(20, 20, 20, 230));
         DrawBorder(sb, _codeRect, Color.White);
 
-        var codeText = string.IsNullOrWhiteSpace(_code) ? "(paste host code here)" : _code;
+        var codeText = string.IsNullOrWhiteSpace(_code) ? "(paste host code, RC-code, or username)" : _code;
         var cColor = string.IsNullOrWhiteSpace(_code) ? new Color(180, 180, 180) : Color.White;
         _font.DrawString(sb, codeText, new Vector2(_codeRect.X + 6, _codeRect.Y + 6), cColor);
 
@@ -233,14 +257,17 @@ public sealed class JoinByCodeScreen : IScreen
 
 		// Saved friends list
 		_font.DrawString(sb, "SAVED FRIENDS", new Vector2(_friendsRect.X, _friendsRect.Y - _font.LineHeight - 6), new Color(220, 220, 220));
+        sb.Draw(_pixel, _friendsRect, new Color(20, 20, 20, 190));
+        DrawBorder(sb, _friendsRect, new Color(180, 180, 180));
 		if (_profile.Friends.Count == 0)
 		{
-			_font.DrawString(sb, "(none yet — paste an ID above and press SAVE FRIEND)", new Vector2(_friendsRect.X + 6, _friendsRect.Y + 6), new Color(180, 180, 180));
+			_font.DrawString(sb, "(none yet - paste an ID above and press SAVE FRIEND)", new Vector2(_friendsRect.X + 6, _friendsRect.Y + 6), new Color(180, 180, 180));
 		}
 		else
 		{
-			foreach (var b in _friendJoinBtns) b.Draw(sb, _pixel, _font);
-			foreach (var b in _friendRemoveBtns) b.Draw(sb, _pixel, _font);
+            GetFriendButtonSnapshots(out var friendJoinButtons, out var friendRemoveButtons);
+			foreach (var b in friendJoinButtons) b.Draw(sb, _pixel, _font);
+			foreach (var b in friendRemoveButtons) b.Draw(sb, _pixel, _font);
 		}
 
         _joinBtn.Draw(sb, _pixel, _font);
@@ -262,10 +289,16 @@ public sealed class JoinByCodeScreen : IScreen
         if (_busy)
             return;
 
-        var code = (_code ?? string.Empty).Trim();
-        if (string.IsNullOrWhiteSpace(code))
+        var rawCode = (_code ?? string.Empty).Trim();
+        if (string.IsNullOrWhiteSpace(rawCode))
         {
             SetStatus("Enter a host code.");
+            return;
+        }
+
+        if (!TryNormalizeHostCode(rawCode, out var code, out var normalizeMessage))
+        {
+            SetStatus(normalizeMessage);
             return;
         }
 
@@ -282,6 +315,15 @@ public sealed class JoinByCodeScreen : IScreen
             SetStatus(gateDenied);
             return;
         }
+
+        var resolvedCode = await ResolveHostCodeAsync(code, gate);
+        if (!resolvedCode.Ok)
+        {
+            SetStatus(resolvedCode.Error);
+            return;
+        }
+        code = resolvedCode.HostCode;
+        _code = code;
 
         _busy = true;
         SetStatus("Connecting...");
@@ -304,10 +346,13 @@ public sealed class JoinByCodeScreen : IScreen
             }
 
             var info = result.WorldInfo;
-            var worldDir = EnsureJoinedWorld(info);
+            _profile.AddOrUpdateFriend(code);
+            _profile.Save(_log);
+            var worldDir = JoinedWorldCache.PrepareJoinedWorldPath(info, _log);
             var metaPath = Path.Combine(worldDir, "world.json");
             var meta = WorldMeta.CreateFlat(info.WorldName, info.GameMode, info.Width, info.Height, info.Depth, info.Seed);
             meta.PlayerCollision = info.PlayerCollision;
+            meta.WorldId = JoinedWorldCache.ResolveWorldId(info);
             meta.Save(metaPath, _log);
 
             _menus.Push(
@@ -343,6 +388,8 @@ public sealed class JoinByCodeScreen : IScreen
 				text = text.Substring(0, MaxCodeLength);
 
 			_code = text;
+			if (TryNormalizeHostCode(_code, out var normalizedCode, out _))
+				_code = normalizedCode;
 			SetStatus("Pasted.", 2);
 		}
 		catch (Exception ex)
@@ -352,51 +399,254 @@ public sealed class JoinByCodeScreen : IScreen
 		}
 	}
 
-	private void SaveFriend()
+	private async Task SaveFriendAsync()
 	{
-		var id = _code.Trim();
-		if (string.IsNullOrWhiteSpace(id))
+		if (_busy)
+			return;
+
+		if (!TryNormalizeHostCode(_code, out var id, out var normalizeMessage))
 		{
-			SetStatus("Nothing to save.", 2);
+			SetStatus(normalizeMessage, 2);
 			return;
 		}
 
-		_profile.AddOrUpdateFriend(id);
-		_profile.Save(_log);
-		SetStatus($"Saved friend {PlayerProfile.ShortId(id)}", 3);
+		var gate = OnlineGateClient.GetOrCreate();
+		if (!gate.CanUseOfficialOnline(_log, out var gateDenied))
+		{
+			SetStatus(gateDenied);
+			return;
+		}
+
+		var resolved = await ResolveHostCodeAsync(id, gate);
+		if (!resolved.Ok)
+		{
+			SetStatus(resolved.Error, 2.5);
+			return;
+		}
+
+		id = resolved.HostCode;
+		_code = id;
+		var label = resolved.DisplayName;
+		if (string.IsNullOrWhiteSpace(label))
+			label = PlayerProfile.ShortId(id);
+
+        var add = await gate.AddFriendAsync(id);
+        if (!add.Ok)
+        {
+            if (IsMissingFriendsEndpointError(add.Message))
+            {
+                _friendsEndpointUnavailable = true;
+                _nextCanonicalSyncAttempt = _now + MissingEndpointRetrySeconds;
+                _profile.AddOrUpdateFriend(id, label);
+                _profile.Save(_log);
+                SetStatus("Saved locally. Server friends endpoint unavailable on this build.", 4);
+                RebuildFriendButtons();
+                return;
+            }
+
+            SetStatus(string.IsNullOrWhiteSpace(add.Message) ? "Could not save friend." : add.Message, 3);
+            _nextCanonicalSyncAttempt = _now + CanonicalSyncRetrySeconds;
+            return;
+        }
+
+        await SyncCanonicalFriendsAsync(seedFromLocal: false);
+		SetStatus(string.IsNullOrWhiteSpace(add.Message) ? $"Saved friend {label}" : add.Message, 3);
 		RebuildFriendButtons();
-        _ = RefreshFriendPresenceAsync();
+		_ = RefreshFriendPresenceAsync();
 	}
 
-	private void RemoveFriend(string userId)
+    private bool TryNormalizeHostCode(string rawInput, out string hostCode, out string error)
+    {
+        hostCode = string.Empty;
+        error = string.Empty;
+
+        var value = (rawInput ?? string.Empty).Trim();
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            error = "Host code is empty.";
+            return false;
+        }
+
+        // Allow lines copied from in-game chat/status text.
+        var hostCodeMarker = "HOST CODE:";
+        var markerIndex = value.IndexOf(hostCodeMarker, StringComparison.OrdinalIgnoreCase);
+        if (markerIndex >= 0)
+            value = value.Substring(markerIndex + hostCodeMarker.Length).Trim();
+        var hostLinkMarker = "HOST LINK:";
+        markerIndex = value.IndexOf(hostLinkMarker, StringComparison.OrdinalIgnoreCase);
+        if (markerIndex >= 0)
+            value = value.Substring(markerIndex + hostLinkMarker.Length).Trim();
+
+        // Support the share-link format: latticeveil://join/<hostCode>
+        var embeddedLinkIndex = value.IndexOf("latticeveil://join/", StringComparison.OrdinalIgnoreCase);
+        if (embeddedLinkIndex >= 0)
+            value = value.Substring(embeddedLinkIndex);
+        if (value.StartsWith("latticeveil://join/", StringComparison.OrdinalIgnoreCase))
+            value = value.Substring("latticeveil://join/".Length).Trim();
+
+        if (Uri.TryCreate(value, UriKind.Absolute, out var uri))
+        {
+            if (string.Equals(uri.Scheme, "latticeveil", StringComparison.OrdinalIgnoreCase)
+                && string.Equals(uri.Host, "join", StringComparison.OrdinalIgnoreCase))
+            {
+                var path = uri.AbsolutePath?.Trim('/') ?? string.Empty;
+                if (!string.IsNullOrWhiteSpace(path))
+                    value = path;
+                else
+                    value = (uri.Query ?? string.Empty).Replace("?code=", "", StringComparison.OrdinalIgnoreCase).Trim();
+            }
+            else
+            {
+                // Support web links like ...?code=<hostCode>
+                var query = uri.Query ?? string.Empty;
+                var codeIndex = query.IndexOf("code=", StringComparison.OrdinalIgnoreCase);
+                if (codeIndex >= 0)
+                {
+                    var code = query.Substring(codeIndex + 5);
+                    var amp = code.IndexOf('&');
+                    if (amp >= 0)
+                        code = code.Substring(0, amp);
+                    value = Uri.UnescapeDataString(code).Trim();
+                }
+            }
+        }
+
+        if (value.StartsWith("puid=", StringComparison.OrdinalIgnoreCase))
+            value = value.Substring(5).Trim();
+
+        // Allow friend-code input (RC-XXXXXXXX) by resolving against saved friends.
+        if (value.StartsWith("RC-", StringComparison.OrdinalIgnoreCase))
+        {
+            var resolved = _profile.Friends
+                .FirstOrDefault(f => string.Equals(EosIdentityStore.GenerateFriendCode(f.UserId), value, StringComparison.OrdinalIgnoreCase));
+            if (resolved != null)
+                value = resolved.UserId;
+        }
+
+        if (value.Length > MaxCodeLength)
+            value = value.Substring(0, MaxCodeLength);
+
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            error = "Host code is empty.";
+            return false;
+        }
+
+        hostCode = value;
+        return true;
+    }
+
+    private async Task<(bool Ok, string HostCode, string DisplayName, string Error)> ResolveHostCodeAsync(string normalizedCode, OnlineGateClient gate)
+    {
+        var value = (normalizedCode ?? string.Empty).Trim();
+        if (string.IsNullOrWhiteSpace(value))
+            return (false, string.Empty, string.Empty, "Host code is empty.");
+
+        var resolve = await gate.ResolveIdentityAsync(value);
+        if (resolve.Found && resolve.User != null)
+        {
+            var user = resolve.User;
+            var display = string.IsNullOrWhiteSpace(user.DisplayName) ? user.Username : user.DisplayName;
+            return (true, user.ProductUserId, display, string.Empty);
+        }
+
+        if (value.StartsWith("RC-", StringComparison.OrdinalIgnoreCase))
+        {
+            var reason = string.IsNullOrWhiteSpace(resolve.Reason) ? "Friend code not found." : resolve.Reason;
+            return (false, string.Empty, string.Empty, reason);
+        }
+
+        if (LooksLikeReservedUsername(value))
+        {
+            var reason = string.IsNullOrWhiteSpace(resolve.Reason) ? "Username not found." : resolve.Reason;
+            return (false, string.Empty, string.Empty, reason);
+        }
+
+        return (true, value, string.Empty, string.Empty);
+    }
+
+    private static bool LooksLikeReservedUsername(string value)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+            return false;
+        // Reserved usernames are short; long values are likely direct host IDs.
+        if (value.Length > 16)
+            return false;
+        for (var i = 0; i < value.Length; i++)
+        {
+            var c = value[i];
+            if (char.IsLetterOrDigit(c) || c == '_')
+                continue;
+            return false;
+        }
+
+        return true;
+    }
+
+	private async void RemoveFriend(string userId)
 	{
-		_profile.RemoveFriend(userId);
-		_profile.Save(_log);
-		SetStatus($"Removed friend {PlayerProfile.ShortId(userId)}", 3);
-		RebuildFriendButtons();
+        var gate = OnlineGateClient.GetOrCreate();
+        if (gate.CanUseOfficialOnline(_log, out _))
+        {
+            var remove = await gate.RemoveFriendAsync(userId);
+            if (!remove.Ok)
+            {
+                if (IsMissingFriendsEndpointError(remove.Message))
+                {
+                    _friendsEndpointUnavailable = true;
+                    _nextCanonicalSyncAttempt = _now + MissingEndpointRetrySeconds;
+                    _profile.RemoveFriend(userId);
+                    _profile.Save(_log);
+                    SetStatus($"Removed friend {PlayerProfile.ShortId(userId)} (local fallback)", 3);
+                    RebuildFriendButtons();
+                    return;
+                }
+                SetStatus(string.IsNullOrWhiteSpace(remove.Message) ? "Failed to remove friend." : remove.Message, 3);
+                _nextCanonicalSyncAttempt = _now + CanonicalSyncRetrySeconds;
+                return;
+            }
+
+            await SyncCanonicalFriendsAsync(seedFromLocal: false);
+            SetStatus($"Removed friend {PlayerProfile.ShortId(userId)}", 3);
+            RebuildFriendButtons();
+            return;
+        }
+
+        _profile.RemoveFriend(userId);
+        _profile.Save(_log);
+        SetStatus($"Removed friend {PlayerProfile.ShortId(userId)}", 3);
+        RebuildFriendButtons();
 	}
 
 	private void RebuildFriendButtons()
 	{
-		_friendJoinBtns.Clear();
-		_friendRemoveBtns.Clear();
+		var joinButtons = new List<Button>();
+		var removeButtons = new List<Button>();
 
-		// Show up to 6 friends to keep the screen simple.
 		var friends = _profile.Friends;
-		if (friends == null || friends.Count == 0) return;
+		if (friends == null || friends.Count == 0)
+        {
+            lock (_friendButtonsLock)
+            {
+                _friendJoinBtns.Clear();
+                _friendRemoveBtns.Clear();
+            }
+            return;
+        }
 
-		var rowH = 44;
-		var gap = 8;
-		var maxRows = Math.Min(6, friends.Count);
-		var joinW = _friendsRect.Width - 54;
+		var rowH = _font.LineHeight + 14;
+		var gap = 6;
+        var maxRowsByHeight = Math.Max(1, (_friendsRect.Height - 8) / (rowH + gap));
+		var maxRows = Math.Min(Math.Min(8, maxRowsByHeight), friends.Count);
+		var joinW = Math.Max(140, _friendsRect.Width - 54);
 		for (int i = 0; i < maxRows; i++)
 		{
 			var f = friends[i];
-			var y = _friendsRect.Y + 28 + i * (rowH + gap);
+			var y = _friendsRect.Y + 4 + i * (rowH + gap);
 			var joinBounds = new Rectangle(_friendsRect.X, y, joinW, rowH);
 			var removeBounds = new Rectangle(_friendsRect.Right - 44, y, 44, rowH);
 
-            var label = BuildFriendRowLabel(f);
+            var label = TruncateForButton(BuildFriendRowLabel(f), 72);
 
 			var joinBtn = new Button(label, () =>
 			{
@@ -405,12 +655,20 @@ public sealed class JoinByCodeScreen : IScreen
 				_ = JoinAsync();
 			}) { BoldText = true };
 			joinBtn.Bounds = joinBounds;
-			_friendJoinBtns.Add(joinBtn);
+			joinButtons.Add(joinBtn);
 
 			var removeBtn = new Button("X", () => RemoveFriend(f.UserId)) { BoldText = true };
 			removeBtn.Bounds = removeBounds;
-			_friendRemoveBtns.Add(removeBtn);
+			removeButtons.Add(removeBtn);
 		}
+
+        lock (_friendButtonsLock)
+        {
+            _friendJoinBtns.Clear();
+            _friendJoinBtns.AddRange(joinButtons);
+            _friendRemoveBtns.Clear();
+            _friendRemoveBtns.AddRange(removeButtons);
+        }
 	}
 
     private string BuildFriendRowLabel(PlayerProfile.FriendEntry friend)
@@ -420,12 +678,14 @@ public sealed class JoinByCodeScreen : IScreen
             var name = string.IsNullOrWhiteSpace(snapshot.DisplayName)
                 ? (!string.IsNullOrWhiteSpace(friend.Label) ? friend.Label : PlayerProfile.ShortId(friend.UserId))
                 : snapshot.DisplayName;
-            var friendCode = TryFormatFriendCode(string.IsNullOrWhiteSpace(snapshot.JoinInfo) ? friend.UserId : snapshot.JoinInfo);
+            var friendCode = string.IsNullOrWhiteSpace(snapshot.FriendCode)
+                ? TryFormatFriendCode(friend.UserId)
+                : snapshot.FriendCode;
             if (!string.IsNullOrWhiteSpace(friendCode))
                 name = $"{name} ({friendCode})";
             var state = snapshot.IsHosting
-                ? $"HOSTING {snapshot.WorldName ?? "WORLD"}"
-                : snapshot.Presence.ToUpperInvariant();
+                ? $"HOSTING {(string.IsNullOrWhiteSpace(snapshot.WorldName) ? "WORLD" : snapshot.WorldName)}"
+                : (string.IsNullOrWhiteSpace(snapshot.Status) ? "ONLINE" : snapshot.Status.ToUpperInvariant());
             return $"{name} | {state}";
         }
 
@@ -479,6 +739,8 @@ public sealed class JoinByCodeScreen : IScreen
         var trimmed = value?.Trim();
         if (string.IsNullOrWhiteSpace(trimmed))
             return string.Empty;
+        if (trimmed.StartsWith("RC-", StringComparison.OrdinalIgnoreCase))
+            return trimmed.ToUpperInvariant();
         return EosIdentityStore.GenerateFriendCode(trimmed);
     }
 
@@ -489,52 +751,32 @@ public sealed class JoinByCodeScreen : IScreen
         if (!gate.CanUseOfficialOnline(_log, out _))
             return;
 
-        var eos = _eos ?? EosClientProvider.GetOrCreate(_log, "deviceid", allowRetry: true);
-        _eos = eos;
-        if (EosRuntimeStatus.Evaluate(eos).Reason != EosRuntimeReason.Ready || eos == null)
-            return;
-
         _presenceBusy = true;
         try
         {
-            var snapshots = await eos.GetFriendsWithPresenceAsync();
-            _friendPresenceByJoinCode.Clear();
-            for (var i = 0; i < snapshots.Count; i++)
-            {
-                var joinCode = snapshots[i].JoinInfo?.Trim();
-                if (string.IsNullOrWhiteSpace(joinCode))
-                    continue;
+            var ids = _profile.Friends
+                .Select(f => (f.UserId ?? string.Empty).Trim())
+                .Where(id => !string.IsNullOrWhiteSpace(id))
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToArray();
+            if (ids.Length == 0)
+                return;
 
-                _friendPresenceByJoinCode[joinCode] = snapshots[i];
+            var query = await gate.QueryPresenceAsync(ids);
+            if (!query.Ok)
+                return;
+
+            var refreshed = new Dictionary<string, GatePresenceEntry>(StringComparer.OrdinalIgnoreCase);
+            for (var i = 0; i < query.Entries.Count; i++)
+            {
+                var entry = query.Entries[i];
+                if (string.IsNullOrWhiteSpace(entry.ProductUserId))
+                    continue;
+                refreshed[entry.ProductUserId] = entry;
             }
 
-            var changed = false;
-            foreach (var friend in _profile.Friends)
-            {
-                if (!_friendPresenceByJoinCode.TryGetValue(friend.UserId, out var snap))
-                    continue;
-
-                if (string.IsNullOrWhiteSpace(snap.DisplayName))
-                    continue;
-
-                if (!string.Equals(friend.LastKnownDisplayName, snap.DisplayName, StringComparison.Ordinal))
-                {
-                    friend.LastKnownDisplayName = snap.DisplayName;
-                    changed = true;
-                }
-
-                var presence = snap.IsHosting ? $"hosting {snap.WorldName ?? "world"}" : snap.Presence;
-                if (!string.Equals(friend.LastKnownPresence, presence, StringComparison.Ordinal))
-                {
-                    friend.LastKnownPresence = presence;
-                    changed = true;
-                }
-            }
-
-            if (changed)
-                _profile.Save(_log);
-
-            RebuildFriendButtons();
+            lock (_presenceApplyLock)
+                _pendingPresenceByJoinCode = refreshed;
         }
         catch (Exception ex)
         {
@@ -544,6 +786,161 @@ public sealed class JoinByCodeScreen : IScreen
         {
             _presenceBusy = false;
         }
+    }
+
+    private void ApplyPendingPresenceRefresh()
+    {
+        Dictionary<string, GatePresenceEntry>? pending;
+        lock (_presenceApplyLock)
+        {
+            pending = _pendingPresenceByJoinCode;
+            _pendingPresenceByJoinCode = null;
+        }
+
+        if (pending == null)
+            return;
+
+        _friendPresenceByJoinCode.Clear();
+        foreach (var pair in pending)
+            _friendPresenceByJoinCode[pair.Key] = pair.Value;
+
+        var changed = false;
+        foreach (var friend in _profile.Friends)
+        {
+            if (!_friendPresenceByJoinCode.TryGetValue(friend.UserId, out var snap))
+                continue;
+
+            var resolvedName = string.IsNullOrWhiteSpace(snap.DisplayName)
+                ? friend.LastKnownDisplayName
+                : snap.DisplayName;
+            if (!string.IsNullOrWhiteSpace(resolvedName)
+                && !string.Equals(friend.LastKnownDisplayName, resolvedName, StringComparison.Ordinal))
+            {
+                friend.LastKnownDisplayName = resolvedName;
+                changed = true;
+            }
+
+            var presence = snap.IsHosting
+                ? $"hosting {(!string.IsNullOrWhiteSpace(snap.WorldName) ? snap.WorldName : "world")}"
+                : (string.IsNullOrWhiteSpace(snap.Status) ? "online" : snap.Status);
+            if (!string.Equals(friend.LastKnownPresence, presence, StringComparison.Ordinal))
+            {
+                friend.LastKnownPresence = presence;
+                changed = true;
+            }
+        }
+
+        if (changed)
+            _profile.Save(_log);
+
+        RebuildFriendButtons();
+    }
+
+    private async Task<bool> SyncCanonicalFriendsAsync(bool seedFromLocal)
+    {
+        var gate = OnlineGateClient.GetOrCreate();
+        if (_canonicalSyncInProgress || !gate.CanUseOfficialOnline(_log, out _))
+            return false;
+        if (_friendsEndpointUnavailable && _now < _nextCanonicalSyncAttempt)
+            return false;
+
+        _canonicalSyncInProgress = true;
+        try
+        {
+            var serverFriends = await gate.GetFriendsAsync();
+            if (!serverFriends.Ok)
+            {
+                if (IsMissingFriendsEndpointError(serverFriends.Message))
+                {
+                    if (!_friendsEndpointUnavailable)
+                        SetStatus("Server friends endpoint unavailable. Using local friends list.", 4);
+
+                    _friendsEndpointUnavailable = true;
+                    _canonicalSeedAttempted = true;
+                    _nextCanonicalSyncAttempt = _now + MissingEndpointRetrySeconds;
+                    return false;
+                }
+
+                _nextCanonicalSyncAttempt = _now + CanonicalSyncRetrySeconds;
+                return false;
+            }
+
+            _friendsEndpointUnavailable = false;
+            _nextCanonicalSyncAttempt = _now + CanonicalSyncRetrySeconds;
+
+            if (seedFromLocal && serverFriends.Friends.Count == 0 && _profile.Friends.Count > 0)
+            {
+                _canonicalSeedAttempted = true;
+                _nextCanonicalSyncAttempt = _now + CanonicalSyncRetrySeconds;
+                return true;
+            }
+
+            var existingPresence = _profile.Friends
+                .Where(f => !string.IsNullOrWhiteSpace(f.UserId))
+                .ToDictionary(
+                    f => f.UserId,
+                    f => f.LastKnownPresence ?? string.Empty,
+                    StringComparer.OrdinalIgnoreCase);
+
+            _profile.Friends.Clear();
+            foreach (var user in serverFriends.Friends)
+            {
+                var id = (user.ProductUserId ?? string.Empty).Trim();
+                if (string.IsNullOrWhiteSpace(id))
+                    continue;
+
+                var label = string.IsNullOrWhiteSpace(user.DisplayName) ? user.Username : user.DisplayName;
+                _profile.AddOrUpdateFriend(id, label);
+                var friend = _profile.Friends.FirstOrDefault(f => string.Equals(f.UserId, id, StringComparison.OrdinalIgnoreCase));
+                if (friend == null)
+                    continue;
+                friend.LastKnownDisplayName = label;
+                if (existingPresence.TryGetValue(id, out var presence))
+                    friend.LastKnownPresence = presence;
+            }
+
+            _profile.Save(_log);
+            _nextCanonicalSyncAttempt = _now + CanonicalSyncRetrySeconds;
+            return true;
+        }
+        catch (Exception ex)
+        {
+            _log.Warn($"JoinByCode canonical friends sync failed: {ex.Message}");
+            _nextCanonicalSyncAttempt = _now + CanonicalSyncRetrySeconds;
+            return false;
+        }
+        finally
+        {
+            _canonicalSyncInProgress = false;
+        }
+    }
+
+    private static bool IsMissingFriendsEndpointError(string? message)
+    {
+        var value = (message ?? string.Empty).Trim();
+        if (string.IsNullOrWhiteSpace(value))
+            return false;
+
+        return value.Contains("HTTP 404", StringComparison.OrdinalIgnoreCase)
+            || value.Contains("Not Found", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private void GetFriendButtonSnapshots(out Button[] joinButtons, out Button[] removeButtons)
+    {
+        lock (_friendButtonsLock)
+        {
+            joinButtons = _friendJoinBtns.ToArray();
+            removeButtons = _friendRemoveBtns.ToArray();
+        }
+    }
+
+    private static string TruncateForButton(string value, int maxChars)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+            return string.Empty;
+        if (value.Length <= maxChars)
+            return value;
+        return value.Substring(0, Math.Max(0, maxChars - 3)) + "...";
     }
     private void HandleTextInput(InputState input, ref string value, int maxLen)
     {
@@ -602,26 +999,6 @@ public sealed class JoinByCodeScreen : IScreen
         if (value.Length >= maxLen)
             return;
         value += c;
-    }
-
-    private static string EnsureJoinedWorld(LanWorldInfo info)
-    {
-        var root = Path.Combine(Paths.MultiplayerWorldsDir, "Joined");
-        Directory.CreateDirectory(root);
-        var safeName = SanitizeFolderName(info.WorldName);
-        var path = Path.Combine(root, safeName);
-        Directory.CreateDirectory(path);
-        return path;
-    }
-
-    private static string SanitizeFolderName(string name)
-    {
-        if (string.IsNullOrWhiteSpace(name))
-            return "World";
-
-        foreach (var c in Path.GetInvalidFileNameChars())
-            name = name.Replace(c, '_');
-        return name.Trim();
     }
 
     private void DrawTextBold(SpriteBatch sb, string text, Vector2 pos, Color color)

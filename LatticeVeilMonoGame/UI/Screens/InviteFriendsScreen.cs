@@ -1,6 +1,8 @@
 using System;
 using System.Collections.Generic;
+using System.Linq;
 using System.Threading.Tasks;
+using WinClipboard = System.Windows.Forms.Clipboard;
 using Microsoft.Xna.Framework;
 using Microsoft.Xna.Framework.Graphics;
 using Microsoft.Xna.Framework.Input;
@@ -13,54 +15,84 @@ namespace LatticeVeilMonoGame.UI.Screens;
 
 public sealed class InviteFriendsScreen : IScreen
 {
+    private const int MaxFriendInputLength = 48;
+    private const double CanonicalSyncRetrySeconds = 8.0;
+    private const double MissingEndpointRetrySeconds = 45.0;
+
     private readonly MenuStack _menus;
     private readonly AssetLoader _assets;
     private readonly PixelFont _font;
     private readonly Texture2D _pixel;
     private readonly Logger _log;
     private readonly string _worldName;
+    private readonly PlayerProfile _profile;
+    private readonly EosIdentityStore _identityStore;
+    private readonly OnlineGateClient _gate;
     private EosClient? _eosClient;
-    private readonly FriendLabelsStore _friendLabels;
 
     private readonly Button _refreshBtn;
     private readonly Button _inviteBtn;
+    private readonly Button _addFriendBtn;
     private readonly Button _backBtn;
 
     private Texture2D? _bg;
+    private Texture2D? _panel;
     private Rectangle _viewport;
     private Rectangle _panelRect;
     private Rectangle _infoRect;
     private Rectangle _listRect;
     private Rectangle _listBodyRect;
+    private Rectangle _addFriendInputRect;
     private Rectangle _buttonRowRect;
 
     private readonly List<FriendEntry> _friends = new();
     private int _selectedFriend = -1;
     private bool _busy;
+    private bool _canonicalSyncInProgress;
+    private bool _canonicalSeedAttempted;
+    private bool _friendsEndpointUnavailable;
+    private double _nextCanonicalSyncAttempt;
+    private bool _addFriendActive;
+    private string _addFriendQuery = string.Empty;
     private double _now;
     private string _status = string.Empty;
     private double _statusUntil;
 
-    public InviteFriendsScreen(MenuStack menus, AssetLoader assets, PixelFont font, Texture2D pixel, Logger log,
-        EosClient? eosClient, string worldName)
+    public InviteFriendsScreen(
+        MenuStack menus,
+        AssetLoader assets,
+        PixelFont font,
+        Texture2D pixel,
+        Logger log,
+        PlayerProfile profile,
+        EosClient? eosClient,
+        string worldName)
     {
         _menus = menus;
         _assets = assets;
         _font = font;
         _pixel = pixel;
         _log = log;
+        _profile = profile;
         _worldName = string.IsNullOrWhiteSpace(worldName) ? "World" : worldName.Trim();
         _eosClient = eosClient ?? EosClientProvider.GetOrCreate(_log, "deviceid", allowRetry: true);
+        _identityStore = EosIdentityStore.LoadOrCreate(_log);
+        _gate = OnlineGateClient.GetOrCreate();
+
         if (_eosClient == null)
             _log.Warn("InviteFriendsScreen: EOS client not available.");
-        _friendLabels = FriendLabelsStore.LoadOrCreate(log);
 
         _refreshBtn = new Button("REFRESH", () => _ = RefreshFriendsAsync()) { BoldText = true };
         _inviteBtn = new Button("INVITE", () => _ = InviteSelectedAsync()) { BoldText = true };
+        _addFriendBtn = new Button("ADD FRIEND", () => _ = AddFriendAsync()) { BoldText = true };
         _backBtn = new Button("BACK", () => _menus.Pop()) { BoldText = true };
 
-        try { _bg = _assets.LoadTexture("textures/menu/backgrounds/InviteFriends_bg.png"); }
-        catch { /* optional */ }
+        try
+        {
+            _bg = _assets.LoadTexture("textures/menu/backgrounds/InviteFriends_bg.png");
+            _panel = _assets.LoadTexture("textures/menu/GUIS/Multiplayer_GUI.png");
+        }
+        catch { }
 
         _ = RefreshFriendsAsync();
     }
@@ -69,25 +101,30 @@ public sealed class InviteFriendsScreen : IScreen
     {
         _viewport = viewport;
 
-        var panelW = Math.Min(640, (int)(viewport.Width * 0.85f));
-        var panelH = Math.Min(360, (int)(viewport.Height * 0.75f));
+        var panelW = Math.Min(980, viewport.Width - 90);
+        var panelH = Math.Min(650, viewport.Height - 120);
         var panelX = viewport.X + (viewport.Width - panelW) / 2;
         var panelY = viewport.Y + (viewport.Height - panelH) / 2;
         _panelRect = new Rectangle(panelX, panelY, panelW, panelH);
 
-        var pad = 12;
+        var pad = 20;
         var headerH = _font.LineHeight + 8;
-        _infoRect = new Rectangle(panelX + pad, panelY + pad, panelW - pad * 2, headerH);
+        _infoRect = new Rectangle(panelX + pad, panelY + pad + 6, panelW - pad * 2, headerH);
 
         var buttonRowH = _font.LineHeight + 10;
         _buttonRowRect = new Rectangle(panelX + pad, panelY + panelH - pad - buttonRowH, panelW - pad * 2, buttonRowH);
         _listRect = new Rectangle(panelX + pad, _infoRect.Bottom + 6, panelW - pad * 2, _buttonRowRect.Top - _infoRect.Bottom - 12);
 
         var listHeaderH = _font.LineHeight + 8;
-        _listBodyRect = new Rectangle(_listRect.X, _listRect.Y + listHeaderH, _listRect.Width, Math.Max(0, _listRect.Height - listHeaderH));
+        var addInputH = _font.LineHeight + 12;
+        _addFriendInputRect = new Rectangle(_listRect.X + 8, _listRect.Y + listHeaderH + 4, _listRect.Width - 16, addInputH);
+        _listBodyRect = new Rectangle(
+            _listRect.X,
+            _addFriendInputRect.Bottom + 8,
+            _listRect.Width,
+            Math.Max(0, _listRect.Bottom - (_addFriendInputRect.Bottom + 8)));
 
         var gap = 8;
-        // Position back button in bottom-left corner of full screen with proper aspect ratio
         var backBtnMargin = 20;
         var backBtnBaseW = Math.Max(_backBtn.Texture?.Width ?? 0, 320);
         var backBtnBaseH = Math.Max(_backBtn.Texture?.Height ?? 0, (int)(backBtnBaseW * 0.28f));
@@ -95,16 +132,15 @@ public sealed class InviteFriendsScreen : IScreen
         var backBtnW = Math.Max(1, (int)Math.Round(backBtnBaseW * backBtnScale));
         var backBtnH = Math.Max(1, (int)Math.Round(backBtnBaseH * backBtnScale));
         _backBtn.Bounds = new Rectangle(
-            _viewport.X + backBtnMargin, 
-            _viewport.Bottom - backBtnMargin - backBtnH, 
-            backBtnW, 
-            backBtnH
-        );
-        
-        // Adjust other buttons to account for back button position
+            _viewport.X + backBtnMargin,
+            _viewport.Bottom - backBtnMargin - backBtnH,
+            backBtnW,
+            backBtnH);
+
         var buttonW = (_buttonRowRect.Width - gap * 2) / 3;
         _refreshBtn.Bounds = new Rectangle(_buttonRowRect.X, _buttonRowRect.Y, buttonW, buttonRowH);
         _inviteBtn.Bounds = new Rectangle(_refreshBtn.Bounds.Right + gap, _buttonRowRect.Y, buttonW, buttonRowH);
+        _addFriendBtn.Bounds = new Rectangle(_inviteBtn.Bounds.Right + gap, _buttonRowRect.Y, buttonW, buttonRowH);
     }
 
     public void Update(GameTime gameTime, InputState input)
@@ -119,8 +155,24 @@ public sealed class InviteFriendsScreen : IScreen
             return;
         }
 
+        if (input.IsNewLeftClick())
+            _addFriendActive = _addFriendInputRect.Contains(input.MousePosition);
+
+        if (_addFriendActive && !_busy)
+        {
+            HandleTextInput(input, ref _addFriendQuery, MaxFriendInputLength);
+            if (input.IsNewKeyPress(Keys.Enter))
+                _ = AddFriendAsync();
+        }
+
+        var eosReady = EosRuntimeStatus.Evaluate(_eosClient).Reason == EosRuntimeReason.Ready;
+        _refreshBtn.Enabled = !_busy;
+        _inviteBtn.Enabled = !_busy && eosReady && _selectedFriend >= 0 && _selectedFriend < _friends.Count;
+        _addFriendBtn.Enabled = !_busy && eosReady && !string.IsNullOrWhiteSpace(_addFriendQuery);
+
         _refreshBtn.Update(input);
         _inviteBtn.Update(input);
+        _addFriendBtn.Update(input);
         _backBtn.Update(input);
 
         HandleListSelection(input);
@@ -132,10 +184,8 @@ public sealed class InviteFriendsScreen : IScreen
             OnResize(viewport);
 
         sb.Begin(samplerState: SamplerState.PointClamp);
-
         if (_bg is not null) sb.Draw(_bg, UiLayout.WindowViewport, Color.White);
         else sb.Draw(_pixel, UiLayout.WindowViewport, new Color(0, 0, 0));
-
         sb.End();
 
         sb.Begin(samplerState: SamplerState.PointClamp, transformMatrix: UiLayout.Transform);
@@ -151,23 +201,27 @@ public sealed class InviteFriendsScreen : IScreen
 
     private void DrawPanel(SpriteBatch sb)
     {
+        if (_panel is not null)
+        {
+            sb.Draw(_panel, _panelRect, Color.White);
+            return;
+        }
+
         sb.Draw(_pixel, _panelRect, new Color(0, 0, 0, 180));
         DrawBorder(sb, _panelRect, Color.White);
     }
 
     private void DrawInfo(SpriteBatch sb)
     {
-        var title = "INVITE FRIENDS";
-        var left = new Vector2(_infoRect.X + 4, _infoRect.Y + 2);
-        DrawTextBold(sb, title, left, Color.White);
+        DrawTextBold(sb, "INVITE FRIENDS", new Vector2(_infoRect.X + 4, _infoRect.Y + 2), Color.White);
 
         var eosSnapshot = EosRuntimeStatus.Evaluate(_eosClient);
-        var eos = eosSnapshot.Reason == EosRuntimeReason.Ready
+        var rightText = eosSnapshot.Reason == EosRuntimeReason.Ready
             ? $"HOSTING: {_worldName}"
             : eosSnapshot.StatusText;
-        var size = _font.MeasureString(eos);
+        var size = _font.MeasureString(rightText);
         var pos = new Vector2(_infoRect.Right - size.X - 4, _infoRect.Y + 2);
-        _font.DrawString(sb, eos, pos, new Color(220, 180, 80));
+        _font.DrawString(sb, rightText, pos, new Color(220, 180, 80));
     }
 
     private void DrawList(SpriteBatch sb)
@@ -175,7 +229,18 @@ public sealed class InviteFriendsScreen : IScreen
         sb.Draw(_pixel, _listRect, new Color(20, 20, 20, 200));
         DrawBorder(sb, _listRect, Color.White);
 
-        _font.DrawString(sb, "FRIENDS (EOS)", new Vector2(_listRect.X + 4, _listRect.Y + 2), Color.White);
+        _font.DrawString(sb, "FRIENDS (CODES / USERNAMES)", new Vector2(_listRect.X + 4, _listRect.Y + 2), Color.White);
+        _font.DrawString(sb, "ADD FRIEND (CODE OR USERNAME)", new Vector2(_addFriendInputRect.X, _addFriendInputRect.Y - _font.LineHeight - 2), new Color(220, 220, 220));
+
+        sb.Draw(_pixel, _addFriendInputRect, _addFriendActive ? new Color(36, 36, 36, 240) : new Color(24, 24, 24, 240));
+        DrawBorder(sb, _addFriendInputRect, Color.White);
+
+        var inputLabel = string.IsNullOrWhiteSpace(_addFriendQuery) ? "(type RC-code or reserved username)" : _addFriendQuery;
+        _font.DrawString(
+            sb,
+            inputLabel,
+            new Vector2(_addFriendInputRect.X + 6, _addFriendInputRect.Y + 4),
+            string.IsNullOrWhiteSpace(_addFriendQuery) ? new Color(170, 170, 170) : Color.White);
 
         if (EosRuntimeStatus.Evaluate(_eosClient).Reason != EosRuntimeReason.Ready)
         {
@@ -185,7 +250,7 @@ public sealed class InviteFriendsScreen : IScreen
 
         if (_friends.Count == 0)
         {
-            DrawCenteredMessage(sb, "NO FRIENDS FOUND");
+            DrawCenteredMessage(sb, "NO FRIENDS SAVED");
             return;
         }
 
@@ -198,12 +263,13 @@ public sealed class InviteFriendsScreen : IScreen
                 sb.Draw(_pixel, rowRect, new Color(40, 40, 40, 200));
 
             var f = _friends[i];
-            var tag = f.IsPinned ? "RC" : "EP";
+            var name = string.IsNullOrWhiteSpace(f.DisplayName) ? PlayerProfile.ShortId(f.ProductUserId) : f.DisplayName;
+            var code = string.IsNullOrWhiteSpace(f.FriendCode) ? EosIdentityStore.GenerateFriendCode(f.ProductUserId) : f.FriendCode;
             var state = f.IsHosting
-                ? $"HOSTING {f.WorldName ?? "WORLD"}"
-                : f.Presence.ToUpperInvariant();
-            var text = $"{tag}: {f.DisplayName} | {state}";
-            DrawTextBold(sb, text, new Vector2(_listBodyRect.X + 4, rowY), Color.White);
+                ? $"HOSTING {f.WorldName}"
+                : (string.IsNullOrWhiteSpace(f.Presence) ? "ONLINE" : f.Presence.ToUpperInvariant());
+            var text = $"{name} ({code}) | {state}";
+            DrawTextBold(sb, Truncate(text, 96), new Vector2(_listBodyRect.X + 4, rowY), Color.White);
             rowY += rowH;
             if (rowY > _listBodyRect.Bottom - rowH)
                 break;
@@ -221,6 +287,7 @@ public sealed class InviteFriendsScreen : IScreen
     {
         _refreshBtn.Draw(sb, _pixel, _font);
         _inviteBtn.Draw(sb, _pixel, _font);
+        _addFriendBtn.Draw(sb, _pixel, _font);
         _backBtn.Draw(sb, _pixel, _font);
     }
 
@@ -255,8 +322,7 @@ public sealed class InviteFriendsScreen : IScreen
         if (_busy)
             return;
 
-        var gate = OnlineGateClient.GetOrCreate();
-        if (!gate.CanUseOfficialOnline(_log, out var gateDenied))
+        if (!_gate.CanUseOfficialOnline(_log, out var gateDenied))
         {
             _friends.Clear();
             _selectedFriend = -1;
@@ -272,6 +338,7 @@ public sealed class InviteFriendsScreen : IScreen
             SetStatus("EOS CLIENT UNAVAILABLE");
             return;
         }
+
         var snapshot = EosRuntimeStatus.Evaluate(eos);
         if (snapshot.Reason != EosRuntimeReason.Ready)
         {
@@ -284,38 +351,75 @@ public sealed class InviteFriendsScreen : IScreen
         _busy = true;
         try
         {
-            var list = await eos.GetFriendsWithPresenceAsync();
-            _friends.Clear();
-            foreach (var f in list)
+            RefreshIdentityStore(eos);
+
+            if (!_friendsEndpointUnavailable || _now >= _nextCanonicalSyncAttempt)
+                await SyncCanonicalFriendsAsync(seedFromLocal: !_canonicalSeedAttempted);
+
+            var entries = new List<FriendEntry>();
+            var ids = _profile.Friends.Select(f => f.UserId).Where(x => !string.IsNullOrWhiteSpace(x)).ToList();
+            var presenceResult = await _gate.QueryPresenceAsync(ids);
+            var presenceById = new Dictionary<string, GatePresenceEntry>(StringComparer.OrdinalIgnoreCase);
+            if (presenceResult.Ok)
             {
-                var alias = _friendLabels.GetNickname(f.AccountId);
-                var display = string.IsNullOrWhiteSpace(alias) ? f.DisplayName : $"{alias} ({f.DisplayName})";
-                _friends.Add(new FriendEntry
+                for (var i = 0; i < presenceResult.Entries.Count; i++)
                 {
-                    AccountId = f.AccountId,
-                    DisplayName = display,
-                    RawDisplayName = f.DisplayName,
-                    Status = f.Status,
-                    Presence = f.Presence,
-                    IsHosting = f.IsHosting,
-                    WorldName = f.WorldName,
-                    IsPinned = _friendLabels.IsPinned(f.AccountId) || !string.IsNullOrWhiteSpace(alias)
-                });
+                    var p = presenceResult.Entries[i];
+                    if (!string.IsNullOrWhiteSpace(p.ProductUserId))
+                        presenceById[p.ProductUserId] = p;
+                }
             }
 
-            _friends.Sort((a, b) =>
+            for (var i = 0; i < _profile.Friends.Count; i++)
             {
-                if (a.IsPinned != b.IsPinned)
-                    return a.IsPinned ? -1 : 1;
-                return string.Compare(a.DisplayName, b.DisplayName, StringComparison.OrdinalIgnoreCase);
-            });
+                var friend = _profile.Friends[i];
+                var id = (friend.UserId ?? string.Empty).Trim();
+                if (string.IsNullOrWhiteSpace(id))
+                    continue;
 
+                if (presenceById.TryGetValue(id, out var presence))
+                {
+                    if (!string.IsNullOrWhiteSpace(presence.DisplayName))
+                        friend.LastKnownDisplayName = presence.DisplayName;
+                    if (!string.IsNullOrWhiteSpace(presence.Status))
+                        friend.LastKnownPresence = presence.Status;
+
+                    entries.Add(new FriendEntry
+                    {
+                        ProductUserId = id,
+                        DisplayName = string.IsNullOrWhiteSpace(presence.DisplayName) ? friend.Label : presence.DisplayName,
+                        FriendCode = string.IsNullOrWhiteSpace(presence.FriendCode) ? EosIdentityStore.GenerateFriendCode(id) : presence.FriendCode,
+                        Presence = presence.Status,
+                        IsHosting = presence.IsHosting,
+                        WorldName = string.IsNullOrWhiteSpace(presence.WorldName) ? "WORLD" : presence.WorldName
+                    });
+                }
+                else
+                {
+                    var fallbackName = !string.IsNullOrWhiteSpace(friend.LastKnownDisplayName)
+                        ? friend.LastKnownDisplayName
+                        : (string.IsNullOrWhiteSpace(friend.Label) ? PlayerProfile.ShortId(id) : friend.Label);
+                    entries.Add(new FriendEntry
+                    {
+                        ProductUserId = id,
+                        DisplayName = fallbackName,
+                        FriendCode = EosIdentityStore.GenerateFriendCode(id),
+                        Presence = string.IsNullOrWhiteSpace(friend.LastKnownPresence) ? "offline" : friend.LastKnownPresence,
+                        IsHosting = false,
+                        WorldName = "WORLD"
+                    });
+                }
+            }
+
+            _profile.Save(_log);
+            _friends.Clear();
+            _friends.AddRange(entries.OrderByDescending(x => x.IsHosting).ThenBy(x => x.DisplayName, StringComparer.OrdinalIgnoreCase));
             _selectedFriend = _friends.Count > 0 ? 0 : -1;
             SetStatus("Friends updated.", 1.5);
         }
         catch (Exception ex)
         {
-            _log.Warn($"EOS friends refresh failed: {ex.Message}");
+            _log.Warn($"Friends refresh failed: {ex.Message}");
             SetStatus("Refresh failed.");
         }
         finally
@@ -326,19 +430,89 @@ public sealed class InviteFriendsScreen : IScreen
 
     private async Task InviteSelectedAsync()
     {
-        var gate = OnlineGateClient.GetOrCreate();
-        if (!gate.CanUseOfficialOnline(_log, out var gateDenied))
+        if (_selectedFriend < 0 || _selectedFriend >= _friends.Count)
+        {
+            SetStatus("Select a friend.");
+            return;
+        }
+
+        if (_busy)
+            return;
+
+        if (!_gate.CanUseOfficialOnline(_log, out var gateDenied))
         {
             SetStatus(gateDenied);
             return;
         }
 
         var eos = EnsureEosClient();
-        if (eos == null)
+        var snapshot = EosRuntimeStatus.Evaluate(eos);
+        if (snapshot.Reason != EosRuntimeReason.Ready || eos == null)
         {
-            SetStatus("EOS CLIENT UNAVAILABLE");
+            SetStatus(snapshot.StatusText);
             return;
         }
+
+        var hostCode = (eos.LocalProductUserId ?? string.Empty).Trim();
+        if (string.IsNullOrWhiteSpace(hostCode))
+        {
+            SetStatus("Host code unavailable.");
+            return;
+        }
+
+        _busy = true;
+        try
+        {
+            RefreshIdentityStore(eos);
+            var displayName = _identityStore.GetDisplayNameOrDefault(_profile.GetDisplayUsername());
+            await _gate.UpsertPresenceAsync(
+                productUserId: hostCode,
+                displayName: displayName,
+                isHosting: true,
+                worldName: _worldName,
+                joinTarget: hostCode,
+                status: $"hosting {_worldName}");
+
+            try
+            {
+                WinClipboard.SetText(hostCode);
+                SetStatus("Host code copied. Share it with your friend.", 3);
+            }
+            catch
+            {
+                SetStatus("Invite ready. Share your host code.", 3);
+            }
+        }
+        catch (Exception ex)
+        {
+            _log.Warn($"Invite action failed: {ex.Message}");
+            SetStatus("Invite failed.");
+        }
+        finally
+        {
+            _busy = false;
+        }
+    }
+
+    private async Task AddFriendAsync()
+    {
+        if (_busy)
+            return;
+
+        var query = (_addFriendQuery ?? string.Empty).Trim();
+        if (string.IsNullOrWhiteSpace(query))
+        {
+            SetStatus("Enter a friend code or username first.");
+            return;
+        }
+
+        if (!_gate.CanUseOfficialOnline(_log, out var gateDenied))
+        {
+            SetStatus(gateDenied);
+            return;
+        }
+
+        var eos = EnsureEosClient();
         var snapshot = EosRuntimeStatus.Evaluate(eos);
         if (snapshot.Reason != EosRuntimeReason.Ready)
         {
@@ -346,38 +520,27 @@ public sealed class InviteFriendsScreen : IScreen
             return;
         }
 
-        if (_selectedFriend < 0 || _selectedFriend >= _friends.Count)
-        {
-            SetStatus("Select a friend.");
-            return;
-        }
-
-        var f = _friends[_selectedFriend];
-        if (!string.Equals(f.Status, "friends", StringComparison.OrdinalIgnoreCase))
-        {
-            SetStatus("Invite requires a friend.");
-            return;
-        }
-
-        if (_busy)
-            return;
-
         _busy = true;
         try
         {
-            var ok = await eos.SetHostingPresenceAsync(_worldName, true);
-            if (!ok)
+            var add = await _gate.AddFriendAsync(query);
+            if (!add.Ok)
             {
-                SetStatus("Invite failed (presence).");
+                SetStatus(string.IsNullOrWhiteSpace(add.Message) ? "Add friend failed." : add.Message, 3);
                 return;
             }
 
-            SetStatus($"Invite ready for {f.DisplayName}. They can join from Friends tab.");
+            RefreshIdentityStore(eos);
+            await SyncCanonicalFriendsAsync(seedFromLocal: false);
+            _addFriendQuery = string.Empty;
+            _addFriendActive = false;
+            SetStatus(string.IsNullOrWhiteSpace(add.Message) ? "Friend added." : add.Message, 3);
+            await RefreshFriendsAsync();
         }
         catch (Exception ex)
         {
-            _log.Warn($"Invite failed: {ex.Message}");
-            SetStatus("Invite failed.");
+            _log.Warn($"Add friend failed: {ex.Message}");
+            SetStatus("Add friend failed.");
         }
         finally
         {
@@ -396,10 +559,192 @@ public sealed class InviteFriendsScreen : IScreen
         return _eosClient;
     }
 
+    private void RefreshIdentityStore(EosClient? eos)
+    {
+        if (eos == null)
+            return;
+
+        var dirty = false;
+        var localPuid = (eos.LocalProductUserId ?? string.Empty).Trim();
+        if (!string.IsNullOrWhiteSpace(localPuid)
+            && !string.Equals(_identityStore.ProductUserId, localPuid, StringComparison.Ordinal))
+        {
+            _identityStore.ProductUserId = localPuid;
+            dirty = true;
+        }
+
+        var displayName = EosIdentityStore.NormalizeDisplayName(_identityStore.DisplayName);
+        if (string.IsNullOrWhiteSpace(displayName))
+        {
+            displayName = EosIdentityStore.NormalizeDisplayName(_profile.GetDisplayUsername());
+            if (string.IsNullOrWhiteSpace(displayName))
+                displayName = "Player";
+            _identityStore.DisplayName = displayName;
+            dirty = true;
+        }
+
+        if (dirty)
+            _identityStore.Save(_log);
+    }
+
+    private async Task<bool> SyncCanonicalFriendsAsync(bool seedFromLocal)
+    {
+        if (_canonicalSyncInProgress)
+            return false;
+        if (_friendsEndpointUnavailable && _now < _nextCanonicalSyncAttempt)
+            return false;
+
+        _canonicalSyncInProgress = true;
+        try
+        {
+            var serverFriends = await _gate.GetFriendsAsync();
+            if (!serverFriends.Ok)
+            {
+                if (IsMissingFriendsEndpointError(serverFriends.Message))
+                {
+                    if (!_friendsEndpointUnavailable)
+                        SetStatus("Server friends endpoint unavailable. Using local friends list.", 4);
+                    _friendsEndpointUnavailable = true;
+                    _canonicalSeedAttempted = true;
+                    _nextCanonicalSyncAttempt = _now + MissingEndpointRetrySeconds;
+                    return false;
+                }
+
+                _nextCanonicalSyncAttempt = _now + CanonicalSyncRetrySeconds;
+                return false;
+            }
+
+            _friendsEndpointUnavailable = false;
+            _nextCanonicalSyncAttempt = _now + CanonicalSyncRetrySeconds;
+
+            if (seedFromLocal && serverFriends.Friends.Count == 0 && _profile.Friends.Count > 0)
+            {
+                _canonicalSeedAttempted = true;
+                _nextCanonicalSyncAttempt = _now + CanonicalSyncRetrySeconds;
+                return true;
+            }
+
+            var existingPresence = _profile.Friends
+                .Where(f => !string.IsNullOrWhiteSpace(f.UserId))
+                .ToDictionary(
+                    f => f.UserId,
+                    f => f.LastKnownPresence ?? string.Empty,
+                    StringComparer.OrdinalIgnoreCase);
+
+            _profile.Friends.Clear();
+            foreach (var user in serverFriends.Friends)
+            {
+                var id = (user.ProductUserId ?? string.Empty).Trim();
+                if (string.IsNullOrWhiteSpace(id))
+                    continue;
+
+                var label = string.IsNullOrWhiteSpace(user.DisplayName) ? user.Username : user.DisplayName;
+                _profile.AddOrUpdateFriend(id, label);
+                var entry = _profile.Friends.FirstOrDefault(f => string.Equals(f.UserId, id, StringComparison.OrdinalIgnoreCase));
+                if (entry == null)
+                    continue;
+
+                entry.LastKnownDisplayName = label;
+                if (existingPresence.TryGetValue(id, out var presence))
+                    entry.LastKnownPresence = presence;
+            }
+
+            _profile.Save(_log);
+            _nextCanonicalSyncAttempt = _now + CanonicalSyncRetrySeconds;
+            return true;
+        }
+        catch (Exception ex)
+        {
+            _log.Warn($"InviteFriends canonical sync failed: {ex.Message}");
+            _nextCanonicalSyncAttempt = _now + CanonicalSyncRetrySeconds;
+            return false;
+        }
+        finally
+        {
+            _canonicalSyncInProgress = false;
+        }
+    }
+
+    private static bool IsMissingFriendsEndpointError(string? message)
+    {
+        var value = (message ?? string.Empty).Trim();
+        if (string.IsNullOrWhiteSpace(value))
+            return false;
+
+        return value.Contains("HTTP 404", StringComparison.OrdinalIgnoreCase)
+            || value.Contains("Not Found", StringComparison.OrdinalIgnoreCase);
+    }
+
     private void SetStatus(string message, double seconds = 3)
     {
         _status = message;
         _statusUntil = _now + seconds;
+    }
+
+    private void HandleTextInput(InputState input, ref string value, int maxLen)
+    {
+        var shift = input.IsKeyDown(Keys.LeftShift) || input.IsKeyDown(Keys.RightShift);
+        foreach (var key in input.GetNewKeys())
+        {
+            if (key == Keys.Back)
+            {
+                if (value.Length > 0)
+                    value = value.Substring(0, value.Length - 1);
+                continue;
+            }
+
+            if (key == Keys.Space)
+            {
+                Append(ref value, ' ', maxLen);
+                continue;
+            }
+
+            if (key == Keys.OemMinus || key == Keys.Subtract)
+            {
+                Append(ref value, shift ? '_' : '-', maxLen);
+                continue;
+            }
+
+            if (key == Keys.OemPeriod || key == Keys.Decimal)
+            {
+                Append(ref value, '.', maxLen);
+                continue;
+            }
+
+            if (key >= Keys.D0 && key <= Keys.D9)
+            {
+                Append(ref value, (char)('0' + (key - Keys.D0)), maxLen);
+                continue;
+            }
+
+            if (key >= Keys.NumPad0 && key <= Keys.NumPad9)
+            {
+                Append(ref value, (char)('0' + (key - Keys.NumPad0)), maxLen);
+                continue;
+            }
+
+            if (key >= Keys.A && key <= Keys.Z)
+            {
+                var c = (char)('A' + (key - Keys.A));
+                if (!shift)
+                    c = char.ToLowerInvariant(c);
+                Append(ref value, c, maxLen);
+            }
+        }
+    }
+
+    private static void Append(ref string value, char c, int maxLen)
+    {
+        if (value.Length >= maxLen)
+            return;
+        value += c;
+    }
+
+    private static string Truncate(string value, int max)
+    {
+        if (string.IsNullOrWhiteSpace(value) || value.Length <= max)
+            return value;
+        return value.Substring(0, Math.Max(0, max - 3)) + "...";
     }
 
     private void DrawTextBold(SpriteBatch sb, string text, Vector2 pos, Color color)
@@ -418,13 +763,11 @@ public sealed class InviteFriendsScreen : IScreen
 
     private sealed class FriendEntry
     {
-        public string AccountId { get; init; } = "";
-        public string DisplayName { get; init; } = "";
-        public string RawDisplayName { get; init; } = "";
-        public string Status { get; init; } = "";
-        public string Presence { get; init; } = "";
+        public string ProductUserId { get; init; } = string.Empty;
+        public string DisplayName { get; init; } = string.Empty;
+        public string FriendCode { get; init; } = string.Empty;
+        public string Presence { get; init; } = string.Empty;
         public bool IsHosting { get; init; }
-        public string? WorldName { get; init; }
-        public bool IsPinned { get; init; }
+        public string WorldName { get; init; } = "WORLD";
     }
 }
