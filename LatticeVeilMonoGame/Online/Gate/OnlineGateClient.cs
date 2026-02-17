@@ -353,7 +353,7 @@ public class OnlineGateClient
                 return true;
             }
 
-            if (!string.Equals(currentHash, serverHashResult.Hash, StringComparison.OrdinalIgnoreCase))
+            if (!string.IsNullOrWhiteSpace(serverHashResult.Hash) && !serverHashResult.Hash.Split(',').Any(h => string.Equals(h, currentHash, StringComparison.OrdinalIgnoreCase)))
             {
                 log.Warn($"Hash mismatch: local={currentHash}, server={serverHashResult.Hash}");
                 return false;
