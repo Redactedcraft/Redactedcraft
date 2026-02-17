@@ -29,9 +29,7 @@ public sealed class SingleplayerScreen : IScreen
     private readonly Button _createBtn;
     private readonly Button _deleteBtn;
     private readonly Button _backBtn;
-    private readonly Button _seedInfoBtn;
     private GameSettings _settings;
-    private bool _showSeedInfo;
 
     private Rectangle _viewport;
     private Rectangle _panelRect;
@@ -65,13 +63,10 @@ public sealed class SingleplayerScreen : IScreen
         _graphics = graphics;
         _profile = profile;
         _settings = GameSettings.LoadOrCreate(_log);
-        _showSeedInfo = _settings.ShowSeedInfoInWorldList;
 
         _createBtn = new Button("CREATE WORLD", OpenCreateWorld);
         _deleteBtn = new Button("DELETE WORLD", DeleteSelectedWorld);
         _backBtn = new Button("BACK", () => _menus.Pop());
-        _seedInfoBtn = new Button("", ToggleSeedInfo);
-        SyncSeedInfoLabel();
 
         try
         {
@@ -111,7 +106,7 @@ public sealed class SingleplayerScreen : IScreen
         _log.Info($"SingleplayerScreen - Panel: {_panelRect.Width}x{_panelRect.Height} at ({_panelRect.X},{_panelRect.Y})");
 
         var margin = 24; // Reduced from 32 to give more space
-        var headerH = _font.LineHeight * 2 + 8; // Reduced from +12 to give more space
+        var headerH = _font.LineHeight * 2 + 40; // Increased spacing to ensure title doesn't get covered
         var buttonAreaH = Math.Clamp((int)(panelH * 0.2f), 60, 90);
         
         // Calculate proper content area inside 9-patch borders
@@ -127,32 +122,34 @@ public sealed class SingleplayerScreen : IScreen
         
         _listRect = new Rectangle(
             contentArea.X + margin + 45, // Move right by 45 pixels (shrink more)
-            contentArea.Y + headerH + 60, // Move down by 60 pixels (2 inches total)
+            contentArea.Y + headerH + 80, // Move down by 80 pixels (2.7 inches total)
             contentArea.Width - margin * 2 - 90, // Shrink width by 90 pixels total
-            contentArea.Height - headerH - buttonAreaH - margin - 60); // Reduce height by 60 pixels
+            contentArea.Height - headerH - buttonAreaH - margin - 60 - 20); // Reduce height by 60 pixels + 20 for title offset
         
         _log.Info($"SingleplayerScreen - ListRect: {_listRect.Width}x{_listRect.Height} at ({_listRect.X},{_listRect.Y})");
 
-        _rowHeight = Math.Max(_rowFont.LineHeight + 22, 72);
+        _rowHeight = Math.Max(_rowFont.LineHeight + 18, 60);  // Make entries shorter vertically
 
         var buttonW = Math.Clamp((int)(_panelRect.Width * 0.28f), 160, 260);
         var buttonH = Math.Clamp((int)(buttonW * 0.28f), 40, 70);
         var gap = 16;
         var available = _panelRect.Width - margin * 2;
         var deleteSize = buttonH;
-        var totalW = buttonW * 2 + deleteSize + gap * 2;
-        if (totalW > available)
-        {
-            var scale = available / (float)totalW;
-            buttonW = Math.Max(120, (int)(buttonW * scale));
-            buttonH = Math.Max(34, (int)(buttonH * scale));
-            gap = Math.Max(8, (int)(gap * scale));
-            deleteSize = buttonH;
-            totalW = buttonW * 2 + deleteSize + gap * 2;
-        }
+        var createSize = buttonW;
+        var backSize = buttonW;
 
-        var buttonY = _panelRect.Bottom - margin - buttonH - 90; // Move up by 90 pixels (3 inches)
-        // Position back button in bottom-left corner of full screen with proper aspect ratio
+        var deleteX = _panelRect.X + margin;
+        var deleteY = _panelRect.Bottom - margin - deleteSize;
+        _deleteBtn.Bounds = new Rectangle(deleteX, deleteY, deleteSize, deleteSize);
+
+        var createX = _panelRect.Right - margin - createSize;
+        var createY = _panelRect.Bottom - margin - buttonH;
+        _createBtn.Bounds = new Rectangle(createX, createY, createSize, buttonH);
+
+        var backX = _panelRect.X + margin;
+        var backY = _panelRect.Bottom - margin - backSize;
+        _backBtn.Bounds = new Rectangle(backX, backY, backSize, backSize);
+
         var backBtnMargin = 20;
         var backBtnBaseW = Math.Max(_backBtn.Texture?.Width ?? 0, 320);
         var backBtnBaseH = Math.Max(_backBtn.Texture?.Height ?? 0, (int)(backBtnBaseW * 0.28f));
@@ -172,12 +169,8 @@ public sealed class SingleplayerScreen : IScreen
         deleteSize = createBtnH;
         var actionsTotal = createBtnW + deleteSize + gap;
         var actionsStartX = _panelRect.X + (_panelRect.Width - actionsTotal) / 2;
-        _createBtn.Bounds = new Rectangle(actionsStartX, buttonY, createBtnW, createBtnH);
-        _deleteBtn.Bounds = new Rectangle(_createBtn.Bounds.Right + gap, buttonY, deleteSize, deleteSize);
-
-        var infoW = 170;
-        var infoH = Math.Max(30, _font.LineHeight + 12);
-        _seedInfoBtn.Bounds = new Rectangle(_listRect.Right - infoW, _listRect.Y - infoH - 8, infoW, infoH);
+        _createBtn.Bounds = new Rectangle(actionsStartX, createY, createBtnW, createBtnH);
+        _deleteBtn.Bounds = new Rectangle(_createBtn.Bounds.Right + gap, createY, deleteSize, deleteSize);
 
         ClampScroll();
     }
@@ -197,7 +190,6 @@ public sealed class SingleplayerScreen : IScreen
         _createBtn.Update(input);
         _deleteBtn.Update(input);
         _backBtn.Update(input);
-        _seedInfoBtn.Update(input);
         _overlayMousePos = input.MousePosition;
         HandleListInput(input);
 
@@ -236,7 +228,7 @@ public sealed class SingleplayerScreen : IScreen
 
         var title = "WORLDS";
         var titleSize = _font.MeasureString(title);
-        var titlePos = new Vector2(_panelRect.Center.X - titleSize.X / 2f, _panelRect.Y + 16 + borderSize);
+        var titlePos = new Vector2(_panelRect.Center.X - titleSize.X / 2f, _panelRect.Y + 16 + borderSize + 80);  // Match CreateWorldScreen positioning + move down 80 pixels total
         _font.DrawString(sb, title, titlePos, Color.White);
 
         DrawWorldList(sb);
@@ -244,7 +236,6 @@ public sealed class SingleplayerScreen : IScreen
         _createBtn.Draw(sb, _pixel, _font);
         _deleteBtn.Draw(sb, _pixel, _font);
         _backBtn.Draw(sb, _pixel, _font);
-        _seedInfoBtn.Draw(sb, _pixel, _font);
 
         DrawWorldHoverTooltip(sb);
 
@@ -331,11 +322,11 @@ public sealed class SingleplayerScreen : IScreen
             DrawBorder(sb, rowRect, Color.White);
 
             var entry = _worlds[i];
-            var previewSize = rowRect.Height - 12;
+            var previewSize = rowRect.Height - 12 - 30;  // Make smaller by an inch (30 pixels)
             var previewRect = new Rectangle(rowRect.X + 6, rowRect.Y + (rowRect.Height - previewSize) / 2, previewSize, previewSize);
             DrawWorldPreviewTile(sb, entry, previewRect);
 
-            var seedSectionWidth = _showSeedInfo ? 230 : 0;
+            var seedSectionWidth = 230; // Always show seed info
             var textLeft = previewRect.Right + 10;
             var textWidth = Math.Max(40, rowRect.Right - textLeft - 10 - seedSectionWidth);
             var titleText = TruncateToWidth(entry.Name, textWidth, _rowFont);
@@ -347,32 +338,30 @@ public sealed class SingleplayerScreen : IScreen
             _rowFont.DrawString(sb, titleText, titlePos, Color.White);
             _font.DrawString(sb, subtitle, subtitlePos, new Color(220, 220, 220));
 
-            if (_showSeedInfo)
-            {
-                var seedRect = new Rectangle(rowRect.Right - seedSectionWidth, rowRect.Y + 4, seedSectionWidth - 6, rowRect.Height - 8);
-                sb.Draw(_pixel, seedRect, new Color(12, 12, 12, 170));
-                DrawBorder(sb, seedRect, new Color(180, 180, 180));
+            // Always show seed info section
+            var seedRect = new Rectangle(rowRect.Right - seedSectionWidth, rowRect.Y + 4, seedSectionWidth - 6, rowRect.Height - 8);
+            sb.Draw(_pixel, seedRect, new Color(12, 12, 12, 170));
+            DrawBorder(sb, seedRect, new Color(180, 180, 180));
 
-                var seedLabel = "SEED";
-                _font.DrawString(sb, seedLabel, new Vector2(seedRect.X + 8, seedRect.Y + 6), new Color(220, 220, 220));
+            var seedLabel = "SEED";
+            _font.DrawString(sb, seedLabel, new Vector2(seedRect.X + 8, seedRect.Y + 6), new Color(220, 220, 220));
 
-                var eyeRect = new Rectangle(seedRect.Right - 28, seedRect.Y + 6, 20, 20);
-                var revealed = IsSeedRevealed(entry);
-                DrawEyeIcon(sb, eyeRect, revealed);
-                _seedEyeRects[i] = eyeRect;
+            var eyeRect = new Rectangle(seedRect.Right - 28, seedRect.Y + 6, 20, 20);
+            var revealed = IsSeedRevealed(entry);
+            DrawEyeIcon(sb, eyeRect, revealed);
+            _seedEyeRects[i] = eyeRect;
 
-                var seedValue = revealed ? ShortSeed(entry.Seed) : "HIDDEN";
-                _font.DrawString(sb, seedValue, new Vector2(seedRect.X + 8, seedRect.Bottom - _font.LineHeight - 6), Color.White);
+            var seedValue = revealed ? ShortSeed(entry.Seed) : "HIDDEN";
+            _font.DrawString(sb, seedValue, new Vector2(seedRect.X + 8, seedRect.Bottom - _font.LineHeight - 6), Color.White);
 
-                if (rowRect.Contains(_overlayMousePos) && revealed)
-                    _hoverWorldIndex = i;
-            }
+            if (rowRect.Contains(_overlayMousePos) && revealed)
+                _hoverWorldIndex = i;
         }
     }
 
     private void DrawWorldHoverTooltip(SpriteBatch sb)
     {
-        if (!_showSeedInfo || _hoverWorldIndex < 0 || _hoverWorldIndex >= _worlds.Count)
+        if (_hoverWorldIndex < 0 || _hoverWorldIndex >= _worlds.Count)
             return;
 
         var entry = _worlds[_hoverWorldIndex];
@@ -482,20 +471,17 @@ public sealed class SingleplayerScreen : IScreen
 
         if (input.IsNewLeftClick() && _listRect.Contains(input.MousePosition))
         {
-            if (_showSeedInfo)
+            foreach (var pair in _seedEyeRects)
             {
-                foreach (var pair in _seedEyeRects)
+                if (!pair.Value.Contains(input.MousePosition))
+                    continue;
+                var worldIndex = pair.Key;
+                if (worldIndex >= 0 && worldIndex < _worlds.Count)
                 {
-                    if (!pair.Value.Contains(input.MousePosition))
-                        continue;
-                    var worldIndex = pair.Key;
-                    if (worldIndex >= 0 && worldIndex < _worlds.Count)
-                    {
-                        var entry = _worlds[worldIndex];
-                        _seedRevealByWorld[entry.WorldPath] = !IsSeedRevealed(entry);
-                    }
-                    return;
+                    var entry = _worlds[worldIndex];
+                    _seedRevealByWorld[entry.WorldPath] = !IsSeedRevealed(entry);
                 }
+                return;
             }
 
             var idx = (int)((input.MousePosition.Y - _listRect.Y + _scroll) / _rowHeight);
@@ -650,19 +636,6 @@ public sealed class SingleplayerScreen : IScreen
         sb.Draw(_pixel, new Rectangle(rect.X, rect.Bottom - 2, rect.Width, 2), color);
         sb.Draw(_pixel, new Rectangle(rect.X, rect.Y, 2, rect.Height), color);
         sb.Draw(_pixel, new Rectangle(rect.Right - 2, rect.Y, 2, rect.Height), color);
-    }
-
-    private void ToggleSeedInfo()
-    {
-        _showSeedInfo = !_showSeedInfo;
-        _settings.ShowSeedInfoInWorldList = _showSeedInfo;
-        _settings.Save(_log);
-        SyncSeedInfoLabel();
-    }
-
-    private void SyncSeedInfoLabel()
-    {
-        _seedInfoBtn.Label = $"SEED INFO: {(_showSeedInfo ? "ON" : "OFF")}";
     }
 
     private static string ShortSeed(int seed)

@@ -43,6 +43,15 @@ public sealed class Button
             _onClick();
     }
 
+    public bool TryClick(Point p)
+    {
+		if (!Visible || !Enabled) return false;
+        if (!Bounds.Contains(p))
+            return false;
+        _onClick();
+        return true;
+    }
+
     public void Draw(SpriteBatch sb, Texture2D pixel, PixelFont font)
     {
 		if (!Visible) return;

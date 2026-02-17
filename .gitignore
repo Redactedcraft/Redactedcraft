@@ -11,6 +11,10 @@ Builds/
 **/eos.local.json
 .aider*
 
+# GateHash config (never commit - contains admin token and gate URL)
+Tools/gate.cfg
+**/*.cfg
+
 # EOS secure config split
 eos.private.json
 eos.public.json

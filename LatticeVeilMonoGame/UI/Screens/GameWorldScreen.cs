@@ -4,8 +4,10 @@ using System.Collections.Generic;
 using System.IO;
 using System.Diagnostics;
 using System.Linq;
+using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
+using WinClipboard = System.Windows.Forms.Clipboard;
 using Microsoft.Xna.Framework;
 using Microsoft.Xna.Framework.Graphics;
 using Microsoft.Xna.Framework.Input;
@@ -223,23 +225,30 @@ public sealed class GameWorldScreen : IScreen, IMouseCaptureScreen
     private readonly Button _structureFinderFindBtn;
     private readonly Button _structureFinderCloseBtn;
 
-    public bool WantsMouseCapture => !_pauseMenuOpen && !_inventoryOpen && !_homeGuiOpen && !_structureFinderOpen && !IsTextInputActive && !_gamemodeWheelVisible && !IsOverlayActionInteractionActive && _hasLoadedWorld && !_worldSyncInProgress && _spawnPrewarmComplete;
+    public bool WantsMouseCapture => !_pauseMenuOpen && !_inventoryOpen && !_homeGuiOpen && !_structureFinderOpen && !IsTextInputActive && !_gamemodeWheelVisible && _hasLoadedWorld && !_worldSyncInProgress && _spawnPrewarmComplete;
     public bool WorldReady => !_worldSyncInProgress && _hasLoadedWorld && _spawnPrewarmComplete;
+    private bool IsJoinedClientSession => _lanSession != null && !_lanSession.IsHost;
     private bool IsTextInputActive => _commandInputActive || _chatInputActive;
     private bool IsOverlayActionInteractionActive => !IsTextInputActive
         && _worldTimeSeconds < _chatOverlayActionUnlockUntil
-        && _chatLines.Any(line => line.HasTeleportAction && line.TimeRemaining > 0f);
+        && _chatLines.Any(line => (line.HasTeleportAction || line.HasCopyAction || line.HasCustomAction) && line.TimeRemaining > 0f);
 
     private bool _pauseMenuOpen;
+    private bool _pauseHostOptionsOpen;
     private Texture2D? _pausePanel;
     private Rectangle _pauseRect;
     private Rectangle _pauseHeaderRect;
+    private Rectangle _pauseSubpanelRect;
     private readonly Button _pauseResume;
+    private readonly Button _pauseHost;
     private readonly Button _pauseOpenLan;
     private readonly Button _pauseHostOnline;
+    private readonly Button _pauseHostBack;
     private readonly Button _pauseInvite;
     private readonly Button _pauseSettings;
+    private readonly Button _pauseProfile;
     private readonly Button _pauseSaveExit;
+    private readonly OnlineGateClient _onlineGate;
     private EosClient? _eosClient;
     private bool _debugFaceOverlay;
     private bool _debugHudVisible;
@@ -305,8 +314,14 @@ public sealed class GameWorldScreen : IScreen, IMouseCaptureScreen
     private int _blockEditBoostRemaining;
     private bool _worldSyncInProgress = true;
     private bool _hasLoadedWorld;
+    private bool _pendingHostedOnlineShareAnnouncement;
     private int _chunksReceived;
     private float _netSendAccumulator;
+    private float _persistenceSendAccumulator;
+    private readonly Dictionary<int, LanPlayerPersistenceSnapshot> _latestRemotePersistenceByPlayerId = new();
+    private readonly HashSet<int> _knownRemotePlayerIds = new();
+    private readonly HashSet<int> _pendingRestorePlayerIds = new();
+    private const float PersistenceSendIntervalSeconds = 0.75f;
 
     private float _selectedNameTimer;
     private int _lastSelectedIndex = -1;
@@ -335,6 +350,7 @@ public sealed class GameWorldScreen : IScreen, IMouseCaptureScreen
     private readonly List<CommandPredictionItem> _commandPredictionBuffer = new();
     private readonly Dictionary<string, CommandDescriptor> _commandLookup = new(StringComparer.OrdinalIgnoreCase);
     private readonly List<CommandDescriptor> _commandDescriptors = new();
+    private readonly HashSet<string> _operators = new(StringComparer.OrdinalIgnoreCase);
     private readonly List<CommandCompletionCandidate> _commandTabCycleCandidates = new();
     private readonly List<CommandCompletionCandidate> _commandTabBuildBuffer = new();
     private string _commandTabContextKey = string.Empty;
@@ -350,7 +366,30 @@ public sealed class GameWorldScreen : IScreen, IMouseCaptureScreen
     private const float ChatOverlayWidthRatio = 0.46f;
     private const int ChatOverlayMinWidth = 420;
     private const int ChatOverlayMaxWidth = 780;
+    private const string OperatorSyncPrefix = "__lv_opsync__:";
+    private const string GameModeSyncPrefix = "__lv_gamemode__:";
+    private const string HostDisconnectedFallbackReason = "Host disconnected. Returning to menu.";
+    private bool _hasReceivedInitialPlayerList;
+    private bool _multiplayerDisconnectHandled;
     private const float ChatOverlayActionUnlockSeconds = ChatLineLifetimeSeconds;
+    private const string HostJoinLinkPrefix = "latticeveil://join/";
+    private const string JoinApproveActionPrefix = "join-approve:";
+    private const string JoinDeclineActionPrefix = "join-decline:";
+    private const string WorldInviteAcceptPrefix = "wia:";
+    private const string WorldInviteRejectPrefix = "wir:";
+    private static readonly HashSet<string> CheatsDisabledAllowedCommands = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "help",
+        "seed",
+        "op",
+        "deop",
+        "kick",
+        "msg",
+        "me",
+        "chatclear",
+        "commandclear",
+        "whitelist"
+    };
     private const int CommandFindBiomeDefaultRadius = 2048;
     private const int CommandFindBiomeMaxRadius = 8192;
     private const int BiomeSearchRefineWindow = 6;
@@ -408,10 +447,15 @@ public sealed class GameWorldScreen : IScreen, IMouseCaptureScreen
         _pixel = pixel;
         _log = log;
         _profile = profile;
+        _onlineGate = OnlineGateClient.GetOrCreate();
         _graphics = graphics;
         _worldPath = worldPath;
         _metaPath = metaPath;
         _lanSession = lanSession;
+        _persistenceSendAccumulator = _lanSession != null && !_lanSession.IsHost
+            ? PersistenceSendIntervalSeconds
+            : 0f;
+        _pendingHostedOnlineShareAnnouncement = _lanSession is EosP2PHostSession;
         _world = preloadedWorld; // Use preloaded world if available
         _settings = GameSettings.LoadOrCreate(_log);
         _settingsStamp = GetSettingsStamp();
@@ -436,11 +480,18 @@ public sealed class GameWorldScreen : IScreen, IMouseCaptureScreen
             _pregenerationService = new StubPregenerationService(_world, _log);
         }
 
-        _pauseResume = new Button("RESUME", () => _pauseMenuOpen = false);
+        _pauseResume = new Button("RESUME", () =>
+        {
+            _pauseMenuOpen = false;
+            _pauseHostOptionsOpen = false;
+        });
+        _pauseHost = new Button("HOST WORLD", OpenHostMenuFromPause);
         _pauseOpenLan = new Button("OPEN TO LAN", OpenToLanFromPause);
         _pauseHostOnline = new Button("HOST ONLINE", OpenOnlineHostFromPause);
+        _pauseHostBack = new Button("BACK", CloseHostMenuFromPause);
         _pauseInvite = new Button("SHARE CODE", OpenShareCode);
         _pauseSettings = new Button("SETTINGS", OpenSettings);
+        _pauseProfile = new Button("PROFILE", OpenProfileFromPause);
         _pauseSaveExit = new Button("SAVE & EXIT", SaveAndExit);
         _inventoryClose = new Button("CLOSE", CloseInventory);
         _homeGuiSetHereBtn = new Button("SET HERE", SetHomeAtCurrentPositionFromGui);
@@ -482,6 +533,12 @@ public sealed class GameWorldScreen : IScreen, IMouseCaptureScreen
         LayoutStructureFinderGui();
     }
 
+    private DateTime _nextWorldInvitePollUtc = DateTime.MinValue;
+    private HashSet<string> _notifiedInviteKeys = new(StringComparer.OrdinalIgnoreCase);
+    private readonly Dictionary<string, string> _usernameCache = new(StringComparer.OrdinalIgnoreCase);
+    private HashSet<string> _whitelist = new(StringComparer.OrdinalIgnoreCase);
+    private string WhitelistPath => Path.Combine(_worldPath, "whitelist.json");
+
     public void Update(GameTime gameTime, InputState input)
     {
         if (!_hasLoadedWorld)
@@ -497,6 +554,12 @@ public sealed class GameWorldScreen : IScreen, IMouseCaptureScreen
             {
                 _worldSyncInProgress = false;
                 _log.Info("Host/SP mode: Sync skipped (local world ready).");
+            }
+
+            if (_pendingHostedOnlineShareAnnouncement)
+            {
+                AnnounceOnlineHostShare(EnsureEosClient(), tryCopyToClipboard: true);
+                _pendingHostedOnlineShareAnnouncement = false;
             }
             
             // Return to allow the loop to proceed cleanly next frame
@@ -523,6 +586,12 @@ public sealed class GameWorldScreen : IScreen, IMouseCaptureScreen
             _fps = _frameCount / _fpsTimer;
             _frameCount = 0;
             _fpsTimer = 0;
+        }
+
+        if (DateTime.UtcNow >= _nextWorldInvitePollUtc)
+        {
+            _nextWorldInvitePollUtc = DateTime.UtcNow.AddSeconds(5);
+            _ = PollWorldInvitesAsync();
         }
 
         if (_commandStatusTimer > 0f)
@@ -563,7 +632,7 @@ public sealed class GameWorldScreen : IScreen, IMouseCaptureScreen
 
         // PERIODIC PLAYER STATE SAVING - Save player position periodically during gameplay
         _playerSaveTimer += rawDt;
-        if (!_isClosing && _playerSaveTimer >= 30.0f) // Save every 30 seconds
+        if (!IsJoinedClientSession && !_isClosing && _playerSaveTimer >= 30.0f) // Save every 30 seconds
         {
             QueuePlayerStateSaveAsync();
             _playerSaveTimer = 0f;
@@ -571,6 +640,8 @@ public sealed class GameWorldScreen : IScreen, IMouseCaptureScreen
 
         // Always update network layer, even if world sync is in progress
         UpdateNetwork(rawDt);
+        if (_isClosing)
+            return;
         _blockBreakParticles.Update(rawDt);
 
         if (_worldSyncInProgress)
@@ -581,16 +652,11 @@ public sealed class GameWorldScreen : IScreen, IMouseCaptureScreen
             // Only update UI relevant for loading screen if sync in progress
             if (input.IsNewKeyPress(Keys.Escape)) // Still allow pausing
             {
-                _pauseMenuOpen = !_pauseMenuOpen;
+                TogglePauseMenuFromEscape();
             }
             if (_pauseMenuOpen)
             {
-                _pauseResume.Update(input);
-                _pauseOpenLan.Update(input);
-                _pauseHostOnline.Update(input);
-                _pauseInvite.Update(input);
-                _pauseSettings.Update(input);
-                _pauseSaveExit.Update(input);
+                UpdatePauseButtons(input);
             }
             return; // Skip all other game logic if sync is not complete
         }
@@ -608,16 +674,11 @@ public sealed class GameWorldScreen : IScreen, IMouseCaptureScreen
             ProcessPrewarmStep();
 
             if (input.IsNewKeyPress(Keys.Escape))
-                _pauseMenuOpen = !_pauseMenuOpen;
+                TogglePauseMenuFromEscape();
 
             if (_pauseMenuOpen)
             {
-                _pauseResume.Update(input);
-                _pauseOpenLan.Update(input);
-                _pauseHostOnline.Update(input);
-                _pauseInvite.Update(input);
-                _pauseSettings.Update(input);
-                _pauseSaveExit.Update(input);
+                UpdatePauseButtons(input);
                 WarmBlockIcons();
             }
 
@@ -642,18 +703,13 @@ public sealed class GameWorldScreen : IScreen, IMouseCaptureScreen
 
         if (!IsTextInputActive && !_gamemodeWheelVisible && input.IsNewKeyPress(Keys.Escape))
         {
-            _pauseMenuOpen = !_pauseMenuOpen;
+            TogglePauseMenuFromEscape();
             return;
         }
 
         if (_pauseMenuOpen)
         {
-            _pauseResume.Update(input);
-            _pauseOpenLan.Update(input);
-            _pauseHostOnline.Update(input);
-            _pauseInvite.Update(input);
-            _pauseSettings.Update(input);
-            _pauseSaveExit.Update(input);
+            UpdatePauseButtons(input);
             WarmBlockIcons();
             return;
         }
@@ -990,8 +1046,114 @@ public sealed class GameWorldScreen : IScreen, IMouseCaptureScreen
         }
     }
 
+    private async Task<string> ResolveUsernameAsync(string puid)
+    {
+        puid = (puid ?? string.Empty).Trim();
+        if (string.IsNullOrWhiteSpace(puid)) return "Unknown";
+
+        lock (_usernameCache)
+        {
+            if (_usernameCache.TryGetValue(puid, out var cached))
+                return cached;
+        }
+
+        try
+        {
+            var result = await _onlineGate.ResolveIdentityAsync(puid);
+            if (result.Found && result.User != null && !string.IsNullOrWhiteSpace(result.User.Username))
+            {
+                var username = result.User.Username.Trim();
+                lock (_usernameCache) _usernameCache[puid] = username;
+                return username;
+            }
+        }
+        catch (Exception ex)
+        {
+            _log.Warn($"Failed to resolve username for {puid}: {ex.Message}");
+        }
+
+        return PlayerProfile.ShortId(puid);
+    }
+
+    private async Task PollWorldInvitesAsync()
+    {
+        var result = await _onlineGate.GetMyWorldInvitesAsync();
+        if (result.Ok)
+        {
+            foreach (var invite in result.Incoming)
+            {
+                var senderPuid = (invite.SenderProductUserId ?? string.Empty).Trim();
+                var senderName = await ResolveUsernameAsync(senderPuid);
+
+                if (invite.Status == "accepted")
+                {
+                    if (_lanSession is EosP2PHostSession hostSession)
+                    {
+                        hostSession.PreApprovePuid(senderPuid);
+                    }
+                    continue;
+                }
+
+                if (invite.Status != "pending") continue;
+
+                // Case-insensitive whitelist check for both name and PUID
+                var isWhitelisted = _whitelist.Any(w => 
+                    string.Equals(w, senderName, StringComparison.OrdinalIgnoreCase) || 
+                    string.Equals(w, senderPuid, StringComparison.OrdinalIgnoreCase));
+
+                if (isWhitelisted)
+                {
+                    _log.Info($"Auto-accepting whitelisted friend: {senderName} ({senderPuid})");
+                    _ = _onlineGate.RespondToWorldInviteAsync(senderPuid, "accepted");
+                    if (_lanSession is EosP2PHostSession hostSession)
+                    {
+                        hostSession.PreApprovePuid(senderPuid);
+                    }
+                    continue;
+                }
+                
+                var key = $"{senderPuid}:{invite.CreatedUtc.Ticks}";
+                if (_notifiedInviteKeys.Add(key))
+                {
+                    var nameToShow = senderName;
+                    AddChatLine($"{nameToShow} wants to join! Accept?", isSystem: true,
+                        actionLabel: "ACCEPT",
+                        customActionToken: WorldInviteAcceptPrefix + senderPuid,
+                        customActionStatus: $"{nameToShow} joined.",
+                        actionLabel2: "REJECT",
+                        customActionToken2: WorldInviteRejectPrefix + senderPuid,
+                        customActionStatus2: $"{nameToShow} rejected.");
+                }
+            }
+        }
+    }
+
     private void LoadWorld()
     {
+        try
+        {
+            if (File.Exists(WhitelistPath))
+            {
+                var json = File.ReadAllText(WhitelistPath);
+                var list = System.Text.Json.JsonSerializer.Deserialize<List<string>>(json);
+                if (list != null) _whitelist = new HashSet<string>(list, StringComparer.OrdinalIgnoreCase);
+            }
+
+            // Sync saved friends into whitelist automatically
+            var friends = _profile.Friends;
+            var addedAny = false;
+            foreach (var f in friends)
+            {
+                if (!string.IsNullOrWhiteSpace(f.UserId) && _whitelist.Add(f.UserId)) addedAny = true;
+                if (!string.IsNullOrWhiteSpace(f.Label) && _whitelist.Add(f.Label)) addedAny = true;
+            }
+            if (addedAny) SaveWhitelist();
+        }
+        catch (Exception ex)
+        {
+            _log.Warn($"Failed to load whitelist: {ex.Message}");
+        }
+
         var swTotal = Stopwatch.StartNew();
 
         var sw = Stopwatch.StartNew();
@@ -1011,6 +1173,8 @@ public sealed class GameWorldScreen : IScreen, IMouseCaptureScreen
         _meta = _world.Meta;
         _gameMode = _meta.CurrentWorldGameMode;
         _playerCollisionEnabled = _meta.PlayerCollision;
+        _difficultyLevel = Math.Clamp(_meta.DifficultyLevel, 0, 3);
+        LoadOperatorsFromMeta();
         EnsureBiomeCatalog();
 
         // 1) FIX INIT ORDER: Build atlas FIRST, then create streaming service
@@ -1047,7 +1211,17 @@ public sealed class GameWorldScreen : IScreen, IMouseCaptureScreen
         
         // RESTORE PLAYER POSITION FIRST - This determines where chunks need to be loaded
         RestoreOrCenterCamera();
-        
+
+        if (IsJoinedClientSession)
+        {
+            _spawnPrewarmComplete = true;
+            _prewarmTargetCount = 0;
+            _prewarmReadyCount = 0;
+            swTotal.Stop();
+            _log.Info($"World load: joined-client mode (local pregeneration skipped) {swTotal.ElapsedMilliseconds}ms");
+            return;
+        }
+         
         // AGGRESSIVE FIX: Generate solid ground immediately at player position
         // DISABLED: HybridWorldManager handles this now
         // GenerateSolidGroundAtPlayer();
@@ -3188,6 +3362,10 @@ public sealed class GameWorldScreen : IScreen, IMouseCaptureScreen
     {
         if (_lanSession == null || _playerNames.Count == 0)
             return;
+        if (IsTextInputActive || _pauseMenuOpen || _inventoryOpen || _homeGuiOpen || _structureFinderOpen)
+            return;
+        if (!Keyboard.GetState().IsKeyDown(Keys.Tab))
+            return;
 
         var entries = new List<KeyValuePair<int, string>>(_playerNames);
         entries.Sort((a, b) => a.Key.CompareTo(b.Key));
@@ -4043,21 +4221,15 @@ public sealed class GameWorldScreen : IScreen, IMouseCaptureScreen
     private void UpdatePauseMenuLayout()
     {
         var showInvite = CanShareJoinCode();
-        var showOpenLan = CanOpenLanFromPause();
-        var showHostOnline = CanOpenOnlineFromPause();
+        var canOpenLan = CanOpenLanFromPause();
+        var canOpenOnline = CanOpenOnlineFromPause();
+        var canOpenHostMenu = canOpenLan || canOpenOnline;
+        if (_pauseHostOptionsOpen && !canOpenHostMenu)
+            _pauseHostOptionsOpen = false;
 
-        _pauseOpenLan.Visible = showOpenLan;
-        _pauseHostOnline.Visible = showHostOnline;
-        _pauseInvite.Visible = showInvite;
-        _pauseHostOnline.Enabled = showHostOnline;
-
-        var buttonCount = 3;
-        if (showOpenLan)
-            buttonCount++;
-        if (showHostOnline)
-            buttonCount++;
-        if (showInvite)
-            buttonCount++;
+        _pauseHost.Enabled = canOpenHostMenu;
+        _pauseOpenLan.Enabled = canOpenLan;
+        _pauseHostOnline.Enabled = canOpenOnline;
 
         var panelW = Math.Clamp((int)(_viewport.Width * 0.42f), 320, _viewport.Width - 40);
         var buttonW = Math.Clamp((int)(panelW * 0.6f), 160, 320);
@@ -4065,7 +4237,8 @@ public sealed class GameWorldScreen : IScreen, IMouseCaptureScreen
         var gap = 14;
         var titleH = _font.LineHeight + 14;
         var padding = 18;
-        var totalButtonsH = buttonH * buttonCount + gap * (buttonCount - 1);
+        var estimatedButtonCount = _pauseHostOptionsOpen ? 3 : 5 + (showInvite ? 1 : 0);
+        var totalButtonsH = buttonH * estimatedButtonCount + gap * (estimatedButtonCount - 1);
         var contentH = titleH + totalButtonsH + padding * 2;
         var panelH = Math.Clamp(contentH, 220, _viewport.Height - 40);
         _pauseRect = new Rectangle(
@@ -4073,6 +4246,7 @@ public sealed class GameWorldScreen : IScreen, IMouseCaptureScreen
             _viewport.Y + (_viewport.Height - panelH) / 2,
             panelW,
             panelH);
+        _pauseSubpanelRect = new Rectangle(_pauseRect.X + 12, _pauseRect.Y + 12, _pauseRect.Width - 24, _pauseRect.Height - 24);
 
         _pauseHeaderRect = new Rectangle(
             _pauseRect.X + padding,
@@ -4081,19 +4255,52 @@ public sealed class GameWorldScreen : IScreen, IMouseCaptureScreen
             titleH);
 
         var available = _pauseRect.Height - padding * 2 - titleH;
-        var startY = _pauseRect.Y + padding + titleH + Math.Max(0, (available - totalButtonsH) / 2);
         var centerX = _pauseRect.X + (_pauseRect.Width - buttonW) / 2;
 
-        var row = 0;
-        _pauseResume.Bounds = new Rectangle(centerX, startY + (buttonH + gap) * row++, buttonW, buttonH);
-        if (showOpenLan)
-            _pauseOpenLan.Bounds = new Rectangle(centerX, startY + (buttonH + gap) * row++, buttonW, buttonH);
-        if (showHostOnline)
-            _pauseHostOnline.Bounds = new Rectangle(centerX, startY + (buttonH + gap) * row++, buttonW, buttonH);
+        if (_pauseHostOptionsOpen)
+        {
+            _pauseResume.Visible = false;
+            _pauseHost.Visible = false;
+            _pauseInvite.Visible = false;
+            _pauseSettings.Visible = false;
+            _pauseProfile.Visible = false;
+            _pauseSaveExit.Visible = false;
+            _pauseOpenLan.Visible = true;
+            _pauseHostOnline.Visible = true;
+            _pauseHostBack.Visible = true;
+
+            var subButtonCount = 3;
+            var subTotalButtonsH = buttonH * subButtonCount + gap * (subButtonCount - 1);
+            var subStartY = _pauseRect.Y + padding + titleH + Math.Max(0, (available - subTotalButtonsH) / 2);
+            var row = 0;
+            _pauseOpenLan.Bounds = new Rectangle(centerX, subStartY + (buttonH + gap) * row++, buttonW, buttonH);
+            _pauseHostOnline.Bounds = new Rectangle(centerX, subStartY + (buttonH + gap) * row++, buttonW, buttonH);
+            _pauseHostBack.Bounds = new Rectangle(centerX, subStartY + (buttonH + gap) * row, buttonW, buttonH);
+            return;
+        }
+
+        _pauseResume.Visible = true;
+        _pauseHost.Visible = true;
+        _pauseInvite.Visible = showInvite;
+        _pauseSettings.Visible = true;
+        _pauseProfile.Visible = true;
+        _pauseSaveExit.Visible = true;
+        _pauseOpenLan.Visible = false;
+        _pauseHostOnline.Visible = false;
+        _pauseHostBack.Visible = false;
+
+        var buttonCount = 5 + (showInvite ? 1 : 0);
+        totalButtonsH = buttonH * buttonCount + gap * (buttonCount - 1);
+        var startY = _pauseRect.Y + padding + titleH + Math.Max(0, (available - totalButtonsH) / 2);
+
+        var mainRow = 0;
+        _pauseResume.Bounds = new Rectangle(centerX, startY + (buttonH + gap) * mainRow++, buttonW, buttonH);
+        _pauseHost.Bounds = new Rectangle(centerX, startY + (buttonH + gap) * mainRow++, buttonW, buttonH);
         if (showInvite)
-            _pauseInvite.Bounds = new Rectangle(centerX, startY + (buttonH + gap) * row++, buttonW, buttonH);
-        _pauseSettings.Bounds = new Rectangle(centerX, startY + (buttonH + gap) * row++, buttonW, buttonH);
-        _pauseSaveExit.Bounds = new Rectangle(centerX, startY + (buttonH + gap) * row, buttonW, buttonH);
+            _pauseInvite.Bounds = new Rectangle(centerX, startY + (buttonH + gap) * mainRow++, buttonW, buttonH);
+        _pauseSettings.Bounds = new Rectangle(centerX, startY + (buttonH + gap) * mainRow++, buttonW, buttonH);
+        _pauseProfile.Bounds = new Rectangle(centerX, startY + (buttonH + gap) * mainRow++, buttonW, buttonH);
+        _pauseSaveExit.Bounds = new Rectangle(centerX, startY + (buttonH + gap) * mainRow, buttonW, buttonH);
     }
 
     private void DrawPauseMenu(SpriteBatch sb)
@@ -4111,18 +4318,29 @@ public sealed class GameWorldScreen : IScreen, IMouseCaptureScreen
         else
             sb.Draw(_pixel, _pauseRect, new Color(25, 25, 25));
 
-        var title = "PAUSED";
+        var title = _pauseHostOptionsOpen ? "HOST WORLD" : "PAUSED";
         var size = _font.MeasureString(title);
         sb.Draw(_pixel, _pauseHeaderRect, new Color(0, 0, 0, 80));
         var titlePos = new Vector2(_pauseHeaderRect.Center.X - size.X / 2f, _pauseHeaderRect.Y + (_pauseHeaderRect.Height - _font.LineHeight) / 2f);
         _font.DrawString(sb, title, titlePos + new Vector2(1, 1), Color.Black);
         _font.DrawString(sb, title, titlePos, Color.White);
 
+        if (_pauseHostOptionsOpen)
+        {
+            sb.Draw(_pixel, _pauseSubpanelRect, new Color(8, 12, 22, 120));
+            DrawBorder(sb, _pauseSubpanelRect, new Color(130, 170, 210, 220));
+            var hint = "Choose how players should connect to this world.";
+            _font.DrawString(sb, hint, new Vector2(_pauseSubpanelRect.X + 12, _pauseSubpanelRect.Y + 12), new Color(208, 222, 240));
+        }
+
         _pauseResume.Draw(sb, _pixel, _font);
+        _pauseHost.Draw(sb, _pixel, _font);
         _pauseOpenLan.Draw(sb, _pixel, _font);
         _pauseHostOnline.Draw(sb, _pixel, _font);
+        _pauseHostBack.Draw(sb, _pixel, _font);
         _pauseInvite.Draw(sb, _pixel, _font);
         _pauseSettings.Draw(sb, _pixel, _font);
+        _pauseProfile.Draw(sb, _pixel, _font);
         _pauseSaveExit.Draw(sb, _pixel, _font);
 
         sb.End();
@@ -4162,7 +4380,60 @@ public sealed class GameWorldScreen : IScreen, IMouseCaptureScreen
     private void OpenSettings()
     {
         _pauseMenuOpen = false;
+        _pauseHostOptionsOpen = false;
         _menus.Push(new OptionsScreen(_menus, _assets, _font, _pixel, _log, _graphics), _viewport);
+    }
+
+    private void OpenProfileFromPause()
+    {
+        _pauseMenuOpen = false;
+        _pauseHostOptionsOpen = false;
+        _menus.Push(new ProfileScreen(_menus, _assets, _font, _pixel, _log, _profile, _graphics, EnsureEosClient()), _viewport);
+    }
+
+    private void OpenHostMenuFromPause()
+    {
+        _pauseHostOptionsOpen = true;
+    }
+
+    private void CloseHostMenuFromPause()
+    {
+        _pauseHostOptionsOpen = false;
+    }
+
+    private void TogglePauseMenuFromEscape()
+    {
+        if (_pauseMenuOpen && _pauseHostOptionsOpen)
+        {
+            _pauseHostOptionsOpen = false;
+            return;
+        }
+
+        _pauseMenuOpen = !_pauseMenuOpen;
+        if (!_pauseMenuOpen)
+            _pauseHostOptionsOpen = false;
+    }
+
+    private void UpdatePauseButtons(InputState input)
+    {
+        if (!input.IsNewLeftClick())
+            return;
+
+        var p = input.MousePosition;
+        if (_pauseHostOptionsOpen)
+        {
+            if (_pauseOpenLan.TryClick(p)) return;
+            if (_pauseHostOnline.TryClick(p)) return;
+            _pauseHostBack.TryClick(p);
+            return;
+        }
+
+        if (_pauseResume.TryClick(p)) return;
+        if (_pauseHost.TryClick(p)) return;
+        if (_pauseInvite.TryClick(p)) return;
+        if (_pauseSettings.TryClick(p)) return;
+        if (_pauseProfile.TryClick(p)) return;
+        _pauseSaveExit.TryClick(p);
     }
 
 
@@ -4170,6 +4441,8 @@ public sealed class GameWorldScreen : IScreen, IMouseCaptureScreen
 
     private void OpenToLanFromPause()
     {
+        _pauseHostOptionsOpen = false;
+
         if (!CanOpenLanFromPause())
         {
             SetCommandStatus("LAN host is already active.");
@@ -4191,12 +4464,15 @@ public sealed class GameWorldScreen : IScreen, IMouseCaptureScreen
 
         _lanSession = result.Session;
         SeedLocalPlayerName();
+        ResumeGameplayAfterHosting();
         SetCommandStatus("LAN hosting enabled. Other players can now join from Multiplayer > LAN.", 7f);
         UpdatePauseMenuLayout();
     }
 
     private void OpenOnlineHostFromPause()
     {
+        _pauseHostOptionsOpen = false;
+
         if (!CanOpenOnlineFromPause())
         {
             SetCommandStatus("Online host is already active.");
@@ -4215,8 +4491,7 @@ public sealed class GameWorldScreen : IScreen, IMouseCaptureScreen
             SetCommandStatus("EOS CLIENT UNAVAILABLE");
             return;
         }
-        var onlineGate = OnlineGateClient.GetOrCreate();
-        if (!onlineGate.CanUseOfficialOnline(_log, out var gateDenied))
+        if (!_onlineGate.CanUseOfficialOnline(_log, out var gateDenied))
         {
             SetCommandStatus(gateDenied);
             return;
@@ -4240,16 +4515,100 @@ public sealed class GameWorldScreen : IScreen, IMouseCaptureScreen
 
         _lanSession = result.Session;
         SeedLocalPlayerName();
-        SetCommandStatus("Online hosting enabled. Use SHARE CODE to invite others.", 7f);
+        ResumeGameplayAfterHosting();
+        _pendingHostedOnlineShareAnnouncement = false;
+        AnnounceOnlineHostShare(eos, tryCopyToClipboard: true);
         UpdatePauseMenuLayout();
+    }
+
+    private void ResumeGameplayAfterHosting()
+    {
+        _pauseMenuOpen = false;
+        _pauseHostOptionsOpen = false;
+        _inventoryOpen = false;
+        _homeGuiOpen = false;
+        _structureFinderOpen = false;
+        _chatInputActive = false;
+        _commandInputActive = false;
+        _gamemodeWheelVisible = false;
+        _chatOverlayScrollLines = 0;
+        _chatOverlayActionUnlockUntil = 0f;
+    }
+
+    private void AnnounceOnlineHostShare(EosClient? eos, bool tryCopyToClipboard)
+    {
+        var hostCode = (eos?.LocalProductUserId ?? string.Empty).Trim();
+        if (string.IsNullOrWhiteSpace(hostCode))
+        {
+            SetCommandStatus("Online hosting enabled, but host code is unavailable.", 7f);
+            return;
+        }
+
+        var status = "Online hosting enabled. Share your host code with friends.";
+        if (tryCopyToClipboard)
+        {
+            if (TryCopyToClipboard(hostCode, out _))
+                status = "Online hosting enabled. Host code copied to clipboard.";
+            else
+                status = "Online hosting enabled. Host code ready (clipboard copy failed).";
+        }
+
+        SetCommandStatus(status, 7f, echoToChat: false);
+        AddChatLine(
+            $"HOST CODE: {hostCode}",
+            isSystem: true,
+            hoverText: "Click COPY CODE to copy host code.",
+            copyText: hostCode,
+            actionLabel: "COPY CODE");
+
+        if (_settings.EnableInviteLinks)
+        {
+            var hostLink = BuildHostJoinLink(hostCode);
+            AddChatLine(
+                $"HOST LINK: {hostLink}",
+                isSystem: true,
+                hoverText: "Click COPY LINK to copy host link.",
+                copyText: hostLink,
+                actionLabel: "COPY LINK");
+        }
+    }
+
+    private static string BuildHostJoinLink(string hostCode)
+    {
+        var safeHostCode = (hostCode ?? string.Empty).Trim();
+        return string.IsNullOrWhiteSpace(safeHostCode)
+            ? string.Empty
+            : $"{HostJoinLinkPrefix}{safeHostCode}";
+    }
+
+    private bool TryCopyToClipboard(string value, out string error)
+    {
+        error = string.Empty;
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            error = "Nothing to copy.";
+            return false;
+        }
+
+        try
+        {
+            WinClipboard.SetText(value);
+            return true;
+        }
+        catch (Exception ex)
+        {
+            _log.Warn($"Clipboard copy failed: {ex.Message}");
+            error = ex.Message;
+            return false;
+        }
     }
 
     private void OpenShareCode()
     {
         _pauseMenuOpen = false;
+        _pauseHostOptionsOpen = false;
 
-        var onlineGate = OnlineGateClient.GetOrCreate();
-        if (!onlineGate.CanUseOfficialOnline(_log, out var gateDenied))
+        if (!_onlineGate.CanUseOfficialOnline(_log, out var gateDenied))
         {
             SetCommandStatus(gateDenied);
             return;
@@ -4277,12 +4636,20 @@ public sealed class GameWorldScreen : IScreen, IMouseCaptureScreen
         _isClosing = true;
         if (!_skipOnCloseFullSave)
         {
-            var closeState = CapturePlayerState();
-            SavePlayerState(closeState);
-            var savedChunks = _world?.SaveAllLoadedChunks() ?? 0;
-            var savedMeshes = SaveAllLoadedChunkMeshesToCache();
-            FlushWorldPreviewUpdate(closeState);
-            _log.Info($"GameWorldScreen: OnClose saved {savedChunks} chunks and {savedMeshes} mesh caches.");
+            if (IsJoinedClientSession)
+            {
+                _log.Info("GameWorldScreen: OnClose skipped local world save for joined-client mirror session.");
+            }
+            else
+            {
+                var closeState = CapturePlayerState();
+                SavePlayerState(closeState);
+                var savedRemotePlayers = SaveConnectedRemotePlayerStates();
+                var savedChunks = _world?.SaveAllLoadedChunks() ?? 0;
+                var savedMeshes = SaveAllLoadedChunkMeshesToCache();
+                FlushWorldPreviewUpdate(closeState);
+                _log.Info($"GameWorldScreen: OnClose saved {savedChunks} chunks, {savedMeshes} mesh caches, and {savedRemotePlayers} remote player snapshots.");
+            }
         }
         else
         {
@@ -4301,7 +4668,10 @@ public sealed class GameWorldScreen : IScreen, IMouseCaptureScreen
         _chunkGenerationQueued.Clear();
         _chunkGenerationInFlight.Clear();
         if (_lanSession is EosP2PHostSession)
+        {
+            _ = _onlineGate.StopHostingAsync(_profile.PlayerId);
             WorldHostBootstrap.TryClearHostingPresence(_log, EnsureEosClient());
+        }
         _lanSession?.Dispose();
         _blockIconCache?.Dispose();
         _blockIconCache = null;
@@ -4323,6 +4693,7 @@ public sealed class GameWorldScreen : IScreen, IMouseCaptureScreen
             return;
 
         _pauseMenuOpen = false;
+        _pauseHostOptionsOpen = false;
         _log.Info("Pause menu: Save & Exit requested.");
         BeginSaveAndExit();
     }
@@ -4377,8 +4748,16 @@ public sealed class GameWorldScreen : IScreen, IMouseCaptureScreen
         var sw = Stopwatch.StartNew();
         try
         {
+            if (IsJoinedClientSession)
+            {
+                sw.Stop();
+                _log.Info("Save & Exit: skipped local world persistence for joined-client mirror session.");
+                return new SaveAndExitResult(true, 0, 0, sw.Elapsed.TotalSeconds, null);
+            }
+
             var state = CapturePlayerState();
             state.Save(_worldPath, _log);
+            var savedRemotePlayers = SaveConnectedRemotePlayerStates();
             if (_meta != null)
                 _meta.Save(_metaPath, _log);
 
@@ -4388,7 +4767,7 @@ public sealed class GameWorldScreen : IScreen, IMouseCaptureScreen
             FlushWorldPreviewUpdate(state);
 
             sw.Stop();
-            _log.Info($"Save & Exit detail: ensured gate meshes={ensuredGateMeshes}, cached meshes={savedMeshes}");
+            _log.Info($"Save & Exit detail: ensured gate meshes={ensuredGateMeshes}, cached meshes={savedMeshes}, remote players saved={savedRemotePlayers}");
             return new SaveAndExitResult(true, savedChunks, savedMeshes, sw.Elapsed.TotalSeconds, null);
         }
         catch (Exception ex)
@@ -4532,14 +4911,37 @@ public sealed class GameWorldScreen : IScreen, IMouseCaptureScreen
 
     private void UpdateNetwork(float dt)
     {
-        if (_lanSession == null || !_lanSession.IsConnected)
+        if (_lanSession == null)
             return;
+
+        if (!_lanSession.IsConnected)
+        {
+            if (!_lanSession.IsHost)
+            {
+                if (!_lanSession.TryDequeueDisconnectReason(out var disconnectedReason))
+                    disconnectedReason = HostDisconnectedFallbackReason;
+                HandleHostDisconnected(disconnectedReason);
+            }
+            return;
+        }
 #if EOS_SDK
         if (_lanSession is EosP2PHostSession eosHost)
+        {
             eosHost.PumpIncoming();
+            _ = ProcessPendingJoinRequestsAsync(eosHost);
+        }
         else if (_lanSession is EosP2PClientSession eosClient)
             eosClient.PumpIncoming();
 #endif
+
+        while (_lanSession.TryDequeueDisconnectReason(out var pendingReason))
+        {
+            if (_lanSession.IsHost)
+                continue;
+
+            HandleHostDisconnected(pendingReason);
+            return;
+        }
 
         _netSendAccumulator += dt;
         if (_netSendAccumulator >= 0.05f)
@@ -4551,8 +4953,13 @@ public sealed class GameWorldScreen : IScreen, IMouseCaptureScreen
             _netSendAccumulator = 0;
         }
 
+        UpdateNetworkPersistence(dt);
+
         while (_lanSession.TryDequeuePlayerList(out var list))
             ApplyPlayerList(list);
+
+        if (_lanSession.IsHost)
+            ProcessPendingPersistenceRestores();
 
         while (_lanSession.TryDequeuePlayerState(out var state))
         {
@@ -4573,6 +4980,9 @@ public sealed class GameWorldScreen : IScreen, IMouseCaptureScreen
         while (_lanSession.TryDequeueChat(out var chat))
             HandleNetworkChat(chat);
 
+        while (_lanSession.TryDequeueTeleport(out var teleport))
+            ApplyNetworkTeleport(teleport);
+
         if (_world == null)
             return;
         
@@ -4581,9 +4991,13 @@ public sealed class GameWorldScreen : IScreen, IMouseCaptureScreen
         {
             if (_world == null) return;
 
-            // The initial chunk flood can be massive, process a few per frame
-            var chunkProcessBudget = 5;
-            while (chunkProcessBudget > 0 && _lanSession.TryDequeueChunkData(out var chunkData))
+            // Time-sliced apply: catch up quickly while keeping frame spikes bounded.
+            var chunkProcessBudget = 24;
+            var chunkApplyBudgetMs = 3.0;
+            var chunkApplyStopwatch = Stopwatch.StartNew();
+            while (chunkProcessBudget > 0
+                && chunkApplyStopwatch.Elapsed.TotalMilliseconds < chunkApplyBudgetMs
+                && _lanSession.TryDequeueChunkData(out var chunkData))
             {
                 if (chunkData.Blocks != null)
                 {
@@ -4618,19 +5032,339 @@ public sealed class GameWorldScreen : IScreen, IMouseCaptureScreen
             RemoveWorldItem(pickup.ItemId);
     }
 
+    private void UpdateNetworkPersistence(float dt)
+    {
+        if (_lanSession == null || !_lanSession.IsConnected)
+            return;
+
+        if (_lanSession.IsHost)
+        {
+            while (_lanSession.TryDequeuePersistenceSnapshot(out var snapshot))
+                HandleRemotePersistenceSnapshot(snapshot);
+
+            ProcessPendingPersistenceRestores();
+            return;
+        }
+
+        _persistenceSendAccumulator += dt;
+        if (_persistenceSendAccumulator >= PersistenceSendIntervalSeconds)
+        {
+            _persistenceSendAccumulator = 0f;
+            SendLocalPersistenceSnapshot();
+        }
+
+        while (_lanSession.TryDequeuePersistenceRestore(out var restore))
+            ApplyHostPersistenceRestore(restore);
+    }
+
+    private void SendLocalPersistenceSnapshot()
+    {
+        if (_lanSession == null || !_lanSession.IsConnected || _lanSession.IsHost)
+            return;
+
+        var state = CapturePlayerState();
+        state.Username = _profile.GetDisplayUsername();
+        var payload = state.ToCompressedBytes(_log);
+        if (payload.Length == 0)
+            return;
+
+        _lanSession.SendPersistenceSnapshot(new LanPlayerPersistenceSnapshot
+        {
+            PlayerId = _lanSession.LocalPlayerId,
+            Username = state.Username,
+            Payload = payload,
+            TimestampUtc = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()
+        });
+    }
+
+    private void HandleRemotePersistenceSnapshot(LanPlayerPersistenceSnapshot snapshot)
+    {
+        if (_lanSession == null || !_lanSession.IsHost)
+            return;
+
+        if (snapshot.PlayerId <= 0)
+            return;
+
+        var normalized = new LanPlayerPersistenceSnapshot
+        {
+            PlayerId = snapshot.PlayerId,
+            Username = snapshot.Username ?? string.Empty,
+            Payload = snapshot.Payload ?? Array.Empty<byte>(),
+            TimestampUtc = snapshot.TimestampUtc <= 0 ? DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() : snapshot.TimestampUtc
+        };
+
+        _latestRemotePersistenceByPlayerId[snapshot.PlayerId] = normalized;
+
+        if (!PlayerWorldState.TryFromCompressedBytes(normalized.Payload, _log, out var state))
+            return;
+
+        var resolvedName = ResolvePersistenceUsername(snapshot.PlayerId, normalized.Username, state.Username);
+        if (!string.IsNullOrWhiteSpace(resolvedName))
+        {
+            state.Username = resolvedName;
+            _playerNames[snapshot.PlayerId] = resolvedName;
+        }
+
+        if (!_remotePlayers.TryGetValue(snapshot.PlayerId, out var model))
+        {
+            model = new PlayerModel(_graphics.GraphicsDevice);
+            _remotePlayers[snapshot.PlayerId] = model;
+        }
+
+        model.Position = new Vector3(state.PosX, state.PosY, state.PosZ);
+        model.Yaw = state.Yaw;
+        model.IsFlying = state.IsFlying;
+    }
+
+    private void ProcessPendingPersistenceRestores()
+    {
+        if (_lanSession == null || !_lanSession.IsHost || _pendingRestorePlayerIds.Count == 0)
+            return;
+
+        var pending = _pendingRestorePlayerIds.ToArray();
+        for (var i = 0; i < pending.Length; i++)
+        {
+            var playerId = pending[i];
+            if (playerId <= 0 || !_playerNames.ContainsKey(playerId))
+            {
+                _pendingRestorePlayerIds.Remove(playerId);
+                continue;
+            }
+
+            if (!TryBuildPersistenceRestoreForPlayer(playerId, out var restore))
+                continue;
+
+            if (!_lanSession.SendPersistenceRestore(playerId, restore))
+                continue;
+
+            _pendingRestorePlayerIds.Remove(playerId);
+            _log.Info($"Sent persistence restore to player {ResolvePlayerName(playerId)} (id={playerId}).");
+        }
+    }
+
+    private bool TryBuildPersistenceRestoreForPlayer(int playerId, out LanPlayerPersistenceSnapshot snapshot)
+    {
+        snapshot = default;
+        if (playerId <= 0)
+            return false;
+
+        if (_latestRemotePersistenceByPlayerId.TryGetValue(playerId, out var cached) && cached.Payload is { Length: > 0 })
+        {
+            snapshot = new LanPlayerPersistenceSnapshot
+            {
+                PlayerId = playerId,
+                Username = ResolvePersistenceUsername(playerId, cached.Username, cached.Username),
+                Payload = cached.Payload,
+                TimestampUtc = cached.TimestampUtc <= 0 ? DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() : cached.TimestampUtc
+            };
+            return true;
+        }
+
+        var username = ResolvePersistenceUsername(playerId, ResolvePlayerName(playerId), string.Empty);
+        if (string.IsNullOrWhiteSpace(username))
+            return false;
+
+        var state = PlayerWorldState.LoadOrDefault(
+            _worldPath,
+            username,
+            () => BuildDefaultPlayerStateForUser(username),
+            _log);
+        state.Username = username;
+
+        var payload = state.ToCompressedBytes(_log);
+        if (payload.Length == 0)
+            return false;
+
+        snapshot = new LanPlayerPersistenceSnapshot
+        {
+            PlayerId = playerId,
+            Username = username,
+            Payload = payload,
+            TimestampUtc = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()
+        };
+        return true;
+    }
+
+    private void ApplyHostPersistenceRestore(LanPlayerPersistenceSnapshot restore)
+    {
+        if (_lanSession == null || _lanSession.IsHost)
+            return;
+
+        if (!PlayerWorldState.TryFromCompressedBytes(restore.Payload ?? Array.Empty<byte>(), _log, out var state))
+            return;
+
+        var localName = _profile.GetDisplayUsername();
+        if (!string.IsNullOrWhiteSpace(localName))
+            state.Username = localName;
+
+        ApplyPlayerState(state);
+        _log.Info("Applied host persistence restore snapshot.");
+    }
+
+    private void HandleHostDisconnected(string reason)
+    {
+        if (_multiplayerDisconnectHandled)
+            return;
+
+        _multiplayerDisconnectHandled = true;
+        var message = string.IsNullOrWhiteSpace(reason) ? HostDisconnectedFallbackReason : reason.Trim();
+        _log.Warn($"Multiplayer session closed: {message}");
+
+        try
+        {
+            System.Windows.Forms.MessageBox.Show(
+                message,
+                "Host Disconnected",
+                System.Windows.Forms.MessageBoxButtons.OK,
+                System.Windows.Forms.MessageBoxIcon.Warning);
+        }
+        catch (Exception ex)
+        {
+            _log.Warn($"Host disconnect dialog failed: {ex.Message}");
+        }
+
+        _menus.Pop();
+    }
+
+    private void ApplyNetworkTeleport(LanTeleport teleport)
+    {
+        if (_lanSession == null)
+            return;
+
+        if (teleport.TargetPlayerId != _lanSession.LocalPlayerId)
+            return;
+
+        if (!TryTeleportPlayer(teleport.X, teleport.Z, teleport.Y, out var result))
+        {
+            _log.Warn($"Forced teleport failed: {result}");
+            return;
+        }
+
+        _player.Yaw = teleport.Yaw;
+        _player.Pitch = teleport.Pitch;
+        SetCommandStatus(result);
+    }
+
+    private async Task ProcessPendingJoinRequestsAsync(EosP2PHostSession hostSession)
+    {
+        while (hostSession.TryDequeueJoinRequest(out var request))
+        {
+            var peerId = (request.ProductUserId ?? string.Empty).Trim();
+            if (string.IsNullOrWhiteSpace(peerId))
+                continue;
+
+            var username = await ResolveUsernameAsync(peerId);
+
+            // DUAL-LAYER GUARD:
+            // 1. If they are whitelisted or already accepted via Gate, hostSession.HandleHello 
+            //    already auto-approved them. They won't even reach TryDequeueJoinRequest.
+            // 2. If for some reason they DO reach here but we know they are approved, skip the prompt.
+            if (_whitelist.Contains(peerId) || _whitelist.Contains(username))
+            {
+                _log.Info($"P2P: Auto-approving whitelisted peer {username} ({peerId}) in ProcessPendingJoinRequests fallback.");
+                hostSession.ApproveJoinRequest(peerId);
+                continue;
+            }
+
+            AddJoinRequestChatPrompt(peerId, username);
+        }
+    }
+
+    private void AddJoinRequestChatPrompt(string peerId, string displayName)
+    {
+        AddChatLine(
+            $"{displayName} wants to join! Accept?",
+            isSystem: true,
+            hoverText: "Allow this player to join your online world.",
+            actionLabel: "ACCEPT",
+            customActionToken: JoinApproveActionPrefix + peerId,
+            customActionStatus: $"{displayName} joined.",
+            actionLabel2: "REJECT",
+            customActionToken2: JoinDeclineActionPrefix + peerId,
+            customActionStatus2: $"{displayName} declined.");
+    }
+
     private void ApplyPlayerList(LanPlayerList list)
     {
+        var previousRemoteIds = _knownRemotePlayerIds.ToArray();
+        
+        // Preserve old names for the "left the game" message
+        var oldNames = new Dictionary<int, string>(_playerNames);
+        
         _playerNames.Clear();
         var players = list.Players ?? Array.Empty<LanPlayerInfo>();
+        _knownRemotePlayerIds.Clear();
         for (var i = 0; i < players.Length; i++)
         {
             var entry = players[i];
             var name = string.IsNullOrWhiteSpace(entry.Name) ? $"Player{entry.PlayerId}" : entry.Name;
             _playerNames[entry.PlayerId] = name;
+
+            if (_lanSession == null || entry.PlayerId != _lanSession.LocalPlayerId)
+                _knownRemotePlayerIds.Add(entry.PlayerId);
+        }
+
+        if (_lanSession is EosP2PClientSession eosClientSession)
+        {
+            var hostId = (eosClientSession.HostProductUserId ?? string.Empty).Trim();
+            if (!string.IsNullOrWhiteSpace(hostId))
+            {
+                var hostName = ResolvePlayerName(0);
+                var existing = _profile.Friends.Find(f => string.Equals(f.UserId, hostId, StringComparison.OrdinalIgnoreCase));
+                var shouldSave = existing == null || !string.Equals(existing.Label, hostName, StringComparison.Ordinal);
+                if (shouldSave && _profile.AddOrUpdateFriend(hostId, hostName))
+                    _profile.Save(_log);
+            }
         }
 
         if (_lanSession != null && !_playerNames.ContainsKey(_lanSession.LocalPlayerId))
             SeedLocalPlayerName();
+
+        if (_lanSession != null)
+        {
+            foreach (var playerId in _knownRemotePlayerIds)
+            {
+                if (playerId <= 0)
+                    continue;
+
+                if (!previousRemoteIds.Contains(playerId))
+                {
+                    if (_lanSession.IsHost)
+                        _pendingRestorePlayerIds.Add(playerId);
+
+                    if (_hasReceivedInitialPlayerList)
+                    {
+                        var joinedName = _playerNames.TryGetValue(playerId, out var nameVal) ? nameVal : $"Player{playerId}";
+                        AddChatLine($"{joinedName} joined the game", isSystem: true);
+                    }
+                }
+            }
+
+            for (var i = 0; i < previousRemoteIds.Length; i++)
+            {
+                var playerId = previousRemoteIds[i];
+                if (_knownRemotePlayerIds.Contains(playerId))
+                    continue;
+
+                if (_hasReceivedInitialPlayerList)
+                {
+                    var leftName = oldNames.TryGetValue(playerId, out var oldNameVal) ? oldNameVal : $"Player{playerId}";
+                    AddChatLine($"{leftName} left the game", isSystem: true);
+                }
+
+                if (_lanSession.IsHost)
+                {
+                    FlushPersistedRemoteStateForPlayer(playerId);
+                    _latestRemotePersistenceByPlayerId.Remove(playerId);
+                    _pendingRestorePlayerIds.Remove(playerId);
+                }
+            }
+        }
+
+        _hasReceivedInitialPlayerList = true;
+
+        if (_lanSession != null && _lanSession.IsHost && _lanSession.IsConnected)
+            BroadcastOperatorSyncState();
 
         PruneRemotePlayers();
     }
@@ -4656,6 +5390,12 @@ public sealed class GameWorldScreen : IScreen, IMouseCaptureScreen
         if (_meta == null)
         {
             CenterCamera();
+            return;
+        }
+
+        if (IsJoinedClientSession)
+        {
+            ApplyPlayerState(BuildDefaultPlayerState());
             return;
         }
 
@@ -4698,6 +5438,13 @@ public sealed class GameWorldScreen : IScreen, IMouseCaptureScreen
         state.Yaw = (float)Math.Atan2(dir.Z, dir.X);
         state.Pitch = (float)Math.Asin(dir.Y);
 
+        return state;
+    }
+
+    private PlayerWorldState BuildDefaultPlayerStateForUser(string username)
+    {
+        var state = BuildDefaultPlayerState();
+        state.Username = NormalizeIdentityToken(username);
         return state;
     }
 
@@ -5941,6 +6688,12 @@ public sealed class GameWorldScreen : IScreen, IMouseCaptureScreen
             _inventory.SetHotbarData(state.Hotbar);
             _log.Info($"Restored hotbar with {state.Hotbar.Count(x => x.Id != BlockIds.Air)} items");
         }
+
+        if (state.InventoryGrid != null && state.InventoryGrid.Length > 0)
+        {
+            _inventory.SetGridData(state.InventoryGrid);
+            _log.Info($"Restored inventory grid with {state.InventoryGrid.Count(x => x.Id != BlockIds.Air)} items");
+        }
         
         // Restore selected slot
         if (state.SelectedIndex >= 0 && state.SelectedIndex < Inventory.HotbarSize)
@@ -5968,7 +6721,8 @@ public sealed class GameWorldScreen : IScreen, IMouseCaptureScreen
             HomeZ = _homePosition.Z,
             Homes = BuildPlayerHomeStateList(),
             SelectedIndex = _inventory.SelectedIndex,
-            Hotbar = _inventory.GetHotbarData()
+            Hotbar = _inventory.GetHotbarData(),
+            InventoryGrid = _inventory.GetGridData()
         };
     }
 
@@ -6151,6 +6905,9 @@ public sealed class GameWorldScreen : IScreen, IMouseCaptureScreen
 
     private void QueuePlayerStateSaveAsync()
     {
+        if (IsJoinedClientSession)
+            return;
+
         if (Interlocked.CompareExchange(ref _autoSaveInFlight, 1, 0) != 0)
             return;
 
@@ -6175,6 +6932,9 @@ public sealed class GameWorldScreen : IScreen, IMouseCaptureScreen
 
     private void SavePlayerState(PlayerWorldState? state = null)
     {
+        if (IsJoinedClientSession)
+            return;
+
         try
         {
             state ??= CapturePlayerState();
@@ -6184,6 +6944,109 @@ public sealed class GameWorldScreen : IScreen, IMouseCaptureScreen
         catch (Exception ex)
         {
             _log.Warn($"Failed to save player state: {ex.Message}");
+        }
+    }
+
+    private int SaveConnectedRemotePlayerStates()
+    {
+        if (_lanSession == null || !_lanSession.IsHost || string.IsNullOrWhiteSpace(_worldPath))
+            return 0;
+
+        var saved = 0;
+        var savedBySnapshot = new HashSet<int>();
+
+        foreach (var pair in _latestRemotePersistenceByPlayerId)
+        {
+            if (!TrySaveRemotePlayerStateSnapshot(pair.Key, pair.Value))
+                continue;
+
+            savedBySnapshot.Add(pair.Key);
+            saved++;
+        }
+
+        foreach (var pair in _remotePlayers)
+        {
+            if (savedBySnapshot.Contains(pair.Key))
+                continue;
+
+            var playerId = pair.Key;
+            var model = pair.Value;
+            if (model == null)
+                continue;
+
+            if (TrySaveRemotePlayerModelState(playerId, model))
+                saved++;
+        }
+
+        return saved;
+    }
+
+    private void FlushPersistedRemoteStateForPlayer(int playerId)
+    {
+        if (playerId <= 0)
+            return;
+
+        if (_latestRemotePersistenceByPlayerId.TryGetValue(playerId, out var snapshot)
+            && TrySaveRemotePlayerStateSnapshot(playerId, snapshot))
+        {
+            return;
+        }
+
+        if (_remotePlayers.TryGetValue(playerId, out var model))
+            TrySaveRemotePlayerModelState(playerId, model);
+    }
+
+    private bool TrySaveRemotePlayerStateSnapshot(int playerId, LanPlayerPersistenceSnapshot snapshot)
+    {
+        if (playerId <= 0 || snapshot.Payload is not { Length: > 0 })
+            return false;
+
+        if (!PlayerWorldState.TryFromCompressedBytes(snapshot.Payload, _log, out var state))
+            return false;
+
+        var username = ResolvePersistenceUsername(playerId, snapshot.Username, state.Username);
+        if (string.IsNullOrWhiteSpace(username))
+            return false;
+
+        try
+        {
+            state.Username = username;
+            state.Save(_worldPath, _log);
+            return true;
+        }
+        catch (Exception ex)
+        {
+            _log.Warn($"Failed to save remote player snapshot for '{username}': {ex.Message}");
+            return false;
+        }
+    }
+
+    private bool TrySaveRemotePlayerModelState(int playerId, PlayerModel model)
+    {
+        var username = ResolvePersistenceUsername(playerId, ResolvePlayerName(playerId), string.Empty);
+        if (string.IsNullOrWhiteSpace(username))
+            return false;
+
+        try
+        {
+            var state = PlayerWorldState.LoadOrDefault(
+                _worldPath,
+                username,
+                () => BuildDefaultPlayerStateForUser(username),
+                _log);
+            state.Username = username;
+            state.PosX = model.Position.X;
+            state.PosY = model.Position.Y;
+            state.PosZ = model.Position.Z;
+            state.Yaw = model.Yaw;
+            state.IsFlying = model.IsFlying;
+            state.Save(_worldPath, _log);
+            return true;
+        }
+        catch (Exception ex)
+        {
+            _log.Warn($"Failed to save remote player state for '{username}': {ex.Message}");
+            return false;
         }
     }
 
@@ -6544,6 +7407,28 @@ public sealed class GameWorldScreen : IScreen, IMouseCaptureScreen
 
     private void ExecuteChatAction(ChatActionHitbox action)
     {
+        if (action.HasCopy)
+        {
+            if (TryCopyToClipboard(action.CopyText, out var error))
+            {
+                var status = string.IsNullOrWhiteSpace(action.CopyStatusText)
+                    ? "Copied to clipboard."
+                    : action.CopyStatusText;
+                SetCommandStatus(status, 3f, echoToChat: false);
+            }
+            else
+            {
+                SetCommandStatus($"Clipboard copy failed: {error}", 4f, echoToChat: false);
+            }
+            return;
+        }
+
+        if (action.HasCustomAction)
+        {
+            ExecuteCustomChatAction(action.CustomActionToken, action.CustomActionStatus);
+            return;
+        }
+
         if (!action.HasTeleport)
             return;
 
@@ -6555,6 +7440,92 @@ public sealed class GameWorldScreen : IScreen, IMouseCaptureScreen
 
         _chatOverlayActionUnlockUntil = 0f;
         SetCommandStatus(result);
+    }
+
+    private void ExecuteCustomChatAction(string token, string statusText)
+    {
+        token = (token ?? string.Empty).Trim();
+        if (string.IsNullOrWhiteSpace(token))
+            return;
+
+        if (_lanSession is not EosP2PHostSession hostSession)
+        {
+            SetCommandStatus("This action is only available to the online host.", 4f, echoToChat: false);
+            return;
+        }
+
+        if (token.StartsWith("wl-add:", StringComparison.Ordinal))
+        {
+            var target = token.Substring(7).Trim();
+            if (_whitelist.Add(target))
+            {
+                SaveWhitelist();
+                AddChatLine($"Added {target} to whitelist.", isSystem: true);
+                SetCommandStatus($"Added {target} to whitelist.", 4f, echoToChat: false);
+            }
+            return;
+        }
+
+        if (token.StartsWith("wl-remove:", StringComparison.Ordinal))
+        {
+            var target = token.Substring(10).Trim();
+            if (_whitelist.Remove(target))
+            {
+                SaveWhitelist();
+                AddChatLine($"Removed {target} from whitelist.", isSystem: true);
+                SetCommandStatus($"Removed {target} from whitelist.", 4f, echoToChat: false);
+            }
+            return;
+        }
+
+        if (token.StartsWith(JoinApproveActionPrefix, StringComparison.Ordinal))
+        {
+            var peerId = token.Substring(JoinApproveActionPrefix.Length).Trim();
+            if (!hostSession.ApproveJoinRequest(peerId))
+            {
+                SetCommandStatus("Join request is no longer pending.", 4f, echoToChat: false);
+                return;
+            }
+
+            _ = Task.Run(async () =>
+            {
+                var username = await ResolveUsernameAsync(peerId);
+                AddChatLine($"You approved {username}'s join request.", isSystem: true);
+                SetCommandStatus($"Join approved for {username}.", 4f, echoToChat: false);
+            });
+            return;
+        }
+
+        if (token.StartsWith(WorldInviteAcceptPrefix, StringComparison.Ordinal))
+        {
+            var senderPuid = token.Substring(WorldInviteAcceptPrefix.Length).Trim();
+            _ = RespondToInviteAsync(senderPuid, "accepted");
+            return;
+        }
+
+        if (token.StartsWith(WorldInviteRejectPrefix, StringComparison.Ordinal))
+        {
+            var senderPuid = token.Substring(WorldInviteRejectPrefix.Length).Trim();
+            _ = RespondToInviteAsync(senderPuid, "rejected");
+            return;
+        }
+
+        if (token.StartsWith(JoinDeclineActionPrefix, StringComparison.Ordinal))
+        {
+            var peerId = token.Substring(JoinDeclineActionPrefix.Length).Trim();
+            if (!hostSession.DeclineJoinRequest(peerId))
+            {
+                SetCommandStatus("Join request is no longer pending.", 4f, echoToChat: false);
+                return;
+            }
+
+            _ = Task.Run(async () =>
+            {
+                var username = await ResolveUsernameAsync(peerId);
+                AddChatLine($"You declined {username}'s join request.", isSystem: true);
+                SetCommandStatus($"Join declined for {username}.", 4f, echoToChat: false);
+            });
+        }
     }
 
     private bool TryTeleportPlayer(int x, int z, int? explicitY, out string result)
@@ -6878,7 +7849,7 @@ public sealed class GameWorldScreen : IScreen, IMouseCaptureScreen
             var ordered = _commandDescriptors.OrderBy(d => d.Name, StringComparer.OrdinalIgnoreCase);
             foreach (var descriptor in ordered)
             {
-                if (descriptor.Permission == CommandPermission.OwnerAdmin && !HasOwnerAdminPermissions())
+                if (!HasCommandPermission(descriptor.Permission) || !IsCommandAllowedWithCheatsSetting(descriptor))
                     continue;
 
                 AddCandidate(descriptor.Name, descriptor.Description, descriptor.Usage);
@@ -6894,7 +7865,7 @@ public sealed class GameWorldScreen : IScreen, IMouseCaptureScreen
 
         if (!_commandLookup.TryGetValue(context.Tokens[0], out var command))
             return;
-        if (command.Permission == CommandPermission.OwnerAdmin && !HasOwnerAdminPermissions())
+        if (!HasCommandPermission(command.Permission) || !IsCommandAllowedWithCheatsSetting(command))
             return;
 
         var tokenOptions = GetCommandArgumentCompletionTokens(command, context.TokenIndex, context.Tokens);
@@ -6940,6 +7911,17 @@ public sealed class GameWorldScreen : IScreen, IMouseCaptureScreen
                     AppendRadiusPresets(values);
                 break;
 
+            case "whitelist":
+                if (tokenIndex == 1)
+                    values.AddRange(new[] { "add", "remove", "list" });
+                else if (tokenIndex == 2 && tokenIndex - 1 < tokens.Length)
+                {
+                    var sub = tokens[1].ToLowerInvariant();
+                    if (sub == "add" || sub == "remove")
+                        AppendFriendNameTokens(values);
+                }
+                break;
+
             case "structure":
                 if (tokenIndex == 1)
                 {
@@ -6958,6 +7940,15 @@ public sealed class GameWorldScreen : IScreen, IMouseCaptureScreen
             case "gamemode":
                 if (tokenIndex == 1)
                     values.AddRange(new[] { "artificer", "veilwalker", "veilseer", "gui" });
+                else if (tokenIndex == 2 && tokenIndex - 1 < tokens.Length && !string.Equals(tokens[1], "gui", StringComparison.OrdinalIgnoreCase))
+                    AppendPlayerNameTokens(values);
+                break;
+
+            case "artificer":
+            case "veilwalker":
+            case "veilseer":
+                if (tokenIndex == 1)
+                    AppendPlayerNameTokens(values);
                 break;
 
             case "difficulty":
@@ -6983,8 +7974,20 @@ public sealed class GameWorldScreen : IScreen, IMouseCaptureScreen
                 break;
 
             case "setspawn":
-            case "tp":
                 AppendCurrentPositionTokens(values);
+                break;
+
+            case "tp":
+                if (tokenIndex is 1 or 2)
+                    AppendPlayerNameTokens(values);
+                AppendCurrentPositionTokens(values);
+                break;
+
+            case "op":
+            case "deop":
+            case "kick":
+                if (tokenIndex == 1)
+                    AppendPlayerNameTokens(values);
                 break;
 
             case "sethome":
@@ -7049,6 +8052,20 @@ public sealed class GameWorldScreen : IScreen, IMouseCaptureScreen
             output.Add(_homes[i].Name);
     }
 
+    private void AppendFriendNameTokens(List<string> output)
+    {
+        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var f in _profile.Friends)
+        {
+            if (!string.IsNullOrWhiteSpace(f.Label) && seen.Add(f.Label))
+                output.Add(f.Label);
+            if (!string.IsNullOrWhiteSpace(f.LastKnownDisplayName) && seen.Add(f.LastKnownDisplayName))
+                output.Add(f.LastKnownDisplayName);
+            if (!string.IsNullOrWhiteSpace(f.UserId) && seen.Add(f.UserId))
+                output.Add(f.UserId);
+        }
+    }
+
     private void AppendPlayerNameTokens(List<string> output)
     {
         var localName = _profile.GetDisplayUsername();
@@ -7080,6 +8097,12 @@ public sealed class GameWorldScreen : IScreen, IMouseCaptureScreen
         if (text.Length == 0)
             return;
 
+        if (text.StartsWith("/", StringComparison.Ordinal))
+        {
+            ExecuteCommand(text);
+            return;
+        }
+
         if (_lanSession != null && _lanSession.IsConnected)
         {
             _lanSession.SendChat(new LanChatMessage
@@ -7096,21 +8119,66 @@ public sealed class GameWorldScreen : IScreen, IMouseCaptureScreen
         AddChatLine($"{username}: {text}", isSystem: false);
     }
 
-    private void AddChatLine(string text, bool isSystem, int? teleportX = null, int? teleportY = null, int? teleportZ = null, string? hoverText = null)
+    private void AddChatLine(
+        string text,
+        bool isSystem,
+        int? teleportX = null,
+        int? teleportY = null,
+        int? teleportZ = null,
+        string? hoverText = null,
+        string? copyText = null,
+        string? actionLabel = null,
+        string? customActionToken = null,
+        string? customActionStatus = null,
+        string? actionLabel2 = null,
+        string? customActionToken2 = null,
+        string? customActionStatus2 = null,
+        string? hoverText2 = null)
     {
         if (string.IsNullOrWhiteSpace(text))
             return;
 
-        if (_chatLines.Count > 0 && string.Equals(_chatLines[^1].Text, text, StringComparison.Ordinal))
+        var hasTeleportAction = teleportX.HasValue && teleportY.HasValue && teleportZ.HasValue;
+        var normalizedCopyText = (copyText ?? string.Empty).Trim();
+        var hasCopyAction = !string.IsNullOrWhiteSpace(normalizedCopyText);
+        var normalizedCustomActionToken = (customActionToken ?? string.Empty).Trim();
+        var hasCustomAction = !string.IsNullOrWhiteSpace(normalizedCustomActionToken);
+        var normalizedCustomActionStatus = (customActionStatus ?? string.Empty).Trim();
+        var normalizedActionLabel = string.IsNullOrWhiteSpace(actionLabel)
+            ? (hasCopyAction ? "COPY" : hasCustomAction ? "ACTION" : string.Empty)
+            : actionLabel.Trim();
+
+        var normalizedCustomActionToken2 = (customActionToken2 ?? string.Empty).Trim();
+        var hasCustomAction2 = !string.IsNullOrWhiteSpace(normalizedCustomActionToken2);
+        var normalizedCustomActionStatus2 = (customActionStatus2 ?? string.Empty).Trim();
+        var normalizedActionLabel2 = (actionLabel2 ?? string.Empty).Trim();
+
+        if (_chatLines.Count > 0 
+            && string.Equals(_chatLines[^1].Text, text, StringComparison.Ordinal)
+            && string.Equals(_chatLines[^1].CustomActionToken, normalizedCustomActionToken, StringComparison.Ordinal)
+            && string.Equals(_chatLines[^1].CustomActionToken2, normalizedCustomActionToken2, StringComparison.Ordinal))
         {
             _chatLines[^1].TimeRemaining = ChatLineLifetimeSeconds;
             _chatLines[^1].IsSystem = isSystem;
-            _chatLines[^1].HasTeleportAction = teleportX.HasValue && teleportY.HasValue && teleportZ.HasValue;
+            _chatLines[^1].HasTeleportAction = hasTeleportAction;
             _chatLines[^1].TeleportX = teleportX ?? 0;
             _chatLines[^1].TeleportY = teleportY ?? 0;
             _chatLines[^1].TeleportZ = teleportZ ?? 0;
+            _chatLines[^1].HasCopyAction = hasCopyAction;
+            _chatLines[^1].CopyText = normalizedCopyText;
+            _chatLines[^1].HasCustomAction = hasCustomAction;
+            _chatLines[^1].CustomActionToken = normalizedCustomActionToken;
+            _chatLines[^1].CustomActionStatus = normalizedCustomActionStatus;
+            _chatLines[^1].ActionLabel = normalizedActionLabel;
             _chatLines[^1].HoverText = hoverText ?? string.Empty;
-            if (teleportX.HasValue && teleportY.HasValue && teleportZ.HasValue)
+            
+            _chatLines[^1].HasCustomAction2 = hasCustomAction2;
+            _chatLines[^1].CustomActionToken2 = normalizedCustomActionToken2;
+            _chatLines[^1].CustomActionStatus2 = normalizedCustomActionStatus2;
+            _chatLines[^1].ActionLabel2 = normalizedActionLabel2;
+            _chatLines[^1].HoverText2 = hoverText2 ?? string.Empty;
+
+            if (hasTeleportAction || hasCopyAction || hasCustomAction || hasCustomAction2)
                 _chatOverlayActionUnlockUntil = _worldTimeSeconds + ChatOverlayActionUnlockSeconds;
             return;
         }
@@ -7120,14 +8188,26 @@ public sealed class GameWorldScreen : IScreen, IMouseCaptureScreen
             Text = text,
             IsSystem = isSystem,
             TimeRemaining = ChatLineLifetimeSeconds,
-            HasTeleportAction = teleportX.HasValue && teleportY.HasValue && teleportZ.HasValue,
+            HasTeleportAction = hasTeleportAction,
             TeleportX = teleportX ?? 0,
             TeleportY = teleportY ?? 0,
             TeleportZ = teleportZ ?? 0,
-            HoverText = hoverText ?? string.Empty
+            HasCopyAction = hasCopyAction,
+            CopyText = normalizedCopyText,
+            HasCustomAction = hasCustomAction,
+            CustomActionToken = normalizedCustomActionToken,
+            CustomActionStatus = normalizedCustomActionStatus,
+            ActionLabel = normalizedActionLabel,
+            HoverText = hoverText ?? string.Empty,
+
+            HasCustomAction2 = hasCustomAction2,
+            CustomActionToken2 = normalizedCustomActionToken2,
+            CustomActionStatus2 = normalizedCustomActionStatus2,
+            ActionLabel2 = normalizedActionLabel2,
+            HoverText2 = hoverText2 ?? string.Empty
         });
 
-        if (teleportX.HasValue && teleportY.HasValue && teleportZ.HasValue)
+        if (hasTeleportAction || hasCopyAction || hasCustomAction || hasCustomAction2)
             _chatOverlayActionUnlockUntil = _worldTimeSeconds + ChatOverlayActionUnlockSeconds;
 
         if (_chatLines.Count > MaxChatLines)
@@ -7142,17 +8222,23 @@ public sealed class GameWorldScreen : IScreen, IMouseCaptureScreen
         _commandsInitialized = true;
         RegisterCommand("help", new[] { "?" }, "/help", "Show command help.", CommandPermission.Everyone, ExecuteHelpCommand);
         RegisterCommand("biome", Array.Empty<string>(), "/biome [list|here|<desert|grasslands|ocean> [radius]]", "Find or inspect biomes.", CommandPermission.Everyone, ExecuteBiomeCommand);
+        RegisterCommand("accept", Array.Empty<string>(), "/accept <username>", "Accept a world join invite.", CommandPermission.Everyone, ExecuteAcceptInviteCommand);
+        RegisterCommand("reject", Array.Empty<string>(), "/reject <username>", "Reject a world join invite.", CommandPermission.Everyone, ExecuteRejectInviteCommand);
+        RegisterCommand("whitelist", new[] { "wl" }, "/whitelist <add|remove|list|sync> [username]", "Manage world join whitelist.", CommandPermission.Everyone, ExecuteWhitelistCommand);
         RegisterCommand("structure", new[] { "locate" }, "/structure [gui|list|biome <name> [radius]]", "Open structure finder GUI or run finder tools.", CommandPermission.Everyone, ExecuteStructureCommand);
-        RegisterCommand("tp", new[] { "teleport" }, "/tp <x> <z> or /tp <x> <y> <z>", "Teleport to coordinates.", CommandPermission.OwnerAdmin, ExecuteTeleportCommand);
-        RegisterCommand("gamemode", new[] { "gm" }, "/gamemode <artificer|veilwalker|veilseer|gui>", "Change gamemode or open selector.", CommandPermission.OwnerAdmin, ExecuteGameModeCommand);
-        RegisterCommand("artificer", Array.Empty<string>(), "/artificer", "Set ARTIFICER mode.", CommandPermission.OwnerAdmin, _ => ExecuteDirectGameMode(GameMode.Artificer));
-        RegisterCommand("veilwalker", Array.Empty<string>(), "/veilwalker", "Set VEILWALKER mode.", CommandPermission.OwnerAdmin, _ => ExecuteDirectGameMode(GameMode.Veilwalker));
-        RegisterCommand("veilseer", Array.Empty<string>(), "/veilseer", "Set VEILSEER mode.", CommandPermission.OwnerAdmin, _ => ExecuteDirectGameMode(GameMode.Veilseer));
-        RegisterCommand("difficulty", new[] { "diff" }, "/difficulty <peaceful|easy|normal|hard>", "Set difficulty.", CommandPermission.OwnerAdmin, ExecuteDifficultyCommand);
-        RegisterCommand("seed", Array.Empty<string>(), "/seed", "Show current world seed.", CommandPermission.OwnerAdmin, ExecuteSeedCommand);
-        RegisterCommand("time", Array.Empty<string>(), "/time [query|day|night|set <ticks>]", "Set or inspect time.", CommandPermission.OwnerAdmin, ExecuteTimeCommand);
-        RegisterCommand("weather", Array.Empty<string>(), "/weather [query|clear|rain|storm]", "Set or inspect weather.", CommandPermission.OwnerAdmin, ExecuteWeatherCommand);
-        RegisterCommand("setspawn", Array.Empty<string>(), "/setspawn [x y z]", "Set world spawn.", CommandPermission.OwnerAdmin, ExecuteSetSpawnCommand);
+        RegisterCommand("tp", new[] { "teleport" }, "/tp <x> <z> | /tp <x> <y> <z> | /tp <player> | /tp <fromPlayer> <toPlayer>", "Teleport players by coords or player target.", CommandPermission.Operator, ExecuteTeleportCommand);
+        RegisterCommand("gamemode", new[] { "gm" }, "/gamemode <artificer|veilwalker|veilseer|gui> [player]", "Change gamemode or open selector.", CommandPermission.Operator, ExecuteGameModeCommand);
+        RegisterCommand("artificer", Array.Empty<string>(), "/artificer [player]", "Set ARTIFICER mode.", CommandPermission.Operator, parts => ExecuteDirectGameMode(GameMode.Artificer, parts));
+        RegisterCommand("veilwalker", Array.Empty<string>(), "/veilwalker [player]", "Set VEILWALKER mode.", CommandPermission.Operator, parts => ExecuteDirectGameMode(GameMode.Veilwalker, parts));
+        RegisterCommand("veilseer", Array.Empty<string>(), "/veilseer [player]", "Set VEILSEER mode.", CommandPermission.Operator, parts => ExecuteDirectGameMode(GameMode.Veilseer, parts));
+        RegisterCommand("difficulty", new[] { "diff" }, "/difficulty <peaceful|easy|normal|hard>", "Set difficulty.", CommandPermission.Operator, ExecuteDifficultyCommand);
+        RegisterCommand("seed", Array.Empty<string>(), "/seed", "Show current world seed.", CommandPermission.Operator, ExecuteSeedCommand);
+        RegisterCommand("time", Array.Empty<string>(), "/time [query|day|night|set <ticks>]", "Set or inspect time.", CommandPermission.Operator, ExecuteTimeCommand);
+        RegisterCommand("weather", Array.Empty<string>(), "/weather [query|clear|rain|storm]", "Set or inspect weather.", CommandPermission.Operator, ExecuteWeatherCommand);
+        RegisterCommand("setspawn", Array.Empty<string>(), "/setspawn [x y z]", "Set world spawn.", CommandPermission.Operator, ExecuteSetSpawnCommand);
+        RegisterCommand("op", Array.Empty<string>(), "/op <player>", "Grant operator permissions to a player.", CommandPermission.HostOnly, ExecuteOpCommand);
+        RegisterCommand("deop", Array.Empty<string>(), "/deop <player>", "Revoke operator permissions from a player.", CommandPermission.HostOnly, ExecuteDeopCommand);
+        RegisterCommand("kick", Array.Empty<string>(), "/kick <player> [reason]", "Kick a player from the current hosted world.", CommandPermission.HostOnly, ExecuteKickCommand);
         RegisterCommand("spawn", Array.Empty<string>(), "/spawn", "Teleport to world spawn.", CommandPermission.Everyone, ExecuteSpawnCommand);
         RegisterCommand("sethome", Array.Empty<string>(), "/sethome [name]", "Set or update a named home.", CommandPermission.Everyone, ExecuteSetHomeCommand);
         RegisterCommand("home", Array.Empty<string>(), "/home [name|list|gui|set|rename|delete|icon]", "Teleport/manage homes.", CommandPermission.Everyone, ExecuteHomeCommand);
@@ -7177,9 +8263,40 @@ public sealed class GameWorldScreen : IScreen, IMouseCaptureScreen
             _commandLookup[aliases[i]] = descriptor;
     }
 
-    private bool HasOwnerAdminPermissions()
+    private bool HasHostPermissions()
     {
         return _lanSession == null || _lanSession.IsHost;
+    }
+
+    private bool HasOperatorPermissions()
+    {
+        if (HasHostPermissions())
+            return true;
+
+        var localName = NormalizeIdentityToken(_profile.GetDisplayUsername());
+        return !string.IsNullOrWhiteSpace(localName) && _operators.Contains(localName);
+    }
+
+    private bool HasCommandPermission(CommandPermission permission)
+    {
+        return permission switch
+        {
+            CommandPermission.Everyone => true,
+            CommandPermission.Operator => HasOperatorPermissions(),
+            CommandPermission.HostOnly => HasHostPermissions(),
+            _ => false
+        };
+    }
+
+    private bool IsCommandAllowedWithCheatsSetting(CommandDescriptor descriptor)
+    {
+        if (_meta?.EnableCheats ?? true)
+            return true;
+
+        if (descriptor.Permission == CommandPermission.Everyone)
+            return true;
+
+        return CheatsDisabledAllowedCommands.Contains(descriptor.Name);
     }
 
     private void ExecuteCommand(string raw)
@@ -7219,13 +8336,186 @@ public sealed class GameWorldScreen : IScreen, IMouseCaptureScreen
             return;
         }
 
-        if (descriptor.Permission == CommandPermission.OwnerAdmin && !HasOwnerAdminPermissions())
+        if (!HasCommandPermission(descriptor.Permission))
         {
             SetCommandStatus("You do not have permission to use that command.");
             return;
         }
 
+        if (!IsCommandAllowedWithCheatsSetting(descriptor))
+        {
+            SetCommandStatus("Cheats are disabled in this world.");
+            return;
+        }
+
         descriptor.Handler(parts);
+    }
+
+    private void ExecuteAcceptInviteCommand(string[] commandParts)
+    {
+        if (commandParts.Length < 2)
+        {
+            SetCommandStatus("Usage: /accept <username>");
+            return;
+        }
+        _ = RespondToInviteAsync(commandParts[1], "accepted");
+    }
+
+    private void ExecuteRejectInviteCommand(string[] commandParts)
+    {
+        if (commandParts.Length < 2)
+        {
+            SetCommandStatus("Usage: /reject <username>");
+            return;
+        }
+        _ = RespondToInviteAsync(commandParts[1], "rejected");
+    }
+
+    private async Task RespondToInviteAsync(string username, string response)
+    {
+        var invites = await _onlineGate.GetMyWorldInvitesAsync();
+        if (!invites.Ok)
+        {
+            SetCommandStatus("Failed to fetch invites.", echoToChat: false);
+            return;
+        }
+
+        var invite = invites.Incoming.FirstOrDefault(i => 
+            (string.Equals(i.SenderDisplayName, username, StringComparison.OrdinalIgnoreCase) || 
+             string.Equals(i.SenderProductUserId, username, StringComparison.OrdinalIgnoreCase)) && 
+            i.Status == "pending");
+            
+        if (invite == null)
+        {
+            SetCommandStatus($"No pending invite from {username}.", echoToChat: false);
+            return;
+        }
+
+        var ok = await _onlineGate.RespondToWorldInviteAsync(invite.SenderProductUserId, response);
+        if (ok)
+        {
+            var bestName = await ResolveUsernameAsync(invite.SenderProductUserId);
+
+            SetCommandStatus($"Invite from {bestName} {response}.", echoToChat: false);
+            AddChatLine($"You {response} {bestName}'s join request.", isSystem: true);
+
+            if (response == "accepted" && _lanSession is EosP2PHostSession hostSession)
+            {
+                hostSession.PreApprovePuid(invite.SenderProductUserId);
+            }
+        }
+        else
+        {
+            SetCommandStatus($"Failed to {response} invite.", echoToChat: false);
+        }
+    }
+
+    private void ExecuteWhitelistCommand(string[] parts)
+    {
+        if (parts.Length < 2)
+        {
+            SetCommandStatus("Usage: /whitelist <add|remove|list|sync> [username]");
+            return;
+        }
+
+        var sub = parts[1].ToLowerInvariant();
+        if (sub == "sync")
+        {
+            var friends = _profile.Friends;
+            var addedCount = 0;
+            foreach (var f in friends)
+            {
+                if (!string.IsNullOrWhiteSpace(f.UserId) && _whitelist.Add(f.UserId)) addedCount++;
+                if (!string.IsNullOrWhiteSpace(f.Label) && _whitelist.Add(f.Label)) addedCount++;
+            }
+            if (addedCount > 0) SaveWhitelist();
+            SetCommandStatus($"Synced {addedCount} new identifiers from friends list to whitelist.");
+            return;
+        }
+
+        if (sub == "list")
+        {
+            if (_whitelist.Count == 0 && _profile.Friends.Count == 0)
+            {
+                SetCommandStatus("Whitelist and friends list are empty.");
+                return;
+            }
+
+            if (_whitelist.Count > 0)
+            {
+                AddChatLine("--- WHITELISTED ---", isSystem: true);
+                foreach (var entry in _whitelist.OrderBy(x => x))
+                {
+                    AddChatLine(entry, isSystem: true,
+                        actionLabel: "REMOVE",
+                        customActionToken: "wl-remove:" + entry,
+                        customActionStatus: "Removing...");
+                }
+            }
+
+            var friendsNotWhitelisted = _profile.Friends
+                .Where(f => !_whitelist.Contains(f.Label) && !_whitelist.Contains(f.UserId))
+                .ToList();
+
+            if (friendsNotWhitelisted.Count > 0)
+            {
+                AddChatLine("--- FRIENDS (NOT WHITELISTED) ---", isSystem: true);
+                foreach (var f in friendsNotWhitelisted)
+                {
+                    var nameToShow = string.IsNullOrWhiteSpace(f.Label) ? PlayerProfile.ShortId(f.UserId) : f.Label;
+                    AddChatLine(nameToShow, isSystem: true,
+                        actionLabel: "ADD",
+                        customActionToken: "wl-add:" + (string.IsNullOrWhiteSpace(f.Label) ? f.UserId : f.Label),
+                        customActionStatus: "Adding...");
+                }
+            }
+            return;
+        }
+
+        if (parts.Length < 3)
+        {
+            SetCommandStatus($"Usage: /whitelist {sub} <username>");
+            return;
+        }
+
+        var name = parts[2].Trim();
+        if (sub == "add")
+        {
+            if (_whitelist.Add(name))
+            {
+                SaveWhitelist();
+                SetCommandStatus($"Added {name} to whitelist.");
+            }
+            else
+            {
+                SetCommandStatus($"{name} is already whitelisted.");
+            }
+        }
+        else if (sub == "remove")
+        {
+            if (_whitelist.Remove(name))
+            {
+                SaveWhitelist();
+                SetCommandStatus($"Removed {name} from whitelist.");
+            }
+            else
+            {
+                SetCommandStatus($"{name} is not in whitelist.");
+            }
+        }
+    }
+
+    private void SaveWhitelist()
+    {
+        try
+        {
+            var json = System.Text.Json.JsonSerializer.Serialize(_whitelist.ToList());
+            File.WriteAllText(WhitelistPath, json);
+        }
+        catch (Exception ex)
+        {
+            _log.Warn($"Failed to save whitelist: {ex.Message}");
+        }
     }
 
     private void ExecuteHelpCommand(string[] _)
@@ -7233,7 +8523,7 @@ public sealed class GameWorldScreen : IScreen, IMouseCaptureScreen
         var lines = new List<string>();
         foreach (var descriptor in _commandDescriptors)
         {
-            if (descriptor.Permission == CommandPermission.OwnerAdmin && !HasOwnerAdminPermissions())
+            if (!HasCommandPermission(descriptor.Permission) || !IsCommandAllowedWithCheatsSetting(descriptor))
                 continue;
             lines.Add("/" + descriptor.Name);
         }
@@ -7719,51 +9009,183 @@ public sealed class GameWorldScreen : IScreen, IMouseCaptureScreen
 
     private void ExecuteTeleportCommand(string[] commandParts)
     {
-        if (commandParts.Length < 3)
+        if (commandParts.Length == 2)
         {
-            SetCommandStatus("Usage: /tp <x> <z> or /tp <x> <y> <z>");
+            if (!TryResolvePlayerTarget(commandParts[1], out var targetId, out _))
+            {
+                SetCommandStatus($"Player not found: {commandParts[1]}");
+                return;
+            }
+
+            var sourceId = _lanSession?.LocalPlayerId ?? 0;
+            if (!TryTeleportPlayerToPlayer(sourceId, targetId, out var singleResult))
+            {
+                SetCommandStatus(singleResult);
+                return;
+            }
+
+            SetCommandStatus(singleResult);
             return;
         }
 
-        int x;
-        int z;
-        int? y = null;
-        if (commandParts.Length >= 4)
+        if (commandParts.Length == 3)
         {
-            if (!int.TryParse(commandParts[1], out x) ||
+            if (int.TryParse(commandParts[1], out var x) && int.TryParse(commandParts[2], out var z))
+            {
+                if (!TryTeleportPlayer(x, z, explicitY: null, out var coordResult))
+                {
+                    SetCommandStatus(coordResult);
+                    return;
+                }
+
+                SetCommandStatus(coordResult);
+                return;
+            }
+
+            if (!TryResolvePlayerTarget(commandParts[1], out var sourceId, out _))
+            {
+                SetCommandStatus($"Player not found: {commandParts[1]}");
+                return;
+            }
+
+            if (!TryResolvePlayerTarget(commandParts[2], out var targetId, out _))
+            {
+                SetCommandStatus($"Player not found: {commandParts[2]}");
+                return;
+            }
+
+            if (!TryTeleportPlayerToPlayer(sourceId, targetId, out var playerResult))
+            {
+                SetCommandStatus(playerResult);
+                return;
+            }
+
+            SetCommandStatus(playerResult);
+            return;
+        }
+
+        if (commandParts.Length == 4)
+        {
+            if (!int.TryParse(commandParts[1], out var x) ||
                 !int.TryParse(commandParts[2], out var parsedY) ||
-                !int.TryParse(commandParts[3], out z))
+                !int.TryParse(commandParts[3], out var z))
             {
-                SetCommandStatus("Usage: /tp <x> <y> <z>");
+                SetCommandStatus("Usage: /tp <x> <z> | /tp <x> <y> <z> | /tp <player> | /tp <fromPlayer> <toPlayer>");
                 return;
             }
 
-            y = parsedY;
-        }
-        else
-        {
-            if (!int.TryParse(commandParts[1], out x) ||
-                !int.TryParse(commandParts[2], out z))
+            if (!TryTeleportPlayer(x, z, parsedY, out var xyzResult))
             {
-                SetCommandStatus("Usage: /tp <x> <z>");
+                SetCommandStatus(xyzResult);
                 return;
             }
-        }
 
-        if (!TryTeleportPlayer(x, z, y, out var result))
-        {
-            SetCommandStatus(result);
+            SetCommandStatus(xyzResult);
             return;
         }
 
-        SetCommandStatus(result);
+        SetCommandStatus("Usage: /tp <x> <z> | /tp <x> <y> <z> | /tp <player> | /tp <fromPlayer> <toPlayer>");
+    }
+
+    private bool TryTeleportPlayerToPlayer(int sourcePlayerId, int targetPlayerId, out string result)
+    {
+        if (_lanSession != null && sourcePlayerId == _lanSession.LocalPlayerId)
+        {
+            if (!TryGetKnownPlayerPose(targetPlayerId, out var targetPosition, out var targetYaw, out var targetPitch))
+            {
+                result = $"Unable to resolve target player position for {ResolvePlayerName(targetPlayerId)}.";
+                return false;
+            }
+
+            var tx = (int)MathF.Floor(targetPosition.X);
+            var ty = (int)MathF.Floor(targetPosition.Y);
+            var tz = (int)MathF.Floor(targetPosition.Z);
+            if (!TryTeleportPlayer(tx, tz, ty, out var localResult))
+            {
+                result = localResult;
+                return false;
+            }
+
+            _player.Yaw = targetYaw;
+            _player.Pitch = targetPitch;
+            result = $"{ResolvePlayerName(sourcePlayerId)} teleported to {ResolvePlayerName(targetPlayerId)}.";
+            return true;
+        }
+
+        if (_lanSession == null || !_lanSession.IsHost)
+        {
+            result = "Only the host can teleport other players.";
+            return false;
+        }
+
+        if (!TryGetKnownPlayerPose(targetPlayerId, out var destination, out var destYaw, out var destPitch))
+        {
+            result = $"Unable to resolve target player position for {ResolvePlayerName(targetPlayerId)}.";
+            return false;
+        }
+
+        if (!_lanSession.SendTeleport(sourcePlayerId, destination, destYaw, destPitch))
+        {
+            result = $"Teleport failed: {ResolvePlayerName(sourcePlayerId)} is not connected.";
+            return false;
+        }
+
+        if (_remotePlayers.TryGetValue(sourcePlayerId, out var sourceModel))
+        {
+            sourceModel.Position = destination;
+            sourceModel.Yaw = destYaw;
+            sourceModel.IsFlying = false;
+        }
+
+        result = $"{ResolvePlayerName(sourcePlayerId)} teleported to {ResolvePlayerName(targetPlayerId)}.";
+        return true;
+    }
+
+    private bool TryGetKnownPlayerPose(int playerId, out Vector3 position, out float yaw, out float pitch)
+    {
+        if (_lanSession == null)
+        {
+            if (playerId == 0)
+            {
+                position = _player.Position;
+                yaw = _player.Yaw;
+                pitch = _player.Pitch;
+                return true;
+            }
+
+            position = default;
+            yaw = 0f;
+            pitch = 0f;
+            return false;
+        }
+
+        if (playerId == _lanSession.LocalPlayerId)
+        {
+            position = _player.Position;
+            yaw = _player.Yaw;
+            pitch = _player.Pitch;
+            return true;
+        }
+
+        if (_remotePlayers.TryGetValue(playerId, out var remote))
+        {
+            position = remote.Position;
+            yaw = remote.Yaw;
+            pitch = 0f;
+            return true;
+        }
+
+        position = default;
+        yaw = 0f;
+        pitch = 0f;
+        return false;
     }
 
     private void ExecuteGameModeCommand(string[] commandParts)
     {
         if (commandParts.Length < 2)
         {
-            SetCommandStatus("Usage: /gamemode <artificer|veilwalker|veilseer|gui>");
+            SetCommandStatus("Usage: /gamemode <artificer|veilwalker|veilseer|gui> [player]");
             return;
         }
 
@@ -7780,12 +9202,62 @@ public sealed class GameWorldScreen : IScreen, IMouseCaptureScreen
             return;
         }
 
+        if (commandParts.Length >= 3)
+        {
+            if (!TryResolvePlayerTarget(commandParts[2], out var targetId, out var targetName))
+            {
+                SetCommandStatus($"Player not found: {commandParts[2]}");
+                return;
+            }
+
+            ApplyTargetedGameModeChange(mode, targetId, targetName);
+            return;
+        }
+
         ApplyGameModeChange(mode, GameModeChangeSource.Command, persistImmediately: true, emitFeedback: true);
     }
 
-    private void ExecuteDirectGameMode(GameMode mode)
+    private void ExecuteDirectGameMode(GameMode mode, string[] commandParts)
     {
+        if (commandParts.Length >= 2)
+        {
+            if (!TryResolvePlayerTarget(commandParts[1], out var targetId, out var targetName))
+            {
+                SetCommandStatus($"Player not found: {commandParts[1]}");
+                return;
+            }
+
+            ApplyTargetedGameModeChange(mode, targetId, targetName);
+            return;
+        }
+
         ApplyGameModeChange(mode, GameModeChangeSource.Command, persistImmediately: true, emitFeedback: true);
+    }
+
+    private void ApplyTargetedGameModeChange(GameMode mode, int targetId, string targetName)
+    {
+        if (_lanSession == null || targetId == _lanSession.LocalPlayerId)
+        {
+            ApplyGameModeChange(mode, GameModeChangeSource.Command, persistImmediately: true, emitFeedback: true);
+            return;
+        }
+
+        if (!_lanSession.IsHost)
+        {
+            SetCommandStatus("Only the host can change another player's gamemode.");
+            return;
+        }
+
+        _lanSession.SendChat(new LanChatMessage
+        {
+            FromPlayerId = _lanSession.LocalPlayerId,
+            ToPlayerId = -1,
+            Kind = LanChatKind.System,
+            Text = $"{GameModeSyncPrefix}{targetId}|{mode}",
+            TimestampUtc = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()
+        });
+
+        SetCommandStatus($"Set {targetName} to {mode.ToString().ToUpperInvariant()}.");
     }
 
     private static bool TryParseGameModeToken(string value, out GameMode mode)
@@ -7835,6 +9307,11 @@ public sealed class GameWorldScreen : IScreen, IMouseCaptureScreen
         }
 
         _difficultyLevel = difficulty;
+        if (_meta != null)
+        {
+            _meta.DifficultyLevel = _difficultyLevel;
+            _meta.Save(_metaPath, _log);
+        }
         SetCommandStatus($"Difficulty set to {GetDifficultyLabel(_difficultyLevel).ToUpperInvariant()}.");
     }
 
@@ -7935,6 +9412,102 @@ public sealed class GameWorldScreen : IScreen, IMouseCaptureScreen
         _meta.SpawnZ = Math.Clamp(z, 0, Math.Max(0, _meta.Size.Depth - 1));
         _meta.Save(_metaPath, _log);
         SetCommandStatus($"Spawn set to {_meta.SpawnX}, {_meta.SpawnY}, {_meta.SpawnZ}.");
+    }
+
+    private void ExecuteOpCommand(string[] commandParts)
+    {
+        if (commandParts.Length < 2)
+        {
+            SetCommandStatus("Usage: /op <player>");
+            return;
+        }
+
+        if (!TryResolveOperatorToken(commandParts[1], out var targetName))
+        {
+            SetCommandStatus($"Player not found: {commandParts[1]}");
+            return;
+        }
+
+        if (_operators.Contains(targetName))
+        {
+            SetCommandStatus($"{targetName} is already an operator.");
+            return;
+        }
+
+        _operators.Add(targetName);
+        PersistOperatorsToMeta();
+        BroadcastOperatorSyncState();
+        SetCommandStatus($"{targetName} is now an operator.");
+    }
+
+    private void ExecuteDeopCommand(string[] commandParts)
+    {
+        if (commandParts.Length < 2)
+        {
+            SetCommandStatus("Usage: /deop <player>");
+            return;
+        }
+
+        if (!TryResolveOperatorToken(commandParts[1], out var targetName))
+        {
+            SetCommandStatus($"Player not found: {commandParts[1]}");
+            return;
+        }
+
+        if (!_operators.Remove(targetName))
+        {
+            SetCommandStatus($"{targetName} is not an operator.");
+            return;
+        }
+
+        PersistOperatorsToMeta();
+        BroadcastOperatorSyncState();
+        SetCommandStatus($"{targetName} is no longer an operator.");
+    }
+
+    private void ExecuteKickCommand(string[] commandParts)
+    {
+        if (commandParts.Length < 2)
+        {
+            SetCommandStatus("Usage: /kick <player> [reason]");
+            return;
+        }
+
+        if (_lanSession == null || !_lanSession.IsConnected || !_lanSession.IsHost)
+        {
+            SetCommandStatus("Kick is only available while hosting multiplayer.");
+            return;
+        }
+
+        if (!TryResolvePlayerTarget(commandParts[1], out var targetId, out var targetName))
+        {
+            SetCommandStatus($"Player not found: {commandParts[1]}");
+            return;
+        }
+
+        if (targetId <= 0 || targetId == _lanSession.LocalPlayerId)
+        {
+            SetCommandStatus("You cannot kick yourself.");
+            return;
+        }
+
+        var reason = commandParts.Length >= 3
+            ? string.Join(" ", commandParts.Skip(2)).Trim()
+            : string.Empty;
+
+        FlushPersistedRemoteStateForPlayer(targetId);
+
+        if (!_lanSession.KickPlayer(targetId, reason))
+        {
+            SetCommandStatus($"Failed to kick {targetName}.");
+            return;
+        }
+
+        var status = string.IsNullOrWhiteSpace(reason)
+            ? $"{targetName} was kicked."
+            : $"{targetName} was kicked: {reason}";
+        AddChatLine(status, isSystem: true);
+        SetCommandStatus(status);
     }
 
     private void ExecuteSpawnCommand(string[] _)
@@ -8701,8 +10274,180 @@ public sealed class GameWorldScreen : IScreen, IMouseCaptureScreen
         return false;
     }
 
+    private bool TryResolveOperatorToken(string token, out string operatorName)
+    {
+        operatorName = string.Empty;
+        if (TryResolvePlayerTarget(token, out _, out var resolved))
+            token = resolved;
+
+        var normalized = NormalizeIdentityToken(token);
+        if (string.IsNullOrWhiteSpace(normalized))
+            return false;
+
+        operatorName = normalized;
+        return true;
+    }
+
+    private static string NormalizeIdentityToken(string? raw)
+    {
+        return (raw ?? string.Empty).Trim();
+    }
+
+    private string ResolvePersistenceUsername(int playerId, string? primary, string? secondary)
+    {
+        var candidates = new[]
+        {
+            NormalizeIdentityToken(primary),
+            NormalizeIdentityToken(secondary),
+            _playerNames.TryGetValue(playerId, out var mapped) ? NormalizeIdentityToken(mapped) : string.Empty,
+            NormalizeIdentityToken(ResolvePlayerName(playerId))
+        };
+
+        for (var i = 0; i < candidates.Length; i++)
+        {
+            var candidate = candidates[i];
+            if (string.IsNullOrWhiteSpace(candidate))
+                continue;
+            if (IsGeneratedPlayerPlaceholder(candidate))
+                continue;
+
+            return candidate;
+        }
+
+        for (var i = 0; i < candidates.Length; i++)
+        {
+            var candidate = candidates[i];
+            if (!string.IsNullOrWhiteSpace(candidate))
+                return candidate;
+        }
+
+        return string.Empty;
+    }
+
+    private static bool IsGeneratedPlayerPlaceholder(string candidate)
+    {
+        if (!candidate.StartsWith("Player", StringComparison.OrdinalIgnoreCase))
+            return false;
+
+        var suffix = candidate.Substring("Player".Length);
+        return int.TryParse(suffix, out _);
+    }
+
+    private void LoadOperatorsFromMeta()
+    {
+        _operators.Clear();
+        if (_meta?.OperatorUsernames == null)
+            return;
+
+        for (var i = 0; i < _meta.OperatorUsernames.Count; i++)
+        {
+            var normalized = NormalizeIdentityToken(_meta.OperatorUsernames[i]);
+            if (!string.IsNullOrWhiteSpace(normalized))
+                _operators.Add(normalized);
+        }
+    }
+
+    private void PersistOperatorsToMeta()
+    {
+        if (_meta == null)
+            return;
+
+        _meta.OperatorUsernames = _operators
+            .Where(name => !string.IsNullOrWhiteSpace(name))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .OrderBy(name => name, StringComparer.OrdinalIgnoreCase)
+            .ToList();
+        _meta.Save(_metaPath, _log);
+    }
+
+    private void BroadcastOperatorSyncState()
+    {
+        if (_lanSession == null || !_lanSession.IsConnected || !_lanSession.IsHost)
+            return;
+
+        var payload = BuildOperatorSyncPayload();
+        _lanSession.SendChat(new LanChatMessage
+        {
+            FromPlayerId = _lanSession.LocalPlayerId,
+            ToPlayerId = -1,
+            Kind = LanChatKind.System,
+            Text = payload,
+            TimestampUtc = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()
+        });
+    }
+
+    private string BuildOperatorSyncPayload()
+    {
+        var payloadNames = _operators
+            .Where(name => !string.IsNullOrWhiteSpace(name))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .OrderBy(name => name, StringComparer.OrdinalIgnoreCase)
+            .ToArray();
+        return OperatorSyncPrefix + string.Join("|", payloadNames);
+    }
+
+    private bool TryHandleOperatorSyncMessage(LanChatMessage message)
+    {
+        if (message.Kind != LanChatKind.System)
+            return false;
+        if (message.FromPlayerId != 0)
+            return false;
+
+        var text = message.Text ?? string.Empty;
+        if (!text.StartsWith(OperatorSyncPrefix, StringComparison.Ordinal))
+            return false;
+
+        var payload = text.Substring(OperatorSyncPrefix.Length);
+        _operators.Clear();
+        if (!string.IsNullOrWhiteSpace(payload))
+        {
+            var names = payload.Split('|', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+            for (var i = 0; i < names.Length; i++)
+            {
+                var normalized = NormalizeIdentityToken(names[i]);
+                if (!string.IsNullOrWhiteSpace(normalized))
+                    _operators.Add(normalized);
+            }
+        }
+
+        return true;
+    }
+
+    private bool TryHandleGameModeSyncMessage(LanChatMessage message)
+    {
+        if (_lanSession == null || message.Kind != LanChatKind.System)
+            return false;
+        if (message.FromPlayerId != 0)
+            return false;
+
+        var text = message.Text ?? string.Empty;
+        if (!text.StartsWith(GameModeSyncPrefix, StringComparison.Ordinal))
+            return false;
+
+        var payload = text.Substring(GameModeSyncPrefix.Length);
+        var parts = payload.Split('|', StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries);
+        if (parts.Length < 2)
+            return true;
+
+        if (!int.TryParse(parts[0], out var targetId))
+            return true;
+        if (!TryParseGameModeToken(parts[1], out var mode))
+            return true;
+
+        if (targetId != _lanSession.LocalPlayerId)
+            return true;
+
+        ApplyGameModeChange(mode, GameModeChangeSource.Command, persistImmediately: _lanSession.IsHost, emitFeedback: true);
+        return true;
+    }
+
     private void HandleNetworkChat(LanChatMessage message)
     {
+        if (TryHandleOperatorSyncMessage(message))
+            return;
+        if (TryHandleGameModeSyncMessage(message))
+            return;
+
         var localId = _lanSession?.LocalPlayerId ?? -1;
         var fromName = ResolvePlayerName(message.FromPlayerId);
         switch (message.Kind)
@@ -8785,6 +10530,12 @@ public sealed class GameWorldScreen : IScreen, IMouseCaptureScreen
 
     private bool HandleGameModeWheelInput(InputState input)
     {
+        if (!HasOperatorPermissions())
+        {
+            _gamemodeWheelVisible = false;
+            return false;
+        }
+
         if (_pauseMenuOpen || _inventoryOpen || _homeGuiOpen || _chatInputActive || _commandInputActive)
             return false;
 
@@ -9628,6 +11379,60 @@ public sealed class GameWorldScreen : IScreen, IMouseCaptureScreen
                 };
                 y = DrawCommandLine(sb, x, y, line.Text, new Color(0, 0, 0, 145), fg, action: action, fixedWidth: overlayWidth);
             }
+            else if (line.HasCopyAction)
+            {
+                var action = new ChatActionHitbox
+                {
+                    HasCopy = true,
+                    CopyText = line.CopyText,
+                    CopyStatusText = "Copied to clipboard.",
+                    HoverText = string.IsNullOrWhiteSpace(line.HoverText)
+                        ? "Click to copy."
+                        : line.HoverText
+                };
+                y = DrawCommandLine(
+                    sb,
+                    x,
+                    y,
+                    line.Text,
+                    new Color(0, 0, 0, 145),
+                    fg,
+                    actionLabel: line.ActionLabel,
+                    action: action,
+                    fixedWidth: overlayWidth);
+            }
+            else if (line.HasCustomAction)
+            {
+                var action = new ChatActionHitbox
+                {
+                    HasCustomAction = true,
+                    CustomActionToken = line.CustomActionToken,
+                    CustomActionStatus = line.CustomActionStatus,
+                    HoverText = string.IsNullOrWhiteSpace(line.HoverText)
+                        ? "Click to run action."
+                        : line.HoverText
+                };
+                y = DrawCommandLine(
+                    sb,
+                    x,
+                    y,
+                    line.Text,
+                    new Color(0, 0, 0, 145),
+                    fg,
+                    actionLabel: line.ActionLabel,
+                    action: action,
+                    fixedWidth: overlayWidth,
+                    actionLabel2: line.ActionLabel2,
+                    action2: line.HasCustomAction2 ? new ChatActionHitbox
+                    {
+                        HasCustomAction = true,
+                        CustomActionToken = line.CustomActionToken2,
+                        CustomActionStatus = line.CustomActionStatus2,
+                        HoverText = string.IsNullOrWhiteSpace(line.HoverText2)
+                            ? "Click to perform action."
+                            : line.HoverText2
+                    } : (ChatActionHitbox?)null);
+            }
             else
             {
                 y = DrawCommandLine(sb, x, y, line.Text, new Color(0, 0, 0, 145), fg, fixedWidth: overlayWidth);
@@ -9691,16 +11496,24 @@ public sealed class GameWorldScreen : IScreen, IMouseCaptureScreen
         Color foreground,
         string? actionLabel = null,
         ChatActionHitbox? action = null,
-        int? fixedWidth = null)
+        int? fixedWidth = null,
+        string? actionLabel2 = null,
+        ChatActionHitbox? action2 = null)
     {
         var actionWidth = 0;
         if (!string.IsNullOrWhiteSpace(actionLabel))
             actionWidth = (int)Math.Ceiling(_font.MeasureString(actionLabel).X) + 16;
 
+        var actionWidth2 = 0;
+        if (!string.IsNullOrWhiteSpace(actionLabel2))
+            actionWidth2 = (int)Math.Ceiling(_font.MeasureString(actionLabel2).X) + 16;
+
+        var totalActionWidth = actionWidth + (actionWidth2 > 0 ? actionWidth2 + 8 : 0);
+
         var maxWidth = Math.Max(240, _viewport.Width - 40);
         var requestedWidth = fixedWidth ?? maxWidth;
         var width = Math.Clamp(requestedWidth, 320, maxWidth);
-        var textWidth = Math.Max(120, width - 18 - actionWidth);
+        var textWidth = Math.Max(120, width - 18 - totalActionWidth);
         var wrappedLines = WrapOverlayText(text, textWidth);
         var lineSpacing = 2;
         var textHeight = wrappedLines.Count * _font.LineHeight + Math.Max(0, wrappedLines.Count - 1) * lineSpacing;
@@ -9721,7 +11534,13 @@ public sealed class GameWorldScreen : IScreen, IMouseCaptureScreen
             var hitbox = action.Value;
             var targetRect = rect;
             if (!string.IsNullOrWhiteSpace(actionLabel))
-                targetRect = new Rectangle(rect.Right - actionWidth - 8, rect.Y + 4, actionWidth, rect.Height - 8);
+            {
+                // Align buttons to the right, Button 2 is further right than Button 1 if both exist.
+                // Wait, usually we want [Label] [Label2] or [Label2] [Label]
+                // Let's do [Label] [Label2] from right to left.
+                var button2Offset = actionWidth2 > 0 ? actionWidth2 + 8 : 0;
+                targetRect = new Rectangle(rect.Right - totalActionWidth - 8, rect.Y + 4, actionWidth, rect.Height - 8);
+            }
 
             hitbox.Bounds = targetRect;
             _chatActionHitboxes.Add(hitbox);
@@ -9741,6 +11560,25 @@ public sealed class GameWorldScreen : IScreen, IMouseCaptureScreen
             {
                 DrawBorder(sb, rect, new Color(190, 230, 255));
             }
+        }
+
+        if (action2.HasValue && !string.IsNullOrWhiteSpace(actionLabel2))
+        {
+            var index = _chatActionHitboxes.Count;
+            var hitbox = action2.Value;
+            var targetRect = new Rectangle(rect.Right - actionWidth2 - 8, rect.Y + 4, actionWidth2, rect.Height - 8);
+
+            hitbox.Bounds = targetRect;
+            _chatActionHitboxes.Add(hitbox);
+
+            var hovered = targetRect.Contains(_overlayMousePos);
+            if (hovered)
+                _hoveredChatActionIndex = index;
+
+            sb.Draw(_pixel, targetRect, hovered ? new Color(45, 90, 145, 230) : new Color(30, 70, 120, 220));
+            DrawBorder(sb, targetRect, hovered ? new Color(190, 230, 255) : new Color(120, 170, 210));
+            var labelPos = new Vector2(targetRect.X + 8, targetRect.Y + 3);
+            _font.DrawString(sb, actionLabel2, labelPos, new Color(235, 245, 255));
         }
 
         return rect.Y;
@@ -9873,13 +11711,20 @@ public sealed class GameWorldScreen : IScreen, IMouseCaptureScreen
         public int TeleportX;
         public int TeleportY;
         public int TeleportZ;
+        public bool HasCopy;
+        public string CopyText;
+        public string CopyStatusText;
+        public bool HasCustomAction;
+        public string CustomActionToken;
+        public string CustomActionStatus;
         public string HoverText;
     }
 
     private enum CommandPermission
     {
         Everyone,
-        OwnerAdmin
+        Operator,
+        HostOnly
     }
 
     private enum GameModeChangeSource
@@ -9964,7 +11809,19 @@ public sealed class GameWorldScreen : IScreen, IMouseCaptureScreen
         public int TeleportX;
         public int TeleportY;
         public int TeleportZ;
+        public bool HasCopyAction;
+        public string CopyText = "";
+        public bool HasCustomAction;
+        public string CustomActionToken = "";
+        public string CustomActionStatus = "";
+        public string ActionLabel = "";
         public string HoverText = "";
+
+        public bool HasCustomAction2;
+        public string CustomActionToken2 = "";
+        public string CustomActionStatus2 = "";
+        public string ActionLabel2 = "";
+        public string HoverText2 = "";
     }
 
     private struct PlayerHomeEntry

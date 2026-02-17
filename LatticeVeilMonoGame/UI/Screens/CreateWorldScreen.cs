@@ -50,11 +50,12 @@ public sealed class CreateWorldScreen : IScreen
     private readonly Button _artificerBtn;
     private readonly Button _veilwalkerBtn;
     private readonly Button _veilseerBtn;
-    private readonly Checkbox _generateStructures;
-    private readonly Checkbox _generateCaves;
-    private readonly Checkbox _generateOres;
-    private readonly Checkbox _multipleHomes;
-    private readonly Button _homeSlotsBtn;
+    private readonly Button _moreWorldOptionsBtn;
+    private readonly Button _enableCheatsBtn;
+    private readonly Button _difficultyBtn;
+    private readonly Button _enableHomesBtn;
+    private readonly List<Rectangle> _difficultyOptionRects = new();
+    private bool _moreWorldOptionsOpen;
 
     // World settings
     private string _worldName = "New World";
@@ -63,8 +64,13 @@ public sealed class CreateWorldScreen : IScreen
     private bool _structuresEnabled = true;
     private bool _cavesEnabled = true;
     private bool _oresEnabled = true;
+    private bool _cheatsEnabled = true;
     private bool _multipleHomesEnabled = true;
-    private int _maxHomesPerPlayer = 8;
+    private int _maxHomesPerPlayer = 2;
+    private bool _unlimitedHomes = false;
+    private int _maxHomesCap = 10;
+    private bool _difficultyDropdownOpen;
+    private string _modeDescriptionText = string.Empty;
     private bool _worldNameActive = true;
     private string _statusMessage = string.Empty;
     private double _statusUntil;
@@ -100,15 +106,62 @@ public sealed class CreateWorldScreen : IScreen
         _artificerBtn = new Button("ARTIFICER", () => SetGameMode(Core.GameMode.Artificer));
         _veilwalkerBtn = new Button("VEILWALKER", () => SetGameMode(Core.GameMode.Veilwalker));
         _veilseerBtn = new Button("VEILSEER", () => SetGameMode(Core.GameMode.Veilseer));
-        _generateStructures = new Checkbox("Generate Structures", _structuresEnabled);
-        _generateCaves = new Checkbox("Generate Caves", _cavesEnabled);
-        _generateOres = new Checkbox("Generate Ores", _oresEnabled);
-        _multipleHomes = new Checkbox("Enable Multiple Homes", _multipleHomesEnabled);
-        _homeSlotsBtn = new Button(string.Empty, CycleMaxHomesPerPlayer);
-        SyncHomeSlotsLabel();
+        _enableCheatsBtn = new Button(string.Empty, ToggleEnableCheats);
+        _difficultyBtn = new Button(string.Empty, ToggleDifficultyDropdown);
+        _enableHomesBtn = new Button(string.Empty, ToggleEnableHomes);
+        _moreWorldOptionsBtn = new Button("MORE WORLD OPTIONS", OpenMoreWorldOptions);
+
+        var settings = GameSettings.LoadOrCreate(_log);
+        _maxHomesCap = Math.Clamp(settings.CreateWorldHomesCap, 1, 64);
+        _maxHomesPerPlayer = Math.Clamp(_maxHomesPerPlayer, 1, _maxHomesCap);
+        SyncDifficultyLabel();
+        SyncEnableCheatsLabel();
+        SyncEnableHomesLabel();
 
         LoadAssets();
         RefreshGameModeButtonTextures();
+    }
+
+    private void OpenMoreWorldOptions()
+    {
+        var moreOptionsScreen = new MoreWorldOptionsScreen(
+            _menus, _assets, _font, _pixel, _log,
+            _oresEnabled, _cavesEnabled, _structuresEnabled, false,
+            _multipleHomesEnabled, _maxHomesPerPlayer, _maxHomesCap,
+            (generateOres, generateCaves, generateStructures, flat, enableHomes, homeSlots) =>
+            {
+                _oresEnabled = generateOres;
+                _cavesEnabled = generateCaves;
+                _structuresEnabled = generateStructures;
+                _multipleHomesEnabled = enableHomes;
+                _maxHomesPerPlayer = homeSlots == -1 ? _maxHomesCap : Math.Clamp(homeSlots, 1, _maxHomesCap);
+                _unlimitedHomes = homeSlots == -1;
+                SyncEnableCheatsLabel();
+                SyncEnableHomesLabel();
+            });
+        _menus.Push(moreOptionsScreen, _viewport);
+    }
+
+    private void ToggleEnableHomes()
+    {
+        _multipleHomesEnabled = !_multipleHomesEnabled;
+        SyncEnableHomesLabel();
+    }
+
+    private void ToggleEnableCheats()
+    {
+        _cheatsEnabled = !_cheatsEnabled;
+        SyncEnableCheatsLabel();
+    }
+
+    private void SyncEnableHomesLabel()
+    {
+        _enableHomesBtn.Label = _multipleHomesEnabled ? "HOMES: Enabled" : "HOMES: Disabled";
+    }
+
+    private void SyncEnableCheatsLabel()
+    {
+        _enableCheatsBtn.Label = _cheatsEnabled ? "CHEATS: Enabled" : "CHEATS: Disabled";
     }
 
     private void LoadAssets()
@@ -174,33 +227,43 @@ public sealed class CreateWorldScreen : IScreen
         _veilwalkerBtn.Bounds = new Rectangle(modeStartX + modeButtonW + modeButtonGap, modeY, modeButtonW, modeButtonH);
         _veilseerBtn.Bounds = new Rectangle(modeStartX + (modeButtonW + modeButtonGap) * 2, modeY, modeButtonW, modeButtonH);
 
-        var checkboxY = _artificerBtn.Bounds.Bottom + 36;
-        LayoutCenteredToggle(_generateStructures, checkboxY);
-        LayoutCenteredToggle(_generateCaves, checkboxY + 32);
-        LayoutCenteredToggle(_generateOres, checkboxY + 64);
-        LayoutCenteredToggle(_multipleHomes, checkboxY + 96);
-        _homeSlotsBtn.Bounds = new Rectangle(
-            _contentArea.Center.X - 110,
-            checkboxY + 132,
-            220,
+        var checkboxY = _artificerBtn.Bounds.Bottom + 42;
+        
+        // Difficulty and Homes side by side
+        var sideBySideY = checkboxY - 34 + 40;  // Move down 1 inch + 10 pixels from original
+        var buttonW = 200;  // Fixed width for side-by-side
+        var buttonH = 30;
+        var buttonSpacing = 20;
+        var totalWidth = buttonW * 2 + buttonSpacing;
+        var startX = _contentArea.Center.X - totalWidth / 2;
+        
+        _difficultyBtn.Bounds = new Rectangle(startX, sideBySideY, buttonW, buttonH);
+        _enableHomesBtn.Bounds = new Rectangle(startX + buttonW + buttonSpacing, sideBySideY, buttonW, buttonH);
+        
+        // More World Options below them
+        var moreOptionsY = sideBySideY + 60;  // 60 pixels below moved buttons
+        _moreWorldOptionsBtn.Bounds = new Rectangle(
+            _contentArea.Center.X - 130,
+            moreOptionsY,
+            260,
             30);
-        _homeSlotsBtn.Enabled = _multipleHomesEnabled;
-        _homeSlotsBtn.ForceDisabledStyle = !_multipleHomesEnabled;
+            
+        RebuildDropdownLayouts();
 
         // Match Singleplayer world-list screen create button sizing/placement.
         var rowButtonW = Math.Clamp((int)(_panelRect.Width * 0.28f), 160, 260);
         var rowButtonH = Math.Clamp((int)(rowButtonW * 0.28f), 40, 70);
-        var buttonY = _panelRect.Bottom - 24 - rowButtonH - 90;
+        var buttonY = _panelRect.Bottom - 24 - rowButtonH - 76 - 60;  // Move down 60 pixels to avoid overlap
         var createBtnW = panelW / 3 - 15;
         var createBtnH = (int)(createBtnW * 0.25f);
         var createBtnX = _panelRect.X + (_panelRect.Width - createBtnW) / 2;
         _createBtn.Bounds = new Rectangle(createBtnX, buttonY, createBtnW, createBtnH);
 
-        // Match Options screen back button position (bottom-left of full screen).
+        // Match Options screen back button position (bottom-left of full screen) - use same logic as SingleplayerScreen
         var backBtnMargin = 20;
         var backBtnBaseW = Math.Max(_cancelBtn.Texture?.Width ?? 0, 320);
         var backBtnBaseH = Math.Max(_cancelBtn.Texture?.Height ?? 0, (int)(backBtnBaseW * 0.28f));
-        var backBtnScale = Math.Min(1f, Math.Min(240f / backBtnBaseW, 240f / backBtnBaseH));
+        var backBtnScale = Math.Min(1f, Math.Min(240f / backBtnBaseW, 240f / backBtnBaseH)); // Match options screen
         var backBtnW = Math.Max(1, (int)Math.Round(backBtnBaseW * backBtnScale));
         var backBtnH = Math.Max(1, (int)Math.Round(backBtnBaseH * backBtnScale));
         _cancelBtn.Bounds = new Rectangle(
@@ -245,10 +308,14 @@ public sealed class CreateWorldScreen : IScreen
                 return;
             }
         }
+        
+        if (input.IsNewLeftClick() && HandleDropdownClick(input.MousePosition))
+            return;
 
         _artificerBtn.Update(input);
         _veilwalkerBtn.Update(input);
         _veilseerBtn.Update(input);
+        _modeDescriptionText = ResolveHoveredModeDescription(input.MousePosition);
 
         if (!_worldNameActive && input.IsNewKeyPress(Keys.Left))
         {
@@ -269,20 +336,10 @@ public sealed class CreateWorldScreen : IScreen
             });
         }
 
-        _generateStructures.Update(input);
-        _structuresEnabled = _generateStructures.Value;
-        
-        _generateCaves.Update(input);
-        _cavesEnabled = _generateCaves.Value;
-        
-        _generateOres.Update(input);
-        _oresEnabled = _generateOres.Value;
+        _enableHomesBtn.Update(input);
 
-        _multipleHomes.Update(input);
-        _multipleHomesEnabled = _multipleHomes.Value;
-        _homeSlotsBtn.Enabled = _multipleHomesEnabled;
-        _homeSlotsBtn.ForceDisabledStyle = !_multipleHomesEnabled;
-        _homeSlotsBtn.Update(input);
+        _difficultyBtn.Update(input);
+        _moreWorldOptionsBtn.Update(input);
 
         _createBtn.Update(input);
         _cancelBtn.Update(input);
@@ -318,7 +375,7 @@ public sealed class CreateWorldScreen : IScreen
         const int borderSize = 16;
         var title = "CREATE NEW WORLD";
         var titleSize = _font.MeasureString(title);
-        var titlePos = new Vector2(_panelRect.Center.X - titleSize.X / 2f, _panelRect.Y + 16 + borderSize);
+        var titlePos = new Vector2(_panelRect.Center.X - titleSize.X / 2f, _panelRect.Y + 16 + borderSize + 80);  // Move down 80 pixels total
         _font.DrawString(sb, title, titlePos, Color.White);
 
         // Draw world info
@@ -346,21 +403,20 @@ public sealed class CreateWorldScreen : IScreen
         _veilwalkerBtn.Draw(sb, _pixel, _font);
         _veilseerBtn.Draw(sb, _pixel, _font);
 
-        var detailsY = _artificerBtn.Bounds.Bottom + 10;
-        var detailColumn = Math.Max(200, _contentArea.Width / 4);
-        _font.DrawString(sb, $"Difficulty: {GetDifficultyLabel()}", new Vector2(x + detailColumn, detailsY), Color.White);
-        _font.DrawString(sb, $"Selected: {_selectedGameMode.ToString().ToUpperInvariant()}", new Vector2(x + detailColumn * 2, detailsY), Color.White);
+        DrawModeDescriptionBox(sb);
+        _difficultyBtn.Draw(sb, _pixel, _font);
+        _moreWorldOptionsBtn.Draw(sb, _pixel, _font);
 
         // Draw checkboxes
-        _generateStructures.Draw(sb, _pixel, _font);
-        _generateCaves.Draw(sb, _pixel, _font);
-        _generateOres.Draw(sb, _pixel, _font);
-        _multipleHomes.Draw(sb, _pixel, _font);
-        _homeSlotsBtn.Draw(sb, _pixel, _font);
+        _enableHomesBtn.Draw(sb, _pixel, _font);
 
         // Draw buttons
         _createBtn.Draw(sb, _pixel, _font);
         _cancelBtn.Draw(sb, _pixel, _font);
+        
+        // Draw dropdowns and panels last (highest z-order)
+        if (_difficultyDropdownOpen)
+            DrawDifficultyDropdown(sb);
 
         if (!string.IsNullOrWhiteSpace(_statusMessage))
         {
@@ -377,13 +433,15 @@ public sealed class CreateWorldScreen : IScreen
         sb.End();
     }
 
-    private string GetDifficultyLabel()
+    private string GetDifficultyLabel() => GetDifficultyLabel(_difficulty);
+
+    private static string GetDifficultyLabel(int difficulty)
     {
-        return _difficulty switch
+        return difficulty switch
         {
             0 => "Peaceful",
             1 => "Easy",
-            2 => "Normal", 
+            2 => "Normal",
             3 => "Hard",
             _ => "Normal"
         };
@@ -493,7 +551,9 @@ public sealed class CreateWorldScreen : IScreen
         meta.CreatedAt = DateTimeOffset.UtcNow.ToString("O");
         meta.PlayerCollision = true;
         meta.EnableMultipleHomes = _multipleHomesEnabled;
-        meta.MaxHomesPerPlayer = _multipleHomesEnabled ? Math.Clamp(_maxHomesPerPlayer, 1, 32) : 1;
+        meta.MaxHomesPerPlayer = _multipleHomesEnabled ? (_unlimitedHomes ? -1 : Math.Clamp(_maxHomesPerPlayer, 1, Math.Max(1, _maxHomesCap))) : 1;
+        meta.EnableCheats = _cheatsEnabled;
+        meta.DifficultyLevel = Math.Clamp(_difficulty, 0, 3);
 
         _isGeneratingWorld = true;
         _generationProgress = 0f;
@@ -515,6 +575,18 @@ public sealed class CreateWorldScreen : IScreen
             Directory.CreateDirectory(worldPath);
             var metaPath = Path.Combine(worldPath, "world.json");
             meta.Save(metaPath, _log);
+            
+            // Create and save consolidated world configuration
+            SetGenerationProgress(0.12f, "CONFIGURATION");
+            var worldConfig = WorldConfig.FromWorldMeta(meta);
+            worldConfig.WorldGeneration.GenerateStructures = _structuresEnabled;
+            worldConfig.WorldGeneration.GenerateCaves = _cavesEnabled;
+            worldConfig.WorldGeneration.GenerateOres = _oresEnabled;
+            worldConfig.Gameplay.EnableCheats = _cheatsEnabled;
+            worldConfig.Gameplay.EnableMultipleHomes = _multipleHomesEnabled;
+            worldConfig.Gameplay.MaxHomesPerPlayer = _unlimitedHomes ? -1 : _maxHomesPerPlayer;
+            worldConfig.Save(worldPath, _log);
+            
             SetGenerationProgress(0.22f, "BIOME CATALOG");
             BiomeCatalog.BuildAndSave(meta, worldPath, _log);
 
@@ -796,20 +868,121 @@ public sealed class CreateWorldScreen : IScreen
         checkbox.Bounds = new Rectangle(x, y, rowWidth, boxSize);
     }
 
-    private void CycleMaxHomesPerPlayer()
+    private void ToggleDifficultyDropdown()
     {
-        if (!_multipleHomesEnabled)
-            return;
-
-        _maxHomesPerPlayer++;
-        if (_maxHomesPerPlayer > 20)
-            _maxHomesPerPlayer = 2;
-        SyncHomeSlotsLabel();
+        _difficultyDropdownOpen = !_difficultyDropdownOpen;
+        if (_difficultyDropdownOpen)
+            _moreWorldOptionsOpen = false;
     }
 
-    private void SyncHomeSlotsLabel()
+    private bool HandleMoreWorldOptionsClick(Point mousePos)
     {
-        _homeSlotsBtn.Label = $"HOME SLOTS: {_maxHomesPerPlayer}";
+        // Handle clicks within the more world options panel
+        // This will be implemented when we add the panel
+        return false;
+    }
+
+    private bool HandleDropdownClick(Point mousePos)
+    {
+        if (_difficultyDropdownOpen)
+        {
+            for (var i = 0; i < _difficultyOptionRects.Count; i++)
+            {
+                if (!_difficultyOptionRects[i].Contains(mousePos))
+                    continue;
+
+                _difficulty = i;
+                SyncDifficultyLabel();
+                _difficultyDropdownOpen = false;
+                return true;
+            }
+        }
+
+        var isDropdownOpen = _difficultyDropdownOpen;
+        if (!isDropdownOpen)
+            return false;
+
+        var insideDifficulty = _difficultyBtn.Bounds.Contains(mousePos);
+        var insideMoreOptions = _moreWorldOptionsBtn.Bounds.Contains(mousePos);
+        
+        if (insideDifficulty || insideMoreOptions)
+            return false;
+
+        _difficultyDropdownOpen = false;
+        return true;
+    }
+
+    private void RebuildDropdownLayouts()
+    {
+        _difficultyOptionRects.Clear();
+        const int optionHeight = 26;
+        const int optionGap = 2;
+        for (var i = 0; i < 4; i++)
+        {
+            _difficultyOptionRects.Add(new Rectangle(
+                _difficultyBtn.Bounds.X,
+                _difficultyBtn.Bounds.Bottom + 4 + i * (optionHeight + optionGap),
+                _difficultyBtn.Bounds.Width,
+                optionHeight));
+        }
+    }
+
+    private void SyncDifficultyLabel()
+    {
+        _difficulty = Math.Clamp(_difficulty, 0, 3);
+        _difficultyBtn.Label = $"DIFFICULTY: {GetDifficultyLabel().ToUpperInvariant()}";
+    }
+
+    private string ResolveHoveredModeDescription(Point mousePos)
+    {
+        var mode = _selectedGameMode;
+        if (_artificerBtn.Bounds.Contains(mousePos))
+            mode = Core.GameMode.Artificer;
+        else if (_veilwalkerBtn.Bounds.Contains(mousePos))
+            mode = Core.GameMode.Veilwalker;
+        else if (_veilseerBtn.Bounds.Contains(mousePos))
+            mode = Core.GameMode.Veilseer;
+
+        return GetModeDescription(mode);
+    }
+
+    private static string GetModeDescription(Core.GameMode mode)
+    {
+        return mode switch
+        {
+            Core.GameMode.Artificer => "ARTIFICER: BUILD FREELY, FLY, AND SHAPE THE WORLD.",
+            Core.GameMode.Veilwalker => "VEILWALKER: SURVIVAL RULES WITH RESOURCE PRESSURE.",
+            Core.GameMode.Veilseer => "VEILSEER: SPECTATE, SCOUT, AND PLAN ROUTES.",
+            _ => string.Empty
+        };
+    }
+
+    private void DrawModeDescriptionBox(SpriteBatch sb)
+    {
+        var text = string.IsNullOrWhiteSpace(_modeDescriptionText)
+            ? GetModeDescription(_selectedGameMode)
+            : _modeDescriptionText;
+        var descRect = new Rectangle(
+            _contentArea.X + 12,
+            _artificerBtn.Bounds.Bottom + 8,
+            _contentArea.Width - 24,
+            28);
+
+        sb.Draw(_pixel, descRect, new Color(14, 14, 14, 220));
+        DrawBorder(sb, descRect, new Color(110, 110, 110));
+        _font.DrawString(sb, text, new Vector2(descRect.X + 8, descRect.Y + 6), new Color(220, 220, 220));
+    }
+
+    private void DrawDifficultyDropdown(SpriteBatch sb)
+    {
+        for (var i = 0; i < _difficultyOptionRects.Count; i++)
+        {
+            var rect = _difficultyOptionRects[i];
+            var selected = i == _difficulty;
+            sb.Draw(_pixel, rect, selected ? new Color(52, 82, 122, 230) : new Color(20, 20, 20, 230));
+            DrawBorder(sb, rect, selected ? new Color(150, 220, 255) : new Color(120, 120, 120));
+            _font.DrawString(sb, GetDifficultyLabel(i).ToUpperInvariant(), new Vector2(rect.X + 8, rect.Y + 6), Color.White);
+        }
     }
 
     private (int width, int height, int depth) GetWorldDimensions()

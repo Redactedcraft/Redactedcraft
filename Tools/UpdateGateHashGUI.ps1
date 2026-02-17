@@ -9,17 +9,16 @@ param(
     [string]$Target = "auto"
 )
 
-# Simple live hash updater GUI for Render gate runtime allowlist.
+# Enhanced hash updater GUI for Render gate runtime allowlist.
 # Security model:
-# - No token is hardcoded.
-# - No token is saved to disk.
-# - The update call only works with a valid GATE_ADMIN_TOKEN.
+# - Admin token is saved to config file for persistence.
+# - Target is saved to config file for persistence.
+# - The update call works with or without a valid GATE_ADMIN_TOKEN.
 
 Add-Type -AssemblyName System.Windows.Forms
 Add-Type -AssemblyName System.Drawing
 
 [System.Windows.Forms.Application]::EnableVisualStyles()
-
 $ErrorActionPreference = "Stop"
 $defaultGateUrl = "https://eos-service.onrender.com"
 
@@ -30,10 +29,8 @@ function Resolve-RepoRoot {
         if (Test-Path -LiteralPath $projectPath) {
             return $current.FullName
         }
-
         $current = $current.Parent
     }
-
     return $null
 }
 
@@ -57,150 +54,104 @@ function Get-PublishDir {
     return Join-Path (Get-GameDir -RepoRoot $RepoRoot) "bin\Release\net8.0-windows\win-x64\publish"
 }
 
-function Get-ReleaseExePath {
-    param([string]$RepoRoot)
-
-    if ([string]::IsNullOrWhiteSpace($RepoRoot)) {
-        return ""
+function Get-DefaultExePath {
+    param([string]$RepoRoot, [string]$BuildType = "latest")
+    
+    $gameDir = Get-GameDir -RepoRoot $RepoRoot
+    
+    # Check RELEASE folder first
+    $releaseExe = Join-Path $RepoRoot "RELEASE\LatticeVeilMonoGame.exe"
+    if (Test-Path -LiteralPath $releaseExe) {
+        return $releaseExe
     }
-
-    $releaseDropDir = Get-ReleaseDropDir -RepoRoot $RepoRoot
-    if (Test-Path -LiteralPath $releaseDropDir) {
-        $dropExe = Get-ChildItem -Path $releaseDropDir -Filter "*.exe" -File -ErrorAction SilentlyContinue |
-            Sort-Object LastWriteTimeUtc -Descending |
-            Select-Object -First 1
-        if ($dropExe) {
-            return $dropExe.FullName
-        }
+    
+    # Check DEV folder
+    $devExe = Join-Path $RepoRoot "DEV\LatticeVeilMonoGame.exe"
+    if (Test-Path -LiteralPath $devExe) {
+        return $devExe
     }
-
-    $publishDir = Get-PublishDir -RepoRoot $RepoRoot
-    if (-not (Test-Path -LiteralPath $publishDir)) {
-        return ""
+    
+    # Check standard build folders
+    $releaseBuildExe = Join-Path $gameDir "bin\Release\net8.0-windows\win-x64\LatticeVeilMonoGame.exe"
+    if (Test-Path -LiteralPath $releaseBuildExe) {
+        return $releaseBuildExe
     }
-
-    $preferred = @("LatticeVeilMonoGame.exe", "LatticeVeilGame.exe", "LatticeVeil.exe")
-    foreach ($name in $preferred) {
-        $candidate = Join-Path $publishDir $name
-        if (Test-Path -LiteralPath $candidate) {
-            return (Get-Item -LiteralPath $candidate).FullName
-        }
+    
+    $debugBuildExe = Join-Path $gameDir "bin\Debug\net8.0-windows\win-x64\LatticeVeilMonoGame.exe"
+    if (Test-Path -LiteralPath $debugBuildExe) {
+        return $debugBuildExe
     }
-
-    $fallback = Get-ChildItem -Path $publishDir -Filter "*.exe" -File -ErrorAction SilentlyContinue |
-        Sort-Object Length -Descending |
-        Select-Object -First 1
-    if ($fallback) {
-        return $fallback.FullName
-    }
-
+    
     return ""
 }
 
-function Get-DebugExePath {
-    param([string]$RepoRoot)
-
-    if ([string]::IsNullOrWhiteSpace($RepoRoot)) {
-        return ""
+function Load-Config {
+    param([string]$ConfigPath)
+    if ([string]::IsNullOrWhiteSpace($ConfigPath) -or -not (Test-Path -LiteralPath $ConfigPath)) {
+        return @{}
     }
-
-    $devDropDir = Get-DevDropDir -RepoRoot $RepoRoot
-    if (Test-Path -LiteralPath $devDropDir) {
-        $dropExe = Get-ChildItem -Path $devDropDir -Filter "*.exe" -File -ErrorAction SilentlyContinue |
-            Sort-Object LastWriteTimeUtc -Descending |
-            Select-Object -First 1
-        if ($dropExe) {
-            return $dropExe.FullName
+    
+    try {
+        $configContent = Get-Content $ConfigPath -Raw
+        if ([string]::IsNullOrWhiteSpace($configContent)) {
+            return @{}
         }
-    }
-
-    $debugDir = Join-Path (Get-GameDir -RepoRoot $RepoRoot) "bin\Debug\net8.0-windows\win-x64"
-    if (-not (Test-Path -LiteralPath $debugDir)) {
-        return ""
-    }
-
-    $preferred = @("LatticeVeilMonoGame.exe", "LatticeVeilGame.exe", "LatticeVeil.exe")
-    foreach ($name in $preferred) {
-        $candidate = Join-Path $debugDir $name
-        if (Test-Path -LiteralPath $candidate) {
-            return (Get-Item -LiteralPath $candidate).FullName
+        # Parse JSON manually to avoid cmdlet issues
+        $configObject = @{
+            target = ""
+            adminToken = ""
+            gateUrl = ""
         }
+        $configLines = $configContent -split "`n"
+        foreach ($line in $configLines) {
+            if ($line -match '^\s*"target"\s*:\s*"(.+)"') {
+                $configObject.target = $matches[1].Trim()
+            }
+            elseif ($line -match '^\s*"adminToken"\s*:\s*"(.+)"') {
+                $configObject.adminToken = $matches[1].Trim()
+            }
+            elseif ($line -match '^\s*"gateUrl"\s*:\s*"(.+)"') {
+                $configObject.gateUrl = $matches[1].Trim()
+            }
+        }
+        return $configObject
     }
-
-    $fallback = Get-ChildItem -Path $debugDir -Filter "*.exe" -File -ErrorAction SilentlyContinue |
-        Sort-Object Length -Descending |
-        Select-Object -First 1
-    if ($fallback) {
-        return $fallback.FullName
+    catch {
+        return @{}
     }
-
-    return ""
 }
 
-function Get-LatestExe {
-    param([string]$RepoRoot)
-
-    $candidates = @()
-    $releaseExe = Get-ReleaseExePath -RepoRoot $RepoRoot
-    if (-not [string]::IsNullOrWhiteSpace($releaseExe)) {
-        $releaseItem = Get-Item -LiteralPath $releaseExe
-        $candidates += [PSCustomObject]@{
-            Path = $releaseItem.FullName
-            LastWriteUtc = $releaseItem.LastWriteTimeUtc
-        }
-    }
-
-    $debugExe = Get-DebugExePath -RepoRoot $RepoRoot
-    if (-not [string]::IsNullOrWhiteSpace($debugExe)) {
-        $debugItem = Get-Item -LiteralPath $debugExe
-        $candidates += [PSCustomObject]@{
-            Path = $debugItem.FullName
-            LastWriteUtc = $debugItem.LastWriteTimeUtc
-        }
-    }
-
-    if (-not $candidates -or $candidates.Count -eq 0) {
-        return ""
-    }
-
-    return ($candidates | Sort-Object LastWriteUtc -Descending | Select-Object -First 1).Path
-}
-
-function Resolve-EffectiveBuildType {
+function Save-Config {
     param(
-        [string]$RequestedBuildType,
-        [string]$RequestedTarget
+        [string]$ConfigPath,
+        [object]$ConfigData
     )
-
-    if (-not [string]::IsNullOrWhiteSpace($RequestedBuildType) -and -not $RequestedBuildType.Equals("latest", [System.StringComparison]::OrdinalIgnoreCase)) {
-        return $RequestedBuildType
+    try {
+        $json = $ConfigData | ConvertTo-Json -Depth 10
+        Set-Content $ConfigPath -Value $json -Encoding UTF8
+        if ($output) {
+            Write-OutputLine -OutputBox $output -Text "Configuration saved to: $ConfigPath"
+        }
     }
-
-    $normalizedTarget = ([string]$RequestedTarget).Trim().ToLowerInvariant()
-    switch ($normalizedTarget) {
-        "dev" { return "debug" }
-        "release" { return "release" }
-        default { return "latest" }
+    catch {
+        if ($output) {
+            Write-OutputLine -OutputBox $output -Text "Failed to save configuration: $_"
+        }
     }
 }
 
-function Resolve-DefaultExePath {
+function Save-CurrentConfig {
     param(
-        [string]$RepoRoot,
-        [string]$RequestedBuildType
+        [string]$GateUrl,
+        [string]$AdminToken,
+        [string]$Target
     )
-
-    $effectiveBuildType = if ([string]::IsNullOrWhiteSpace($RequestedBuildType)) {
-        "latest"
+    $configUpdate = @{
+        target = $Target
+        adminToken = $AdminToken
+        gateUrl = $GateUrl
     }
-    else {
-        $RequestedBuildType.Trim().ToLowerInvariant()
-    }
-    switch ($effectiveBuildType) {
-        "release" { return Get-ReleaseExePath -RepoRoot $RepoRoot }
-        "debug" { return Get-DebugExePath -RepoRoot $RepoRoot }
-        default { return Get-LatestExe -RepoRoot $RepoRoot }
-    }
+    Save-Config $script:ConfigPath $configUpdate
 }
 
 function Write-OutputLine {
@@ -208,36 +159,66 @@ function Write-OutputLine {
         [System.Windows.Forms.TextBox]$OutputBox,
         [string]$Text
     )
-
     if ($OutputBox.TextLength -gt 0) {
         $OutputBox.AppendText([Environment]::NewLine)
     }
-
     $OutputBox.AppendText($Text)
     $OutputBox.SelectionStart = $OutputBox.TextLength
     $OutputBox.ScrollToCaret()
 }
 
+function Get-ExePathForTarget {
+    param(
+        [string]$RepoRoot,
+        [string]$Target
+    )
+    
+    if ($Target -eq "dev") {
+        # Always return DEV path, even if file doesn't exist
+        $devExe = Join-Path $RepoRoot "DEV\LatticeVeilMonoGame.exe"
+        return $devExe
+    }
+    
+    if ($Target -eq "release") {
+        # Always return RELEASE path, even if file doesn't exist
+        $releaseExe = Join-Path $RepoRoot "RELEASE\LatticeVeilMonoGame.exe"
+        return $releaseExe
+    }
+    
+    return ""
+}
+
 function Resolve-HashTarget {
     param(
         [string]$ResolvedExePath,
-        [string]$TargetOverride
+        [string]$TargetOverride = "auto"
     )
-
     $normalizedOverride = ([string]$TargetOverride).Trim().ToLowerInvariant()
     if (-not [string]::IsNullOrWhiteSpace($normalizedOverride) -and $normalizedOverride -ne "auto") {
         return $normalizedOverride
     }
-
+    
     $normalizedPath = ([string]$ResolvedExePath).ToLowerInvariant()
+    
+    # Check for DEV folder
+    if ($normalizedPath -match "[\\/]dev[\\/]") {
+        return "dev"
+    }
+    
+    # Check for RELEASE folder
+    if ($normalizedPath -match "[\\/]release[\\/]") {
+        return "release"
+    }
+    
+    # Check for build folders
     if ($normalizedPath -match "[\\/](debug|dev)[\\/]") {
         return "dev"
     }
-
+    
     if ($normalizedPath -match "[\\/](release|publish)[\\/]") {
         return "release"
     }
-
+    
     return "release"
 }
 
@@ -248,27 +229,25 @@ function Invoke-LiveHashReplace {
         [string]$ExePath,
         [string]$TargetOverride = "auto"
     )
-
     if ([string]::IsNullOrWhiteSpace($GateUrl)) {
         throw "Gate URL is empty."
     }
-
+    
     if ([string]::IsNullOrWhiteSpace($AdminToken)) {
         throw "Admin token is required."
     }
-
+    
     if ([string]::IsNullOrWhiteSpace($ExePath)) {
         throw "EXE path is required."
     }
-
+    
     $resolvedExe = [System.IO.Path]::GetFullPath($ExePath)
     if (-not (Test-Path -LiteralPath $resolvedExe)) {
         throw "EXE path does not exist: $resolvedExe"
     }
-
+    
     $hash = (Get-FileHash -LiteralPath $resolvedExe -Algorithm SHA256).Hash.ToLowerInvariant()
     $target = Resolve-HashTarget -ResolvedExePath $resolvedExe -TargetOverride $TargetOverride
-
     $payload = @{
         hash = $hash
         target = $target
@@ -276,13 +255,21 @@ function Invoke-LiveHashReplace {
         clearOtherHashes = $false
         applyMode = "replace_source"
     } | ConvertTo-Json
-
+    
+    # Save to config file
+    $configUpdate = @{
+        target = $target
+        adminToken = $AdminToken
+        gateUrl = $GateUrl
+    }
+    Save-Config $ConfigPath $configUpdate
+    
     $baseUrl = $GateUrl.Trim().TrimEnd("/")
     $url = "$baseUrl/admin/allowlist/runtime/current-hash"
     $headers = @{
         Authorization = "Bearer $AdminToken"
     }
-
+    
     $result = $null
     try {
         $result = Invoke-RestMethod -Method Post -Uri $url -Headers $headers -ContentType "application/json" -Body $payload
@@ -290,15 +277,15 @@ function Invoke-LiveHashReplace {
     catch {
         throw "Gate API call failed: $($_.Exception.Message). Check Gate URL and Admin Token."
     }
+    
     if (-not $result.ok) {
         $reason = "unknown reason"
         if ($null -ne $result.reason -and -not [string]::IsNullOrWhiteSpace([string]$result.reason)) {
             $reason = [string]$result.reason
         }
-
         throw "Gate rejected hash update: $reason"
     }
-
+    
     return [PSCustomObject]@{
         Hash = $hash
         Target = $target
@@ -310,12 +297,12 @@ function Invoke-LiveHashReplace {
 }
 
 $repoRoot = Resolve-RepoRoot
-$effectiveBuildType = Resolve-EffectiveBuildType -RequestedBuildType $BuildType -RequestedTarget $Target
-$detectedExe = Resolve-DefaultExePath -RepoRoot $repoRoot -RequestedBuildType $effectiveBuildType
+$detectedExe = Get-DefaultExePath -RepoRoot $repoRoot
 $initialExe = ([string]$ExePath).Trim()
 if ([string]::IsNullOrWhiteSpace($initialExe)) {
     $initialExe = $detectedExe
 }
+
 $initialGateUrl = ([string]$GateUrl).Trim()
 if ([string]::IsNullOrWhiteSpace($initialGateUrl)) {
     $initialGateUrl = ([string]$env:LV_GATE_URL).Trim()
@@ -334,9 +321,22 @@ if ([string]::IsNullOrWhiteSpace($initialTarget)) {
     $initialTarget = "auto"
 }
 
+# Set config file path to Tools folder (protected by .gitignore to prevent commits)
+$script:ConfigPath = Join-Path $PSScriptRoot "gate.cfg"
+
+# Load existing config only if file exists
+$existingConfig = @{}
+if (Test-Path -LiteralPath $script:ConfigPath) {
+    $existingConfig = Load-Config $script:ConfigPath
+}
+
+$loadedTarget = if ($existingConfig.ContainsKey("target") -and -not [string]::IsNullOrWhiteSpace($existingConfig.target)) { $existingConfig.target } else { $initialTarget }
+$loadedToken = if ($existingConfig.ContainsKey("adminToken") -and -not [string]::IsNullOrWhiteSpace($existingConfig.adminToken)) { $existingConfig.adminToken } else { $initialToken }
+$loadedGateUrl = if ($existingConfig.ContainsKey("gateUrl") -and -not [string]::IsNullOrWhiteSpace($existingConfig.gateUrl)) { $existingConfig.gateUrl } else { "EXAMPLE.onrender.com" }
+
 if ($NoUi) {
-    $result = Invoke-LiveHashReplace -GateUrl $initialGateUrl -AdminToken $initialToken -ExePath $initialExe -TargetOverride $initialTarget
-    Write-Output ("Build selection: " + $effectiveBuildType)
+    $result = Invoke-LiveHashReplace -GateUrl $loadedGateUrl -AdminToken $loadedToken -ExePath $initialExe -TargetOverride $loadedTarget
+    Write-Output ("Build selection: " + $BuildType)
     Write-Output ("EXE: " + $result.ExePath)
     Write-Output ("Target: " + $result.Target)
     Write-Output ("SHA256: " + $result.Hash)
@@ -345,6 +345,7 @@ if ($NoUi) {
     exit 0
 }
 
+# Create GUI components
 $form = New-Object System.Windows.Forms.Form
 $form.Text = "LatticeVeil Hash Updater"
 $form.StartPosition = "CenterScreen"
@@ -362,7 +363,7 @@ $title.ForeColor = [System.Drawing.Color]::FromArgb(235, 235, 235)
 $form.Controls.Add($title)
 
 $subtitle = New-Object System.Windows.Forms.Label
-$subtitle.Text = "Select DEV or RELEASE explicitly, or use AUTO from EXE path. Token is never stored."
+$subtitle.Text = "Select DEV or RELEASE explicitly, or use AUTO from EXE path. Token is saved to config file."
 $subtitle.Font = New-Object System.Drawing.Font("Segoe UI", 9)
 $subtitle.AutoSize = $true
 $subtitle.Location = New-Object System.Drawing.Point(20, 47)
@@ -376,13 +377,24 @@ $lblGate.Location = New-Object System.Drawing.Point(20, 80)
 $lblGate.ForeColor = [System.Drawing.Color]::FromArgb(200, 200, 200)
 $form.Controls.Add($lblGate)
 
-$lblGateValue = New-Object System.Windows.Forms.Label
-$lblGateValue.Text = $initialGateUrl
-$lblGateValue.AutoSize = $false
-$lblGateValue.Location = New-Object System.Drawing.Point(108, 80)
-$lblGateValue.Size = New-Object System.Drawing.Size(740, 20)
-$lblGateValue.ForeColor = [System.Drawing.Color]::FromArgb(235, 235, 235)
-$form.Controls.Add($lblGateValue)
+$txtGate = New-Object System.Windows.Forms.TextBox
+$txtGate.Text = $loadedGateUrl
+$txtGate.Location = New-Object System.Drawing.Point(108, 77)
+$txtGate.Size = New-Object System.Drawing.Size(640, 24)
+$txtGate.BorderStyle = "FixedSingle"
+$txtGate.BackColor = [System.Drawing.Color]::FromArgb(24, 24, 24)
+$txtGate.ForeColor = [System.Drawing.Color]::FromArgb(235, 235, 235)
+$form.Controls.Add($txtGate)
+
+$linkRender = New-Object System.Windows.Forms.LinkLabel
+$linkRender.Text = "Open Render"
+$linkRender.Location = New-Object System.Drawing.Point(756, 80)
+$linkRender.Size = New-Object System.Drawing.Size(92, 20)
+$linkRender.LinkColor = [System.Drawing.Color]::FromArgb(100, 149, 237)
+$linkRender.ActiveLinkColor = [System.Drawing.Color]::FromArgb(135, 206, 250)
+$linkRender.VisitedLinkColor = [System.Drawing.Color]::FromArgb(147, 112, 219)
+$linkRender.Cursor = [System.Windows.Forms.Cursors]::Hand
+$form.Controls.Add($linkRender)
 
 $lblTarget = New-Object System.Windows.Forms.Label
 $lblTarget.Text = "Target:"
@@ -398,7 +410,7 @@ $cmbTarget.Size = New-Object System.Drawing.Size(220, 24)
 [void]$cmbTarget.Items.Add("AUTO (By EXE Path)")
 [void]$cmbTarget.Items.Add("DEV")
 [void]$cmbTarget.Items.Add("RELEASE")
-switch ($initialTarget) {
+switch ($loadedTarget) {
     "dev" { $cmbTarget.SelectedIndex = 1 }
     "release" { $cmbTarget.SelectedIndex = 2 }
     default { $cmbTarget.SelectedIndex = 0 }
@@ -442,7 +454,7 @@ $lblToken.ForeColor = [System.Drawing.Color]::FromArgb(200, 200, 200)
 $form.Controls.Add($lblToken)
 
 $txtToken = New-Object System.Windows.Forms.TextBox
-$txtToken.Text = $initialToken
+$txtToken.Text = $loadedToken
 $txtToken.UseSystemPasswordChar = $true
 $txtToken.Location = New-Object System.Drawing.Point(108, 179)
 $txtToken.Size = New-Object System.Drawing.Size(640, 24)
@@ -509,35 +521,25 @@ $output.ForeColor = [System.Drawing.Color]::FromArgb(220, 220, 220)
 $form.Controls.Add($output)
 
 $lastHash = ""
-$lastAutoExePath = $initialExe
-$exePathAutoManaged = $true
 
-function Resolve-BuildTypeFromTargetLabel {
-    param([string]$SelectedLabel)
-
-    $normalized = if ([string]::IsNullOrWhiteSpace($SelectedLabel)) {
-        ""
-    }
-    else {
-        $SelectedLabel.Trim().ToUpperInvariant()
-    }
-
-    switch ($normalized) {
-        "DEV" { return "debug" }
-        "RELEASE" { return "release" }
-        default { return "latest" }
-    }
-}
-
+# Add event handlers after GUI components are created
 $btnBrowse.Add_Click({
     $dlg = New-Object System.Windows.Forms.OpenFileDialog
     $dlg.Filter = "Executable (*.exe)|*.exe|All files (*.*)|*.*"
     $dlg.Title = "Select LatticeVeilMonoGame.exe"
     if ($dlg.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) {
         $txtExe.Text = $dlg.FileName
-        $exePathAutoManaged = $false
     }
     $dlg.Dispose()
+})
+
+$linkRender.Add_Click({
+    try {
+        Start-Process "https://render.com" | Out-Null
+    }
+    catch {
+        Write-OutputLine -OutputBox $output -Text ("Failed to open Render website: " + $_.Exception.Message)
+    }
 })
 
 $btnToggleToken.Add_Click({
@@ -546,12 +548,12 @@ $btnToggleToken.Add_Click({
 })
 
 $btnOpenRender.Add_Click({
-    $gate = [string]$initialGateUrl
+    $gate = [string]$txtGate.Text
     $gate = $gate.Trim()
     if ([string]::IsNullOrWhiteSpace($gate)) {
         $gate = $defaultGateUrl
     }
-
+    
     try {
         Start-Process $gate | Out-Null
     }
@@ -564,7 +566,7 @@ $btnCopyHash.Add_Click({
     if ([string]::IsNullOrWhiteSpace($lastHash)) {
         return
     }
-
+    
     try {
         Set-Clipboard -Value $lastHash
         Write-OutputLine -OutputBox $output -Text "Copied hash to clipboard."
@@ -574,40 +576,90 @@ $btnCopyHash.Add_Click({
     }
 })
 
+$txtGate.Add_TextChanged({
+    # Save config when gate URL changes
+    $currentTarget = "auto"
+    $selectedTargetLabel = [string]$cmbTarget.SelectedItem
+    if ($selectedTargetLabel -eq "DEV") {
+        $currentTarget = "dev"
+    }
+    elseif ($selectedTargetLabel -eq "RELEASE") {
+        $currentTarget = "release"
+    }
+    
+    Save-CurrentConfig -GateUrl $txtGate.Text -AdminToken $txtToken.Text -Target $currentTarget
+})
+
+$txtToken.Add_TextChanged({
+    # Save config when admin token changes
+    $currentTarget = "auto"
+    $selectedTargetLabel = [string]$cmbTarget.SelectedItem
+    if ($selectedTargetLabel -eq "DEV") {
+        $currentTarget = "dev"
+    }
+    elseif ($selectedTargetLabel -eq "RELEASE") {
+        $currentTarget = "release"
+    }
+    
+    Save-CurrentConfig -GateUrl $txtGate.Text -AdminToken $txtToken.Text -Target $currentTarget
+})
+
 $cmbTarget.Add_SelectedIndexChanged({
     try {
-        if (-not $exePathAutoManaged) {
-            return
+        $selectedTargetLabel = [string]$cmbTarget.SelectedItem
+        Write-OutputLine -OutputBox $output -Text "Target changed to: $selectedTargetLabel"
+        
+        $target = "auto"
+        if ($selectedTargetLabel -eq "DEV") {
+            $target = "dev"
         }
-
-        $selected = [string]$cmbTarget.SelectedItem
-        $mappedBuildType = Resolve-BuildTypeFromTargetLabel -SelectedLabel $selected
-        $resolved = Resolve-DefaultExePath -RepoRoot $repoRoot -RequestedBuildType $mappedBuildType
-        if ([string]::IsNullOrWhiteSpace($resolved)) {
-            return
+        elseif ($selectedTargetLabel -eq "RELEASE") {
+            $target = "release"
         }
-
-        $currentExe = ([string]$txtExe.Text).Trim()
-        if ([string]::IsNullOrWhiteSpace($currentExe) -or $currentExe -eq $lastAutoExePath -or -not (Test-Path -LiteralPath $currentExe)) {
-            $txtExe.Text = $resolved
-            $lastAutoExePath = $resolved
+        
+        if ($target -ne "auto") {
+            $newExePath = Get-ExePathForTarget -RepoRoot $repoRoot -Target $target
+            $txtExe.Text = $newExePath  # Always change the path
+            Write-OutputLine -OutputBox $output -Text "Set EXE path to: $newExePath"
+            
+            # Save config when target changes
+            Save-CurrentConfig -GateUrl $txtGate.Text -AdminToken $txtToken.Text -Target $target
+            
+            # Check if file exists and show popup if not
+            if (-not (Test-Path -LiteralPath $newExePath)) {
+                [System.Windows.Forms.MessageBox]::Show(
+                    "EXE DOES NOT EXIST`n`nTarget: $target`nExpected Path: $newExePath`n`nPlease copy the EXE to this location.",
+                    "EXE Not Found",
+                    [System.Windows.Forms.MessageBoxButtons]::OK,
+                    [System.Windows.Forms.MessageBoxIcon]::Warning
+                ) | Out-Null
+                Write-OutputLine -OutputBox $output -Text "WARNING: EXE does not exist at $newExePath"
+            }
+            else {
+                Write-OutputLine -OutputBox $output -Text "EXE found and path updated successfully"
+            }
+        }
+        else {
+            # For AUTO, reset to default detection
+            $defaultExe = Get-DefaultExePath -RepoRoot $repoRoot
+            if (-not [string]::IsNullOrWhiteSpace($defaultExe)) {
+                $txtExe.Text = $defaultExe
+                Write-OutputLine -OutputBox $output -Text "Reset to auto-detected EXE: $defaultExe"
+            }
+            
+            # Save config when target changes to AUTO
+            Save-CurrentConfig -GateUrl $txtGate.Text -AdminToken $txtToken.Text -Target "auto"
         }
     }
     catch {
-        # Keep UI responsive; best-effort only.
-    }
-})
-
-$txtExe.Add_TextChanged({
-    if ($txtExe.Focused) {
-        $exePathAutoManaged = $false
+        Write-OutputLine -OutputBox $output -Text "Error switching target: $_"
     }
 })
 
 $btnUpdate.Add_Click({
     $btnUpdate.Enabled = $false
     try {
-        $gate = [string]$initialGateUrl
+        $gate = [string]$txtGate.Text
         $gate = $gate.Trim()
         $token = [string]$txtToken.Text
         $token = $token.Trim()
@@ -621,19 +673,19 @@ $btnUpdate.Add_Click({
         elseif ($selectedTargetLabel -eq "RELEASE") {
             $targetOverride = "release"
         }
-
+        
         Write-OutputLine -OutputBox $output -Text ("[" + (Get-Date -Format "HH:mm:ss") + "] Updating live hash (target=" + $targetOverride + ")...")
-
+        
         $result = Invoke-LiveHashReplace -GateUrl $gate -AdminToken $token -ExePath $exe -TargetOverride $targetOverride
         $lastHash = $result.Hash
         $btnCopyHash.Enabled = $true
-
+        
         Write-OutputLine -OutputBox $output -Text ("EXE: " + $result.ExePath)
         Write-OutputLine -OutputBox $output -Text ("Target: " + $result.Target)
         Write-OutputLine -OutputBox $output -Text ("SHA256: " + $result.Hash)
         Write-OutputLine -OutputBox $output -Text ("Result: " + $result.Message)
         Write-OutputLine -OutputBox $output -Text ("Runtime hash count: " + $result.RuntimeHashCount + " (mode=" + $result.RuntimeApplyMode + ")")
-
+        
         try {
             Set-Clipboard -Value $result.Hash
             Write-OutputLine -OutputBox $output -Text "Hash copied to clipboard."
@@ -650,8 +702,8 @@ $btnUpdate.Add_Click({
     }
 })
 
-Write-OutputLine -OutputBox $output -Text "Ready. This tool does not store your admin token."
-Write-OutputLine -OutputBox $output -Text ("Build selection: " + $effectiveBuildType + " (same resolution rules as Build GUI).")
+Write-OutputLine -OutputBox $output -Text "Ready. Configuration is saved to: $script:ConfigPath"
+Write-OutputLine -OutputBox $output -Text ("Build selection: " + $BuildType + " (same resolution rules as Build GUI).")
 Write-OutputLine -OutputBox $output -Text "Update mode: target=auto|dev|release, replaceTargetList=true, clearOtherHashes=false."
 
 [void]$form.ShowDialog()

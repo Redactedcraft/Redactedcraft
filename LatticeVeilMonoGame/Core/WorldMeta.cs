@@ -1,5 +1,8 @@
 using System;
+using System.Collections.Generic;
 using System.IO;
+using System.Security.Cryptography;
+using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 
@@ -34,6 +37,9 @@ public sealed class WorldMeta
     [JsonPropertyName("created_at")]
     public string CreatedAt { get; set; } = string.Empty;
 
+    [JsonPropertyName("worldId")]
+    public string WorldId { get; set; } = string.Empty;
+
     [JsonPropertyName("size")]
     public WorldSize Size { get; set; } = new();
 
@@ -58,6 +64,15 @@ public sealed class WorldMeta
     [JsonPropertyName("maxHomesPerPlayer")]
     public int MaxHomesPerPlayer { get; set; } = 8;
 
+    [JsonPropertyName("enableCheats")]
+    public bool EnableCheats { get; set; } = true;
+
+    [JsonPropertyName("difficulty")]
+    public int DifficultyLevel { get; set; } = 1; // 0=Peaceful, 1=Easy, 2=Normal, 3=Hard
+
+    [JsonPropertyName("operatorUsernames")]
+    public List<string> OperatorUsernames { get; set; } = new();
+
     public static WorldMeta CreateFlat(string name, GameMode mode, int width, int height, int depth, int seed)
     {
         return new WorldMeta
@@ -69,10 +84,14 @@ public sealed class WorldMeta
             Generator = "flat_v1",
             Seed = seed,
             CreatedAt = DateTimeOffset.UtcNow.ToString("O"),
+            WorldId = CreateWorldId(),
             Size = new WorldSize { Width = width, Height = height, Depth = depth },
             PlayerCollision = true,
             EnableMultipleHomes = true,
-            MaxHomesPerPlayer = 8
+            MaxHomesPerPlayer = 8,
+            EnableCheats = true,
+            DifficultyLevel = 1,
+            OperatorUsernames = new List<string>()
         };
     }
 
@@ -81,8 +100,11 @@ public sealed class WorldMeta
         try
         {
             GameMode = CurrentWorldGameMode;
+            DifficultyLevel = Math.Clamp(DifficultyLevel, 0, 3);
             if (string.IsNullOrWhiteSpace(CreatedAt))
                 CreatedAt = DateTimeOffset.UtcNow.ToString("O");
+            if (string.IsNullOrWhiteSpace(WorldId))
+                WorldId = BuildLegacyWorldId(this);
 
             var options = new JsonSerializerOptions { WriteIndented = true };
             options.Converters.Add(new JsonStringEnumConverter());
@@ -116,6 +138,7 @@ public sealed class WorldMeta
                 Generator = ReadString(root, "generator") ?? ReadString(root, "Generator") ?? "flat_v1",
                 Seed = ReadInt(root, "seed") ?? ReadInt(root, "Seed") ?? 0,
                 CreatedAt = ReadString(root, "created_at") ?? ReadString(root, "createdAt") ?? ReadString(root, "CreatedAt") ?? string.Empty,
+                WorldId = ReadString(root, "worldId") ?? ReadString(root, "WorldId") ?? string.Empty,
                 GameMode = ParseMode(ReadString(root, "gameMode") ?? ReadString(root, "Mode") ?? ReadString(root, "mode")),
                 PlayerCollision = ReadBool(root, "playerCollision") ?? ReadBool(root, "PlayerCollision") ?? true,
                 HasCustomSpawn = ReadBool(root, "hasCustomSpawn") ?? ReadBool(root, "HasCustomSpawn") ?? false,
@@ -123,12 +146,25 @@ public sealed class WorldMeta
                 SpawnY = ReadInt(root, "spawnY") ?? ReadInt(root, "SpawnY") ?? 0,
                 SpawnZ = ReadInt(root, "spawnZ") ?? ReadInt(root, "SpawnZ") ?? 0,
                 EnableMultipleHomes = ReadBool(root, "enableMultipleHomes") ?? ReadBool(root, "EnableMultipleHomes") ?? true,
-                MaxHomesPerPlayer = ReadInt(root, "maxHomesPerPlayer") ?? ReadInt(root, "MaxHomesPerPlayer") ?? 8
+                MaxHomesPerPlayer = ReadInt(root, "maxHomesPerPlayer") ?? ReadInt(root, "MaxHomesPerPlayer") ?? 8,
+                EnableCheats = ReadBool(root, "enableCheats")
+                    ?? ReadBool(root, "EnableCheats")
+                    ?? ReadBool(root, "cheatsEnabled")
+                    ?? true,
+                DifficultyLevel = ReadInt(root, "difficulty")
+                    ?? ReadInt(root, "difficultyLevel")
+                    ?? ReadInt(root, "Difficulty")
+                    ?? 1,
+                OperatorUsernames = ReadStringList(root, "operatorUsernames")
+                    ?? ReadStringList(root, "OperatorUsernames")
+                    ?? ReadStringList(root, "ops")
+                    ?? new List<string>()
             };
 
             meta.MaxHomesPerPlayer = Math.Clamp(meta.MaxHomesPerPlayer, 1, 32);
             if (!meta.EnableMultipleHomes)
                 meta.MaxHomesPerPlayer = 1;
+            meta.DifficultyLevel = Math.Clamp(meta.DifficultyLevel, 0, 3);
 
             meta.InitialGameMode = ParseMode(
                 ReadString(root, "initialGameMode")
@@ -150,6 +186,8 @@ public sealed class WorldMeta
 
             if (string.IsNullOrWhiteSpace(meta.CreatedAt))
                 meta.CreatedAt = DateTimeOffset.UtcNow.ToString("O");
+            if (string.IsNullOrWhiteSpace(meta.WorldId))
+                meta.WorldId = BuildLegacyWorldId(meta);
 
             return meta;
         }
@@ -158,6 +196,24 @@ public sealed class WorldMeta
             log.Warn($"Failed to load world data: {ex.Message}");
             return null;
         }
+    }
+
+    private static List<string>? ReadStringList(JsonElement element, string name)
+    {
+        if (!TryGetProperty(element, name, out var listNode))
+            return null;
+        if (listNode.ValueKind != JsonValueKind.Array)
+            return null;
+
+        var list = new List<string>();
+        foreach (var entry in listNode.EnumerateArray())
+        {
+            var value = entry.ValueKind == JsonValueKind.String ? entry.GetString() : entry.ToString();
+            if (!string.IsNullOrWhiteSpace(value))
+                list.Add(value.Trim());
+        }
+
+        return list;
     }
 
     private static WorldSize? ReadSize(JsonElement root)
@@ -172,6 +228,20 @@ public sealed class WorldMeta
         }
 
         return null;
+    }
+
+    private static string CreateWorldId()
+    {
+        return Guid.NewGuid().ToString("N");
+    }
+
+    private static string BuildLegacyWorldId(WorldMeta meta)
+    {
+        var payload =
+            $"{meta.Name}|{meta.Seed}|{meta.Size.Width}|{meta.Size.Height}|{meta.Size.Depth}|{meta.CreatedAt}";
+        var bytes = Encoding.UTF8.GetBytes(payload);
+        var hash = SHA256.HashData(bytes);
+        return Convert.ToHexString(hash).ToLowerInvariant();
     }
 
     private static GameMode ParseMode(string? value)

@@ -15,11 +15,6 @@ namespace LatticeVeilMonoGame.UI.Screens;
 
 public sealed class MultiplayerScreen : IScreen
 {
-    private enum MultiplayerTab
-    {
-        Lan,
-        Online
-    }
 
     private readonly MenuStack _menus;
     private readonly AssetLoader _assets;
@@ -33,21 +28,38 @@ public sealed class MultiplayerScreen : IScreen
     private readonly LanDiscovery _lanDiscovery;
     private EosClient? _eosClient;
     private readonly OnlineGateClient _onlineGate;
+    private readonly OnlineSocialStateService _social;
 
     private readonly Button _refreshBtn;
+    private readonly Button _addBtn;
     private readonly Button _hostBtn;
     private readonly Button _joinBtn;
 	private readonly Button _yourIdBtn;
     private readonly Button _friendsBtn;
-    private readonly Button _saveNameBtn;
     private readonly Button _backBtn;
 
-    private List<LanServerEntry> _lanServers = new();
-    private int _selectedLan = -1;
+    private enum SessionType { Lan, Friend, Server }
+    private sealed class SessionEntry
+    {
+        public SessionType Type;
+        public string Title = "";
+        public string HostName = "";
+        public string Status = "";
+        public string JoinTarget = "";
+        public string WorldName = "";
+        public string GameMode = "";
+    }
 
-    private MultiplayerTab _tab = MultiplayerTab.Lan;
-    private string _status = "";
+    private List<SessionEntry> _sessions = new();
+    private int _selectedIndex = -1;
+    private Vector2 _lastMousePos = Vector2.Zero;
+
+    private Dictionary<string, string> _pendingInvitesByHostPuid = new(StringComparer.OrdinalIgnoreCase);
+    private DateTime _nextInvitePollUtc = DateTime.MinValue;
+    private DateTime _nextSessionRefreshUtc = DateTime.MinValue;
+
     private bool _joining;
+    private string _status = "";
 
     private Texture2D? _bg;
     private Texture2D? _panel;
@@ -59,18 +71,19 @@ public sealed class MultiplayerScreen : IScreen
     private Rectangle _panelRect;
     private Rectangle _listRect;
     private Rectangle _listBodyRect;
-    private Rectangle _tabLanRect;
-    private Rectangle _tabOnlineRect;
     private Rectangle _buttonRowRect;
     private Rectangle _infoRect;
     private Rectangle _playerNameInputRect;
 
     private EosIdentityStore _identityStore;
-    private string _playerNameInput = string.Empty;
-    private bool _playerNameActive;
+    private bool _identitySyncBusy;
+    private double _lastIdentitySyncAttempt = -100;
+    private const double IdentitySyncIntervalSeconds = 8.0;
+    private string _reservedUsername = string.Empty;
 
     private double _now;
     private const double DoubleClickSeconds = 0.35;
+    private const string OnlineLoadingStatusPrefix = "Online loading:";
     private double _lastClickTime;
     private int _lastClickIndex = -1;
 
@@ -85,22 +98,23 @@ public sealed class MultiplayerScreen : IScreen
         _profile = profile;
         _graphics = graphics;
 
-        _eosClient = eosClient ?? EosClientProvider.GetOrCreate(_log, "deviceid", allowRetry: true);
+        _eosClient = eosClient ?? EosClientProvider.GetOrCreate(_log, "epic", allowRetry: true);
         if (_eosClient == null)
             _log.Warn("MultiplayerScreen: EOS client not available.");
         _onlineGate = OnlineGateClient.GetOrCreate();
+        _social = OnlineSocialStateService.GetOrCreate(_log);
         _identityStore = EosIdentityStore.LoadOrCreate(_log);
-        _playerNameInput = _identityStore.GetDisplayNameOrDefault("Player");
+        _reservedUsername = (_identityStore.ReservedUsername ?? string.Empty).Trim();
 
         _lanDiscovery = new LanDiscovery(_log);
         _lanDiscovery.StartListening();
 
         _refreshBtn = new Button("REFRESH", OnRefreshClicked) { BoldText = true };
+        _addBtn = new Button("ADD", OnAddClicked) { BoldText = true };
         _hostBtn = new Button("HOST", OpenHostWorlds) { BoldText = true };
         _joinBtn = new Button("JOIN", OnJoinClicked) { BoldText = true };
-		_yourIdBtn = new Button("YOUR ID", OnYourIdClicked) { BoldText = true };
-        _friendsBtn = new Button("FRIENDS", OnFriendsClicked) { BoldText = true };
-        _saveNameBtn = new Button("SAVE NAME", SavePlayerName) { BoldText = true };
+		_yourIdBtn = new Button("SHARE ID", OnYourIdClicked) { BoldText = true };
+        _friendsBtn = new Button("PROFILE", OnFriendsClicked) { BoldText = true };
         _backBtn = new Button("BACK", () => { Cleanup(); _menus.Pop(); }) { BoldText = true };
 
         try
@@ -114,65 +128,47 @@ public sealed class MultiplayerScreen : IScreen
             // optional
         }
 
-        RefreshLanServers();
+        RefreshSessions();
     }
 
     public void OnResize(Rectangle viewport)
     {
         _viewport = viewport;
 
-        var panelW = Math.Min(1300 - 60, viewport.Width - 20); // Shrink by 2 inches (60px)
-        var panelH = Math.Min(700 - 60, viewport.Height - 30); // Shrink by 2 inches (60px)
+        const int PanelMaxWidth = 1300;
+        const int PanelMaxHeight = 700;
+        
+        var panelW = Math.Min(PanelMaxWidth, viewport.Width - 20); // Match SingleplayerScreen
+        var panelH = Math.Min(PanelMaxHeight, viewport.Height - 30); // Match SingleplayerScreen
         var panelX = viewport.X + (viewport.Width - panelW) / 2;
         var panelY = viewport.Y + (viewport.Height - panelH) / 2;
         _panelRect = new Rectangle(panelX, panelY, panelW, panelH);
 
-        var pad = 12 + 30; // Move content inward by 1 inch (30px)
-        var headerH = _font.LineHeight + 8;
-        _infoRect = new Rectangle(panelX + pad, panelY + pad, panelW - pad * 2, headerH);
+        // Apply scaling to all UI elements and center them
+        const float UIScale = 0.80f; // Make UI 20% smaller (80% of original)
+        
+        // Calculate centered UI area within the GUI box (stretched slightly right)
+        var scaledUIWidth = (int)(panelW * UIScale);
+        var scaledUIHeight = (int)(panelH * UIScale);
+        var uiOffsetX = panelX + (panelW - scaledUIWidth) / 2 + (panelW - scaledUIWidth) / 8; // Shift 1/8 to the right
+        var uiOffsetY = panelY + (panelH - scaledUIHeight) / 2;
+        
+        var pad = (int)(24 * UIScale); // Scaled padding
+        var headerH = (int)((_font.LineHeight + 12) * UIScale);
+        _infoRect = new Rectangle(uiOffsetX + pad, uiOffsetY + pad, (int)((scaledUIWidth - pad * 2) * UIScale), headerH);
 
-        var buttonRowH = _font.LineHeight + 10;
-        _buttonRowRect = new Rectangle(panelX + pad, panelY + panelH - pad - buttonRowH, panelW - pad * 2, buttonRowH);
-        _listRect = new Rectangle(panelX + pad, _infoRect.Bottom + 6, panelW - pad * 2, _buttonRowRect.Top - _infoRect.Bottom - 12);
+        var buttonRowH = (int)Math.Max(60, (_font.LineHeight * 2 + 18) * UIScale);
+        _buttonRowRect = new Rectangle(uiOffsetX + pad, uiOffsetY + scaledUIHeight - pad - buttonRowH, (int)((scaledUIWidth - pad * 2) * UIScale), buttonRowH);
+        _listRect = new Rectangle(uiOffsetX + pad, _infoRect.Bottom + (int)(15 * UIScale), (int)((scaledUIWidth - pad * 2) * UIScale), _buttonRowRect.Top - _infoRect.Bottom - (int)(25 * UIScale));
 
-        var listHeaderH = _font.LineHeight + 8;
-        _tabLanRect = new Rectangle(_listRect.X + 4, _listRect.Y + 4, (_listRect.Width - 12) / 2, _font.LineHeight + 2);
-        _tabOnlineRect = new Rectangle(_tabLanRect.Right + 4, _tabLanRect.Y, (_listRect.Width - 12) / 2, _tabLanRect.Height);
-        _listBodyRect = new Rectangle(_listRect.X, _listRect.Y + listHeaderH, _listRect.Width, Math.Max(0, _listRect.Height - listHeaderH));
+        var listHeaderH = (int)((_font.LineHeight + 20) * UIScale);
+        _listBodyRect = new Rectangle(_listRect.X + (int)(8 * UIScale), _listRect.Y + listHeaderH, (int)((_listRect.Width - 16) * UIScale), Math.Max(0, _listRect.Height - listHeaderH - (int)(8 * UIScale)));
         _playerNameInputRect = new Rectangle(
-            _listBodyRect.X + 10,
-            _listBodyRect.Y + _font.LineHeight + 36,
-            Math.Max(180, Math.Min(360, _listBodyRect.Width - 180)),
-            _font.LineHeight + 12);
-        _saveNameBtn.Bounds = new Rectangle(_playerNameInputRect.Right + 8, _playerNameInputRect.Y, 120, _playerNameInputRect.Height);
-
-		var gap = 20; // Increased gap to prevent button overlap
-		if (_tab == MultiplayerTab.Online)
-		{
-			_refreshBtn.Visible = false;
-			_yourIdBtn.Visible = true;
-            _friendsBtn.Visible = true;
-            _saveNameBtn.Visible = true;
-
-			// Match button bounds to their textures with proper spacing
-			_hostBtn.Bounds = new Rectangle(_buttonRowRect.X, _buttonRowRect.Y, _hostBtn.Texture?.Width ?? 0, _hostBtn.Texture?.Height ?? 0);
-			_joinBtn.Bounds = new Rectangle(_hostBtn.Bounds.Right + gap, _buttonRowRect.Y, _joinBtn.Texture?.Width ?? 0, _joinBtn.Texture?.Height ?? 0);
-			_yourIdBtn.Bounds = new Rectangle(_joinBtn.Bounds.Right + gap, _buttonRowRect.Y, _yourIdBtn.Texture?.Width ?? 0, _yourIdBtn.Texture?.Height ?? 0);
-            _friendsBtn.Bounds = new Rectangle(_yourIdBtn.Bounds.Right + gap, _buttonRowRect.Y, _friendsBtn.Texture?.Width ?? 140, _friendsBtn.Texture?.Height ?? _buttonRowRect.Height);
-		}
-		else
-		{
-			_refreshBtn.Visible = true;
-			_yourIdBtn.Visible = false;
-            _friendsBtn.Visible = false;
-            _saveNameBtn.Visible = false;
-            _playerNameActive = false;
-
-			// Match button bounds to their textures with proper spacing
-			_refreshBtn.Bounds = new Rectangle(_buttonRowRect.X, _buttonRowRect.Y, _refreshBtn.Texture?.Width ?? 0, _refreshBtn.Texture?.Height ?? 0);
-			_hostBtn.Bounds = new Rectangle(_refreshBtn.Bounds.Right + gap, _buttonRowRect.Y, _hostBtn.Texture?.Width ?? 0, _hostBtn.Texture?.Height ?? 0);
-			_joinBtn.Bounds = new Rectangle(_hostBtn.Bounds.Right + gap, _buttonRowRect.Y, _joinBtn.Texture?.Width ?? 0, _joinBtn.Texture?.Height ?? 0);
-		}
+            _listBodyRect.X + (int)(10 * UIScale),
+            _listBodyRect.Y + (int)(_font.LineHeight * UIScale + 24 * UIScale),
+            Math.Max(220, Math.Min(420, (int)(_listBodyRect.Width * UIScale - 210 * UIScale))),
+            (int)((_font.LineHeight + 12) * UIScale));
+        LayoutActionButtons();
 
         // Standard back button with proper aspect ratio positioned in bottom-left corner
         var backBtnMargin = 20;
@@ -195,40 +191,52 @@ public sealed class MultiplayerScreen : IScreen
             return;
         }
 
-        if (input.IsNewLeftClick())
-        {
-            var p = input.MousePosition;
-            if (_tabLanRect.Contains(p))
-                SetTab(MultiplayerTab.Lan);
-            else if (_tabOnlineRect.Contains(p))
-                SetTab(MultiplayerTab.Online);
-            else if (_tab == MultiplayerTab.Online)
-                _playerNameActive = _playerNameInputRect.Contains(p);
-        }
-
-        if (_tab == MultiplayerTab.Online && _playerNameActive)
-        {
-            HandleTextInput(input, ref _playerNameInput, EosIdentityStore.MaxDisplayNameLength);
-            if (input.IsNewKeyPress(Keys.Enter))
-                SavePlayerName();
-        }
-
+        HandleListInput(input);
+        UpdateOnlineActionEnabledState();
         _refreshBtn.Update(input);
+        _addBtn.Update(input);
         _hostBtn.Update(input);
         _joinBtn.Update(input);
-		_yourIdBtn.Update(input);
         _friendsBtn.Update(input);
-        _saveNameBtn.Enabled = _tab == MultiplayerTab.Online;
-        _saveNameBtn.Update(input);
         _backBtn.Update(input);
 
-        if (_tab == MultiplayerTab.Lan)
+        // Update mouse position for hover effects
+        _lastMousePos = new Vector2(input.MousePosition.X, input.MousePosition.Y);
+
+        if (DateTime.UtcNow >= _nextInvitePollUtc)
         {
-            HandleLanListSelection(input);
-            UpdateLanDiscovery(gameTime);
+            _nextInvitePollUtc = DateTime.UtcNow.AddSeconds(3);
+            _ = PollInvitesAsync();
         }
 
-        RefreshIdentityState(EnsureEosClient());
+        if (DateTime.UtcNow >= _nextSessionRefreshUtc)
+        {
+            _nextSessionRefreshUtc = DateTime.UtcNow.AddSeconds(2);
+            RefreshSessions();
+        }
+
+        _social.Tick();
+        UpdateLanDiscovery(gameTime);
+        RefreshIdentityStateFromEos(EnsureEosClient());
+        if (!_identitySyncBusy && _now - _lastIdentitySyncAttempt >= IdentitySyncIntervalSeconds)
+        {
+            _lastIdentitySyncAttempt = _now;
+            _identitySyncBusy = true;
+            _ = SyncIdentityStateAsync();
+        }
+    }
+
+    private void UpdateOnlineActionEnabledState()
+    {
+        var eos = EnsureEosClient();
+        var snapshot = EosRuntimeStatus.Evaluate(eos);
+        var onlineAvailable = snapshot.Reason == EosRuntimeReason.Ready;
+
+        _refreshBtn.Enabled = true;
+        _hostBtn.Enabled = true;
+        _joinBtn.Enabled = true;
+        _yourIdBtn.Enabled = onlineAvailable;
+        _friendsBtn.Enabled = onlineAvailable;
     }
 
     public void Draw(SpriteBatch sb, Rectangle viewport)
@@ -310,18 +318,11 @@ public sealed class MultiplayerScreen : IScreen
 
     private void DrawInfo(SpriteBatch sb)
     {
-        var title = _tab == MultiplayerTab.Lan ? "LAN MULTIPLAYER" : "ONLINE (EOS)";
-        var left = new Vector2(_infoRect.X + 4, _infoRect.Y + 2);
-        DrawTextBold(sb, title, left, Color.White);
-
-        if (_tab == MultiplayerTab.Online)
-        {
-            var snapshot = EosRuntimeStatus.Evaluate(EnsureEosClient());
-            var label = snapshot.StatusText;
-            var size = _font.MeasureString(label);
-            var pos = new Vector2(_infoRect.Right - size.X - 4, _infoRect.Y + 2);
-            _font.DrawString(sb, label, pos, new Color(220, 180, 80));
-        }
+        // Draw username centered in the info area
+        var username = _profile?.Username ?? "Unknown";
+        var usernameSize = _font.MeasureString(username);
+        var usernamePos = new Vector2(_infoRect.Center.X - usernameSize.X / 2f, _infoRect.Center.Y - usernameSize.Y / 2f);
+        _font.DrawString(sb, username, usernamePos, new Color(220, 180, 80));
     }
 
     private void DrawList(SpriteBatch sb)
@@ -329,130 +330,100 @@ public sealed class MultiplayerScreen : IScreen
         sb.Draw(_pixel, _listRect, new Color(20, 20, 20, 200));
         DrawBorder(sb, _listRect, Color.White);
 
-        DrawTabs(sb);
-
-        if (_tab == MultiplayerTab.Lan)
-            DrawLanList(sb);
-        else
-            DrawOnlineInfo(sb);
-    }
-
-    private void DrawTabs(SpriteBatch sb)
-    {
-        var lanActive = _tab == MultiplayerTab.Lan;
-        var onlineActive = _tab == MultiplayerTab.Online;
-
-        sb.Draw(_pixel, _tabLanRect, lanActive ? new Color(60, 60, 60, 220) : new Color(30, 30, 30, 220));
-        sb.Draw(_pixel, _tabOnlineRect, onlineActive ? new Color(60, 60, 60, 220) : new Color(30, 30, 30, 220));
-        DrawBorder(sb, _tabLanRect, Color.White);
-        DrawBorder(sb, _tabOnlineRect, Color.White);
-
-        var lanText = "LAN";
-        var onText = "ONLINE";
-        var lanSize = _font.MeasureString(lanText);
-        var onSize = _font.MeasureString(onText);
-
-        _font.DrawString(sb, lanText, new Vector2(_tabLanRect.Center.X - lanSize.X / 2f, _tabLanRect.Y), Color.White);
-        _font.DrawString(sb, onText, new Vector2(_tabOnlineRect.Center.X - onSize.X / 2f, _tabOnlineRect.Y), Color.White);
-    }
-
-    private void DrawLanList(SpriteBatch sb)
-    {
-        if (_lanServers.Count == 0)
+        if (_sessions.Count == 0)
         {
-            var msg = "NO LAN SERVERS";
+            var msg = "No games found on LAN or with Friends.";
             var size = _font.MeasureString(msg);
-            var pos = new Vector2(_listBodyRect.Center.X - size.X / 2f, _listBodyRect.Center.Y - size.Y / 2f);
-            DrawTextBold(sb, msg, pos, Color.White);
+            _font.DrawString(sb, msg, new Vector2(_listRect.Center.X - size.X / 2, _listRect.Center.Y - size.Y / 2), Color.Gray);
             return;
         }
 
-        var rowH = _font.LineHeight + 2;
+        var rowH = (int)(64 * 0.80f);
         var rowY = _listBodyRect.Y + 2;
-        for (var i = 0; i < _lanServers.Count; i++)
+        for (var i = 0; i < _sessions.Count; i++)
         {
-            var rowRect = new Rectangle(_listBodyRect.X, rowY - 1, _listBodyRect.Width, rowH + 2);
-            if (i == _selectedLan)
-                sb.Draw(_pixel, rowRect, new Color(40, 40, 40, 200));
+            var s = _sessions[i];
+            var rowRect = new Rectangle(_listBodyRect.X, rowY - 1, _listBodyRect.Width, rowH);
+            
+            if (i == _selectedIndex)
+            {
+                sb.Draw(_pixel, rowRect, new Color(100, 100, 100, 200));
+                DrawBorder(sb, rowRect, Color.Yellow); // Bright border for selection
+            }
+            else if (rowRect.Contains(_lastMousePos))
+            {
+                sb.Draw(_pixel, rowRect, new Color(40, 40, 40, 150));
+            }
 
-            var s = _lanServers[i];
-            var host = DescribeEndpoint(s);
-            var text = $"{s.ServerName} | {host}";
-            DrawTextBold(sb, text, new Vector2(_listBodyRect.X + 4, rowY), Color.White);
-            rowY += rowH;
+            var iconSize = (int)(48 * 0.80f);
+            var iconRect = new Rectangle(rowRect.X + 8, rowRect.Y + (rowRect.Height - iconSize) / 2, iconSize, iconSize);
+            
+            // Draw Type Icon (Color coded for now)
+            var iconColor = s.Type switch
+            {
+                SessionType.Lan => Color.Cyan,
+                SessionType.Friend => Color.LimeGreen,
+                SessionType.Server => Color.Orange,
+                _ => Color.White
+            };
+            sb.Draw(_pixel, iconRect, iconColor * 0.5f);
+            DrawBorder(sb, iconRect, iconColor);
+
+            var textX = iconRect.Right + 12;
+            var textY = rowRect.Y + 4;
+
+            var title = s.Title;
+            if (s.Type == SessionType.Friend)
+            {
+                var gmDisplay = string.IsNullOrWhiteSpace(s.GameMode) ? "" : $" > {s.GameMode}";
+                var statusSuffix = "";
+                if (_pendingInvitesByHostPuid.TryGetValue(s.JoinTarget, out var inviteStatus))
+                {
+                    statusSuffix = inviteStatus switch
+                    {
+                        "accepted" => " [CAN JOIN]",
+                        "rejected" => " [REJECTED]",
+                        _ => " [PENDING]"
+                    };
+                }
+                title = $"{s.HostName} > {s.WorldName}{gmDisplay}{statusSuffix}";
+            }
+            else if (s.Type == SessionType.Lan)
+            {
+                var gmDisplay = string.IsNullOrWhiteSpace(s.GameMode) ? "" : $" > {s.GameMode}";
+                title = $"LAN: {s.Title}{gmDisplay}";
+            }
+
+            _font.DrawString(sb, title, new Vector2(textX, textY), Color.White);
+            textY += _font.LineHeight;
+            _font.DrawString(sb, $"Host: {s.HostName} | {s.Status}", new Vector2(textX, textY), Color.LightGray);
+
+            rowY += rowH + 4;
             if (rowY > _listBodyRect.Bottom - rowH)
                 break;
         }
     }
 
-    private void DrawOnlineInfo(SpriteBatch sb)
-    {
-        var eos = EnsureEosClient();
-        var snapshot = EosRuntimeStatus.Evaluate(eos);
-        var x = _listBodyRect.X + 10;
-        var y = _listBodyRect.Y + 10;
-
-        var header = "ONLINE PLAY (NO PORT FORWARDING)";
-        DrawTextBold(sb, header, new Vector2(x, y), Color.White);
-        y += _font.LineHeight + 10;
-
-        _font.DrawString(sb, "PLAYER NAME:", new Vector2(x, y), new Color(220, 220, 220));
-        y += _font.LineHeight + 2;
-        sb.Draw(_pixel, _playerNameInputRect, _playerNameActive ? new Color(36, 36, 36, 240) : new Color(26, 26, 26, 240));
-        DrawBorder(sb, _playerNameInputRect, Color.White);
-        var nameText = string.IsNullOrWhiteSpace(_playerNameInput) ? "Player" : _playerNameInput;
-        _font.DrawString(sb, nameText, new Vector2(_playerNameInputRect.X + 6, _playerNameInputRect.Y + 4), Color.White);
-        y = _playerNameInputRect.Bottom + 6;
-
-        if (snapshot.Reason is EosRuntimeReason.SdkNotCompiled or EosRuntimeReason.ConfigMissing or EosRuntimeReason.DisabledByEnvironment or EosRuntimeReason.ClientUnavailable)
-        {
-            var msg = snapshot.StatusText;
-            _font.DrawString(sb, msg, new Vector2(x, y), Color.White);
-            y += _font.LineHeight + 6;
-            _font.DrawString(sb, $"Assets: {Paths.ToUiPath(Paths.GetAssetsDir())}", new Vector2(x, y), new Color(180, 180, 180));
-            y += _font.LineHeight + 2;
-            _font.DrawString(sb, $"EOS Config: {EosRuntimeStatus.DescribeConfigSource()}", new Vector2(x, y), new Color(180, 180, 180));
-            return;
-        }
-
-        _font.DrawString(sb, "Host: click HOST (Online tab).", new Vector2(x, y), Color.White);
-        y += _font.LineHeight + 2;
-        _font.DrawString(sb, "Join: click JOIN and enter the host code.", new Vector2(x, y), Color.White);
-        y += _font.LineHeight + 10;
-
-        var id = eos?.LocalProductUserId;
-        var idLabel = string.IsNullOrWhiteSpace(id) ? "(waiting for EOS login...)" : id;
-        var friendCode = _identityStore.GetFriendCode();
-        if (string.IsNullOrWhiteSpace(friendCode) && !string.IsNullOrWhiteSpace(id))
-            friendCode = EosIdentityStore.GenerateFriendCode(id);
-        var normalizedName = EosIdentityStore.NormalizeDisplayName(_playerNameInput);
-        if (string.IsNullOrWhiteSpace(normalizedName))
-            normalizedName = _identityStore.GetDisplayNameOrDefault("Player");
-        var identityLabel = BuildIdentityLabel(normalizedName, friendCode, id);
-        _font.DrawString(sb, $"YOU: {identityLabel}", new Vector2(x, y), new Color(220, 220, 220));
-        y += _font.LineHeight + 2;
-        _font.DrawString(sb, $"YOUR FRIEND CODE: {(string.IsNullOrWhiteSpace(friendCode) ? "(waiting for EOS login...)" : friendCode)}", new Vector2(x, y), new Color(220, 220, 220));
-        y += _font.LineHeight + 6;
-        DrawTextBold(sb, "YOUR HOST CODE:", new Vector2(x, y), new Color(220, 180, 80));
-        y += _font.LineHeight + 2;
-        _font.DrawString(sb, idLabel, new Vector2(x, y), Color.White);
-        y += _font.LineHeight + 8;
-        _font.DrawString(sb, $"Assets: {Paths.ToUiPath(Paths.GetAssetsDir())}", new Vector2(x, y), new Color(180, 180, 180));
-        y += _font.LineHeight + 2;
-        _font.DrawString(sb, $"EOS Config: {EosRuntimeStatus.DescribeConfigSource()}", new Vector2(x, y), new Color(180, 180, 180));
-        y += _font.LineHeight + 2;
-        var gateLabel = _onlineGate.HasValidTicket ? "GATE: VERIFIED" : $"GATE: {_onlineGate.StatusText}";
-        _font.DrawString(sb, gateLabel, new Vector2(x, y), new Color(180, 180, 180));
-    }
-
+    
     private void DrawButtons(SpriteBatch sb)
     {
+        var joinText = "JOIN";
+        if (_selectedIndex >= 0 && _selectedIndex < _sessions.Count)
+        {
+            var s = _sessions[_selectedIndex];
+            if (s.Type == SessionType.Friend && _pendingInvitesByHostPuid.TryGetValue(s.JoinTarget, out var status))
+            {
+                if (status == "pending") joinText = "PENDING";
+                else if (status == "accepted") joinText = "CAN JOIN";
+            }
+        }
+        _joinBtn.Label = joinText;
+
         _refreshBtn.Draw(sb, _pixel, _font);
+        _addBtn.Draw(sb, _pixel, _font);
         _hostBtn.Draw(sb, _pixel, _font);
         _joinBtn.Draw(sb, _pixel, _font);
-		_yourIdBtn.Draw(sb, _pixel, _font);
         _friendsBtn.Draw(sb, _pixel, _font);
-        _saveNameBtn.Draw(sb, _pixel, _font);
     }
 
     private void DrawStatus(SpriteBatch sb)
@@ -466,84 +437,140 @@ public sealed class MultiplayerScreen : IScreen
 
     private void OnRefreshClicked()
     {
-        if (_tab == MultiplayerTab.Lan)
-            RefreshLanServers();
-        else
-            _status = "";
+        _social.ForceRefresh();
+        RefreshSessions();
+        _status = "";
+    }
+
+    private void OnAddClicked()
+    {
+        _status = "Direct IP join not implemented yet.";
     }
 
     private void OnJoinClicked()
     {
-        if (_tab == MultiplayerTab.Lan)
+        if (_selectedIndex < 0 || _selectedIndex >= _sessions.Count)
         {
-            JoinLanGame();
+            _status = "Select a game to join.";
             return;
         }
 
-        if (_joining)
-            return;
+        if (_joining) return;
 
-        var eos = EnsureEosClient();
-        var snapshot = EosRuntimeStatus.Evaluate(eos);
-        if (snapshot.Reason is EosRuntimeReason.SdkNotCompiled or EosRuntimeReason.ConfigMissing or EosRuntimeReason.DisabledByEnvironment or EosRuntimeReason.ClientUnavailable)
-        {
-            _status = snapshot.StatusText;
-            return;
-        }
-        if (!_onlineGate.CanUseOfficialOnline(_log, out var gateDenied))
-        {
-            _status = gateDenied;
-            return;
-        }
+        var entry = _sessions[_selectedIndex];
+        _joining = true;
 
-        _menus.Push(new JoinByCodeScreen(_menus, _assets, _font, _pixel, _log, _profile, _graphics, eos, null), _viewport);
+        if (entry.Type == SessionType.Lan)
+        {
+            var parts = entry.JoinTarget.Split(':');
+            var host = parts[0];
+            var port = parts.Length > 1 ? int.Parse(parts[1]) : 27015;
+            _status = $"Connecting to LAN {host}:{port}...";
+            _ = JoinLanAsync(host, port);
+        }
+        else if (entry.Type == SessionType.Friend)
+        {
+            if (_pendingInvitesByHostPuid.TryGetValue(entry.JoinTarget, out var status))
+            {
+                if (status == "accepted")
+                {
+                    _status = $"Connecting to {entry.HostName} via P2P...";
+                    _joining = true;
+                    _ = JoinP2PAsync(entry.JoinTarget, entry.HostName);
+                    return;
+                }
+                else if (status == "rejected")
+                {
+                    _status = "Invite was rejected.";
+                    _joining = false;
+                }
+                else
+                {
+                    _status = "Invite is still pending.";
+                    _joining = false;
+                }
+            }
+            else
+            {
+                _status = $"Sending invite to {entry.HostName}...";
+                _joining = true;
+                _ = SendInviteAsync(entry.JoinTarget, entry.WorldName);
+            }
+        }
+        else
+        {
+            _status = "Joining dedicated servers not implemented yet.";
+            _joining = false;
+        }
     }
 
     private void OnYourIdClicked()
     {
-        if (_tab != MultiplayerTab.Online)
-            return;
-
         var eos = EnsureEosClient();
         var snapshot = EosRuntimeStatus.Evaluate(eos);
         if (snapshot.Reason is EosRuntimeReason.SdkNotCompiled or EosRuntimeReason.ConfigMissing or EosRuntimeReason.DisabledByEnvironment or EosRuntimeReason.ClientUnavailable)
         {
-            _status = snapshot.StatusText;
+            _status = "Online services not available.";
             return;
         }
 
-        if (eos == null || !eos.IsLoggedIn)
+        var reserved = _identityStore.ReservedUsername ?? string.Empty;
+        if (string.IsNullOrWhiteSpace(reserved))
         {
-            _status = "Signing into EOS...";
-            return;
-        }
-        if (!_onlineGate.CanUseOfficialOnline(_log, out var gateDenied))
-        {
-            _status = gateDenied;
+            _status = "You must claim a username in the launcher first.";
             return;
         }
 
-		_menus.Push(new ShareJoinCodeScreen(_menus, _assets, _font, _pixel, _log, eos?.LocalProductUserId ?? string.Empty, eos?.LocalProductUserId), _viewport);
+        var targetUsername = _profile.GetDisplayUsername();
+        if (string.IsNullOrWhiteSpace(targetUsername))
+        {
+            _status = "You must set a username in the launcher first.";
+            return;
+        }
+
+        var normalized = EosIdentityStore.NormalizeDisplayName(targetUsername);
+        if (string.IsNullOrWhiteSpace(normalized))
+        {
+            _status = "Invalid username format.";
+            return;
+        }
+
+        if (normalized != reserved)
+        {
+            _status = $"Your username ({targetUsername}) doesn't match your reserved name ({reserved}).";
+            return;
+        }
+
+        _status = $"Your ID: {normalized}";
     }
 
     private void OnFriendsClicked()
     {
-        if (_tab != MultiplayerTab.Online)
-            return;
-
         if (!_onlineGate.CanUseOfficialOnline(_log, out var gateDenied))
         {
             _status = gateDenied;
             return;
         }
 
-        var eos = EnsureEosClient();
-        _menus.Push(new InviteFriendsScreen(_menus, _assets, _font, _pixel, _log, eos, "Online"), _viewport);
+        _menus.Push(
+            new ProfileScreen(
+                _menus,
+                _assets,
+                _font,
+                _pixel,
+                _log,
+                _profile,
+                _graphics,
+                EnsureEosClient()),
+            _viewport);
     }
 
     private void OpenHostWorlds()
     {
-        var hostOnline = _tab == MultiplayerTab.Online;
+        var eos = EnsureEosClient();
+        var snapshot = EosRuntimeStatus.Evaluate(eos);
+        var hostOnline = snapshot.Reason == EosRuntimeReason.Ready;
+        
         if (hostOnline && !_onlineGate.CanUseOfficialOnline(_log, out var gateDenied))
         {
             _status = gateDenied;
@@ -553,40 +580,72 @@ public sealed class MultiplayerScreen : IScreen
         _menus.Push(new MultiplayerHostScreen(_menus, _assets, _font, _pixel, _log, _profile, _graphics, _eosClient, hostOnline), _viewport);
     }
 
-    private void JoinLanGame()
+    private void LayoutActionButtons()
     {
-        if (_selectedLan < 0 || _selectedLan >= _lanServers.Count)
+        const float UIScale = 0.80f; // Make UI 20% smaller (80% of original)
+        const int gap = (int)(12 * UIScale);
+        var rowH = (int)Math.Max(36, (_font.LineHeight + 16) * UIScale);
+        var rowY = _buttonRowRect.Y + Math.Max(0, (_buttonRowRect.Height - rowH) / 2);
+
+        _hostBtn.Visible = true;
+        _joinBtn.Visible = true;
+        _friendsBtn.Visible = true;
+        _refreshBtn.Visible = true;
+        _addBtn.Visible = true;
+        _yourIdBtn.Visible = false; // Hide YOUR ID button
+
+        var eos = EnsureEosClient();
+        var snapshot = EosRuntimeStatus.Evaluate(eos);
+        var onlineAvailable = snapshot.Reason == EosRuntimeReason.Ready;
+
+        _friendsBtn.Enabled = onlineAvailable;
+
+        // Layout 5 buttons in one row (without YOUR ID)
+        var buttonCount = 5;
+        var minButtonW = (int)(100 * UIScale);
+        var canFitOneRow = _buttonRowRect.Width >= (minButtonW * buttonCount + gap * (buttonCount - 1));
+        
+        if (canFitOneRow)
         {
-            _status = "Select a LAN server.";
-            return;
-        }
+            var buttonW = (int)((_buttonRowRect.Width - gap * (buttonCount - 1)) / buttonCount);
+            var x = _buttonRowRect.X;
+            
+            _refreshBtn.Bounds = new Rectangle(x, rowY, buttonW, rowH);
+            x += buttonW + gap;
 
-        var entry = _lanServers[_selectedLan];
-        if (entry.Endpoint == null)
+            _addBtn.Bounds = new Rectangle(x, rowY, buttonW, rowH);
+            x += buttonW + gap;
+            
+            _hostBtn.Bounds = new Rectangle(x, rowY, buttonW, rowH);
+            x += buttonW + gap;
+            
+            _joinBtn.Bounds = new Rectangle(x, rowY, buttonW, rowH);
+            x += buttonW + gap;
+            
+            _friendsBtn.Bounds = new Rectangle(x, rowY, buttonW, rowH);
+        }
+        else
         {
-            _status = "Selected LAN server missing endpoint.";
-            return;
+            // Two rows if needed
+            var twoRowH = (int)Math.Max(28, ((_buttonRowRect.Height - gap) / 2) * UIScale);
+            var topY = _buttonRowRect.Y;
+            var bottomY = topY + twoRowH + gap;
+            var leftX = _buttonRowRect.X;
+
+            // Top row: REFRESH, ADD, HOST
+            var topButtonW = (int)((_buttonRowRect.Width - gap * 2) / 3);
+            _refreshBtn.Bounds = new Rectangle(leftX, topY, topButtonW, twoRowH);
+            _addBtn.Bounds = new Rectangle(leftX + topButtonW + gap, topY, topButtonW, twoRowH);
+            _hostBtn.Bounds = new Rectangle(leftX + (topButtonW + gap) * 2, topY, topButtonW, twoRowH);
+
+            // Bottom row: JOIN, FRIENDS
+            var bottomButtonW = (int)((_buttonRowRect.Width - gap) / 2);
+            _joinBtn.Bounds = new Rectangle(leftX, bottomY, bottomButtonW, twoRowH);
+            _friendsBtn.Bounds = new Rectangle(leftX + bottomButtonW + gap, bottomY, bottomButtonW, twoRowH);
         }
-
-        var host = entry.Endpoint.Address.ToString();
-        if (_joining)
-            return;
-
-        _joining = true;
-        _status = $"Connecting to {host}:{entry.ServerPort}...";
-        _ = JoinLanAsync(host, entry.ServerPort);
     }
 
-    private void SetTab(MultiplayerTab tab)
-    {
-        if (_tab == tab)
-            return;
-
-        _tab = tab;
-        _status = "";
-    }
-
-    private void HandleLanListSelection(InputState input)
+    private void HandleListInput(InputState input)
     {
         if (!input.IsNewLeftClick())
             return;
@@ -595,20 +654,75 @@ public sealed class MultiplayerScreen : IScreen
         if (!_listBodyRect.Contains(p))
             return;
 
-        var rowH = _font.LineHeight + 2;
-        var index = (p.Y - _listBodyRect.Y) / rowH;
-        if (index < 0 || index >= _lanServers.Count)
+        var rowH = (int)(64 * 0.80f) + 4;
+        var idx = (int)((p.Y - _listBodyRect.Y) / rowH);
+        if (idx >= 0 && idx < _sessions.Count)
+        {
+            _selectedIndex = idx;
+
+            // Double-click to join
+            var dt = _now - _lastClickTime;
+            var isDouble = idx == _lastClickIndex && dt >= 0 && dt < DoubleClickSeconds;
+            _lastClickIndex = idx;
+            _lastClickTime = _now;
+
+            if (isDouble)
+                OnJoinClicked();
+        }
+    }
+
+    private async Task SendInviteAsync(string targetPuid, string worldName)
+    {
+        var ok = await _onlineGate.SendWorldInviteAsync(targetPuid, worldName);
+        if (ok)
+        {
+            _status = "Invite sent! Waiting for response...";
+            _pendingInvitesByHostPuid[targetPuid] = "pending";
+            RefreshSessions();
+        }
+        else
+        {
+            _status = "Failed to send invite.";
+        }
+        _joining = false;
+    }
+
+    private async Task JoinP2PAsync(string hostPuid, string hostName)
+    {
+        var eos = EnsureEosClient();
+        if (eos == null) { _status = "EOS not ready."; _joining = false; return; }
+
+        var result = await EosP2PClientSession.ConnectAsync(_log, eos, hostPuid, _profile.GetDisplayUsername(), TimeSpan.FromSeconds(10));
+        if (!result.Success || result.Session == null)
+        {
+            _status = $"P2P Failed: {result.Error}";
+            _joining = false;
             return;
+        }
 
-        _selectedLan = index;
+        var info = result.WorldInfo;
+        var worldDir = JoinedWorldCache.PrepareJoinedWorldPath(info, _log);
+        var metaPath = Path.Combine(worldDir, "world.json");
+        var meta = WorldMeta.CreateFlat(info.WorldName, info.GameMode, info.Width, info.Height, info.Depth, info.Seed);
+        meta.PlayerCollision = info.PlayerCollision;
+        meta.WorldId = JoinedWorldCache.ResolveWorldId(info);
+        meta.Save(metaPath, _log);
 
-        // Double-click to join.
-        var dt = _now - _lastClickTime;
-        var isDouble = index == _lastClickIndex && dt >= 0 && dt < DoubleClickSeconds;
-        _lastClickIndex = index;
-        _lastClickTime = _now;
-        if (isDouble)
-            JoinLanGame();
+        _status = $"Connected to {hostName}!";
+        _joining = false;
+
+        _menus.Push(new GameWorldScreen(_menus, _assets, _font, _pixel, _log, _profile, _graphics, worldDir, metaPath, result.Session), _viewport);
+    }
+
+    private Task SyncIdentityStateAsync()
+    {
+        return Task.CompletedTask;
+    }
+
+    private void RefreshIdentityStateFromEos(EosClient? eos)
+    {
+        // This would refresh identity state from EOS services
+        // Implementation would go here
     }
 
     private EosClient? EnsureEosClient()
@@ -622,119 +736,165 @@ public sealed class MultiplayerScreen : IScreen
         return _eosClient;
     }
 
-    private void SavePlayerName()
-    {
-        if (_tab != MultiplayerTab.Online)
-            return;
-
-        var normalized = EosIdentityStore.NormalizeDisplayName(_playerNameInput);
-        if (string.IsNullOrWhiteSpace(normalized))
-            normalized = "Player";
-
-        var eos = EnsureEosClient();
-        if (eos != null && !string.IsNullOrWhiteSpace(eos.LocalProductUserId))
-            _identityStore.ProductUserId = eos.LocalProductUserId;
-
-        _identityStore.DisplayName = normalized;
-        _identityStore.Save(_log);
-        _playerNameInput = normalized;
-        _status = $"Player name saved: {normalized}";
-    }
-
     private void RefreshIdentityState(EosClient? eos)
     {
         if (eos == null || string.IsNullOrWhiteSpace(eos.LocalProductUserId))
             return;
 
+        var normalizedName = EosIdentityStore.NormalizeDisplayName(_profile.GetDisplayUsername());
+        if (string.IsNullOrWhiteSpace(normalizedName))
+            normalizedName = "Player";
+
         if (!string.Equals(_identityStore.ProductUserId, eos.LocalProductUserId, StringComparison.Ordinal))
         {
             _identityStore.ProductUserId = eos.LocalProductUserId;
-            if (string.IsNullOrWhiteSpace(_identityStore.DisplayName))
-                _identityStore.DisplayName = EosIdentityStore.NormalizeDisplayName(_playerNameInput);
-            if (string.IsNullOrWhiteSpace(_identityStore.DisplayName))
-                _identityStore.DisplayName = "Player";
+            _identityStore.DisplayName = normalizedName;
+            _identityStore.Save(_log);
+            return;
+        }
+
+        if (!string.Equals(_identityStore.DisplayName, normalizedName, StringComparison.Ordinal))
+        {
+            _identityStore.DisplayName = normalizedName;
             _identityStore.Save(_log);
         }
     }
 
-    private static string BuildIdentityLabel(string displayName, string friendCode, string? puid)
+    private async Task SyncIdentityWithGateAsync()
     {
-        if (!string.IsNullOrWhiteSpace(friendCode))
-            return $"{displayName} ({friendCode})";
-
-        var suffix = "----";
-        if (!string.IsNullOrWhiteSpace(puid))
-        {
-            var trimmed = puid.Trim();
-            suffix = trimmed.Length <= 4 ? trimmed : trimmed.Substring(trimmed.Length - 4);
-        }
-
-        return $"{displayName}#{suffix}";
-    }
-
-    private void HandleTextInput(InputState input, ref string value, int maxLen)
-    {
-        var shift = input.IsKeyDown(Keys.LeftShift) || input.IsKeyDown(Keys.RightShift);
-        foreach (var key in input.GetNewKeys())
-        {
-            if (key == Keys.Back)
-            {
-                if (value.Length > 0)
-                    value = value.Substring(0, value.Length - 1);
-                continue;
-            }
-
-            if (key == Keys.Space)
-            {
-                Append(ref value, ' ', maxLen);
-                continue;
-            }
-
-            if (key == Keys.OemMinus || key == Keys.Subtract)
-            {
-                Append(ref value, shift ? '_' : '-', maxLen);
-                continue;
-            }
-
-            if (key == Keys.OemPeriod || key == Keys.Decimal)
-            {
-                Append(ref value, '.', maxLen);
-                continue;
-            }
-
-            if (key >= Keys.D0 && key <= Keys.D9)
-            {
-                Append(ref value, (char)('0' + (key - Keys.D0)), maxLen);
-                continue;
-            }
-
-            if (key >= Keys.NumPad0 && key <= Keys.NumPad9)
-            {
-                Append(ref value, (char)('0' + (key - Keys.NumPad0)), maxLen);
-                continue;
-            }
-
-            if (key >= Keys.A && key <= Keys.Z)
-            {
-                var c = (char)('A' + (key - Keys.A));
-                if (!shift)
-                    c = char.ToLowerInvariant(c);
-                Append(ref value, c, maxLen);
-            }
-        }
-    }
-
-    private static void Append(ref string value, char c, int maxLen)
-    {
-        if (value.Length >= maxLen)
+        if (_identitySyncBusy)
             return;
-        value += c;
+
+        _lastIdentitySyncAttempt = _now;
+        var eos = EnsureEosClient();
+        var snapshot = EosRuntimeStatus.Evaluate(eos);
+        if (snapshot.Reason != EosRuntimeReason.Ready || eos == null)
+            return;
+
+        var productUserId = (eos.LocalProductUserId ?? string.Empty).Trim();
+        if (string.IsNullOrWhiteSpace(productUserId))
+            return;
+
+        if (!_onlineGate.CanUseOfficialOnline(_log, out _))
+            return;
+
+        _identitySyncBusy = true;
+        try
+        {
+            var me = await _onlineGate.GetMyIdentityAsync();
+            if (me.Ok && me.Found && me.User != null)
+            {
+                _reservedUsername = me.User.Username;
+                if (!string.Equals(_identityStore.ReservedUsername, me.User.Username, StringComparison.Ordinal))
+                {
+                    _identityStore.ReservedUsername = me.User.Username;
+                    _identityStore.Save(_log);
+                }
+
+                return;
+            }
+        }
+        catch (Exception ex)
+        {
+            _log.Warn($"Identity sync failed: {ex.Message}");
+        }
+        finally
+        {
+            _identitySyncBusy = false;
+        }
     }
 
-    private void RefreshLanServers()
+    private async Task PollInvitesAsync()
     {
-        _lanServers = new List<LanServerEntry>(_lanDiscovery.GetServers());
-        _selectedLan = _lanServers.Count > 0 ? 0 : -1;
+        var result = await _onlineGate.GetMyWorldInvitesAsync();
+        if (result.Ok)
+        {
+            var serverInvites = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+            foreach (var invite in result.Outgoing)
+            {
+                serverInvites[invite.TargetProductUserId] = invite.Status;
+            }
+
+            // Sync server state to local, but keep local "pending" if it's missing from server (just sent)
+            foreach (var kvp in serverInvites)
+            {
+                _pendingInvitesByHostPuid[kvp.Key] = kvp.Value;
+            }
+
+            // If an invite is in our local list but NOT on the server, and it's NOT "pending", clear it.
+            // If it IS "pending" locally but missing on server, we assume it's still being processed by backend.
+            var toRemove = new List<string>();
+            foreach (var localPuid in _pendingInvitesByHostPuid.Keys)
+            {
+                if (!serverInvites.ContainsKey(localPuid) && _pendingInvitesByHostPuid[localPuid] != "pending")
+                {
+                    toRemove.Add(localPuid);
+                }
+            }
+            foreach (var puid in toRemove) _pendingInvitesByHostPuid.Remove(puid);
+
+            RefreshSessions();
+        }
+    }
+
+    private void RefreshSessions()
+    {
+        var newSessions = new List<SessionEntry>();
+
+        // 1. LAN
+        var lan = _lanDiscovery.GetServers();
+        foreach (var s in lan)
+        {
+            newSessions.Add(new SessionEntry
+            {
+                Type = SessionType.Lan,
+                Title = s.ServerName,
+                HostName = "Local Network",
+                Status = "Online",
+                JoinTarget = DescribeEndpoint(s),
+                WorldName = "LAN World",
+                GameMode = s.GameMode
+            });
+        }
+
+        // 2. Friends
+        var social = _social.GetSnapshot();
+        foreach (var friend in social.Friends)
+        {
+            if (social.PresenceByUserId.TryGetValue(friend.ProductUserId, out var presence) && presence.IsHosting)
+            {
+                newSessions.Add(new SessionEntry
+                {
+                    Type = SessionType.Friend,
+                    Title = string.IsNullOrWhiteSpace(presence.WorldName) ? $"{friend.DisplayName}'s World" : presence.WorldName,
+                    HostName = friend.DisplayName,
+                    Status = presence.Status,
+                    JoinTarget = presence.JoinTarget,
+                    WorldName = presence.WorldName,
+                    GameMode = presence.GameMode
+                });
+            }
+        }
+
+        // 3. Servers (Placeholder)
+        // (Empty for now)
+
+        _sessions = newSessions.OrderByDescending(s => s.Type == SessionType.Friend && _pendingInvitesByHostPuid.TryGetValue(s.JoinTarget, out var status) && status == "accepted")
+                               .ThenBy(s => s.Type)
+                               .ToList();
+
+        // Clean up pending invites for hosts that are no longer in the list
+        var activeHostPuids = new HashSet<string>(newSessions.Where(s => s.Type == SessionType.Friend).Select(s => s.JoinTarget), StringComparer.OrdinalIgnoreCase);
+        var toRemove = _pendingInvitesByHostPuid.Keys.Where(puid => !activeHostPuids.Contains(puid)).ToList();
+        foreach (var puid in toRemove)
+        {
+            _pendingInvitesByHostPuid.Remove(puid);
+        }
+
+        if (_selectedIndex >= _sessions.Count)
+            _selectedIndex = _sessions.Count - 1;
+        if (_selectedIndex < 0 && _sessions.Count > 0)
+            _selectedIndex = 0;
     }
 
     private void UpdateLanDiscovery(GameTime gameTime)
@@ -744,7 +904,7 @@ public sealed class MultiplayerScreen : IScreen
             return;
 
         _lastLanRefresh = now;
-        RefreshLanServers();
+        RefreshSessions();
     }
 
     private async Task JoinLanAsync(string host, int port)
@@ -759,10 +919,11 @@ public sealed class MultiplayerScreen : IScreen
         }
 
         var info = result.WorldInfo;
-        var worldDir = EnsureJoinedWorld(info);
+        var worldDir = JoinedWorldCache.PrepareJoinedWorldPath(info, _log);
         var metaPath = Path.Combine(worldDir, "world.json");
         var meta = WorldMeta.CreateFlat(info.WorldName, info.GameMode, info.Width, info.Height, info.Depth, info.Seed);
         meta.PlayerCollision = info.PlayerCollision;
+        meta.WorldId = JoinedWorldCache.ResolveWorldId(info);
         meta.Save(metaPath, _log);
 
         _status = $"Connected to {host}.";
@@ -799,25 +960,5 @@ public sealed class MultiplayerScreen : IScreen
         sb.Draw(_pixel, new Rectangle(r.X, r.Bottom - 2, r.Width, 2), color);
         sb.Draw(_pixel, new Rectangle(r.X, r.Y, 2, r.Height), color);
         sb.Draw(_pixel, new Rectangle(r.Right - 2, r.Y, 2, r.Height), color);
-    }
-
-    private static string EnsureJoinedWorld(LanWorldInfo info)
-    {
-        var root = Path.Combine(Paths.MultiplayerWorldsDir, "Joined");
-        Directory.CreateDirectory(root);
-        var safeName = SanitizeFolderName(info.WorldName);
-        var path = Path.Combine(root, safeName);
-        Directory.CreateDirectory(path);
-        return path;
-    }
-
-    private static string SanitizeFolderName(string name)
-    {
-        if (string.IsNullOrWhiteSpace(name))
-            return "World";
-
-        foreach (var c in Path.GetInvalidFileNameChars())
-            name = name.Replace(c, '_');
-        return name.Trim();
     }
 }

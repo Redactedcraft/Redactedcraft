@@ -6,6 +6,7 @@ using Microsoft.Xna.Framework.Graphics;
 using Microsoft.Xna.Framework.Input;
 using LatticeVeilMonoGame.Core;
 using LatticeVeilMonoGame.Online.Eos;
+using LatticeVeilMonoGame.Online.Gate;
 using LatticeVeilMonoGame.UI;
 using LatticeVeilMonoGame.UI.Screens;
 
@@ -19,9 +20,10 @@ public sealed class MainMenuScreen : IScreen
     private readonly Texture2D _pixel;
     private readonly Logger _log;
     private readonly PlayerProfile _profile;
-    private readonly EosClient? _eosClient;
+    private EosClient? _eosClient;
     private readonly bool _isOffline;
     private readonly GameSettings _settings;
+    private readonly OnlineSocialStateService _socialState;
     private readonly global::Microsoft.Xna.Framework.GraphicsDeviceManager _graphics;
 
     private Texture2D? _bg;
@@ -37,8 +39,10 @@ public sealed class MainMenuScreen : IScreen
 
     private Rectangle _viewport;
     private bool _assetsMissing;
+    private int _pendingIncomingCount;
     private double _lastAssetCheck = double.NegativeInfinity;
-    private double _offlineMessageUntil = 0;
+    private bool _multiplayerAvailable;
+    private string _multiplayerDisabledReason = string.Empty;
     private const double AssetCheckIntervalSeconds = 1.0;
     private static readonly string[] CriticalAssets =
     {
@@ -61,6 +65,7 @@ public sealed class MainMenuScreen : IScreen
         _eosClient = eosClient;
         _isOffline = isOffline;
         _settings = GameSettings.LoadOrCreate(_log);
+        _socialState = OnlineSocialStateService.GetOrCreate(_log);
         _graphics = graphics;
 
         // Initialize UI manager for precise positioning
@@ -72,15 +77,7 @@ public sealed class MainMenuScreen : IScreen
         _singleBtn = new Button("SINGLEPLAYER", () => _menus.Push(new SingleplayerScreen(_menus, _assets, _font, _pixel, _log, _profile, _graphics), _viewport));
         _singleBtn.Bounds = _uiManager.GetButtonBounds("singleplayer");
 
-        if (_isOffline)
-        {
-            _multiBtn = new Button("MULTIPLAYER", () => _offlineMessageUntil = 3.0);
-            _multiBtn.ForceDisabledStyle = true;
-        }
-        else
-        {
-            _multiBtn = new Button("MULTIPLAYER", () => _menus.Push(new MultiplayerScreen(_menus, _assets, _font, _pixel, _log, _profile, _graphics, _eosClient), _viewport));
-        }
+        _multiBtn = new Button("MULTIPLAYER", OpenMultiplayer);
         _multiBtn.Bounds = _uiManager.GetButtonBounds("multiplayer");
 
         _optionsBtn = new Button("OPTIONS", () => _menus.Push(new OptionsScreen(_menus, _assets, _font, _pixel, _log, _graphics), _viewport));
@@ -110,6 +107,7 @@ public sealed class MainMenuScreen : IScreen
             _log.Warn($"Main menu asset load: {ex.Message}");
         }
 
+        RefreshMultiplayerAvailability(forceLog: true);
         UpdateAssetStatus(0);
     }
 
@@ -143,11 +141,7 @@ public sealed class MainMenuScreen : IScreen
     public void Update(GameTime gameTime, InputState input)
     {
         UpdateAssetStatus(gameTime.TotalGameTime.TotalSeconds);
-
-        if (_offlineMessageUntil > 0)
-        {
-            _offlineMessageUntil -= gameTime.ElapsedGameTime.TotalSeconds;
-        }
+        RefreshMultiplayerAvailability(forceLog: false);
 
         if (input.IsNewKeyPress(Keys.Escape))
         {
@@ -162,6 +156,8 @@ public sealed class MainMenuScreen : IScreen
         _quitBtn.Update(input);
         _profileBtn.Update(input);
         _screenshotBtn.Update(input);
+
+        _pendingIncomingCount = Math.Max(0, _socialState.GetSnapshot().PendingIncomingCount);
     }
 
     public void Draw(SpriteBatch sb, Rectangle viewport)
@@ -186,19 +182,46 @@ public sealed class MainMenuScreen : IScreen
         _quitBtn.Draw(sb, _pixel, _font);
         _profileBtn.Draw(sb, _pixel, _font);
         _screenshotBtn.Draw(sb, _pixel, _font);
+        DrawProfilePendingBadge(sb);
 
         if (_assetsMissing)
             DrawAssetsMissingBanner(sb);
-        
-        if (_offlineMessageUntil > 0)
-            DrawOfflineMessage(sb);
+
+        if (!_multiplayerAvailable && !string.IsNullOrWhiteSpace(_multiplayerDisabledReason))
+            DrawMultiplayerDisabledMessage(sb, _multiplayerDisabledReason);
 
         sb.End();
     }
 
-    private void DrawOfflineMessage(SpriteBatch sb)
+    private void DrawProfilePendingBadge(SpriteBatch sb)
     {
-        var message = "Offline mode: Multiplayer disabled";
+        if (_pendingIncomingCount <= 0)
+            return;
+
+        var label = _pendingIncomingCount > 99 ? "99+" : _pendingIncomingCount.ToString();
+        var badgeW = label.Length > 2 ? 36 : 28;
+        var badgeH = 22;
+        var badgeRect = new Rectangle(
+            _profileBtn.Bounds.Right - badgeW / 2,
+            _profileBtn.Bounds.Y - 8,
+            badgeW,
+            badgeH);
+
+        sb.Draw(_pixel, badgeRect, new Color(170, 24, 24, 245));
+        sb.Draw(_pixel, new Rectangle(badgeRect.X, badgeRect.Y, badgeRect.Width, 2), Color.White);
+        sb.Draw(_pixel, new Rectangle(badgeRect.X, badgeRect.Bottom - 2, badgeRect.Width, 2), Color.White);
+        sb.Draw(_pixel, new Rectangle(badgeRect.X, badgeRect.Y, 2, badgeRect.Height), Color.White);
+        sb.Draw(_pixel, new Rectangle(badgeRect.Right - 2, badgeRect.Y, 2, badgeRect.Height), Color.White);
+
+        var textSize = _font.MeasureString(label);
+        var textPos = new Vector2(
+            badgeRect.Center.X - textSize.X / 2f,
+            badgeRect.Center.Y - textSize.Y / 2f);
+        _font.DrawString(sb, label, textPos, Color.White);
+    }
+
+    private void DrawMultiplayerDisabledMessage(SpriteBatch sb, string message)
+    {
         var size = _font.MeasureString(message);
         var padding = 10;
         var rect = new Rectangle(
@@ -209,6 +232,64 @@ public sealed class MainMenuScreen : IScreen
         
         sb.Draw(_pixel, rect, new Color(0, 0, 0, 200));
         _font.DrawString(sb, message, new Vector2(rect.X + padding, rect.Y + padding), Color.Yellow);
+    }
+
+    private void OpenMultiplayer()
+    {
+        if (!_multiplayerAvailable)
+            return;
+
+        _menus.Push(new MultiplayerScreen(_menus, _assets, _font, _pixel, _log, _profile, _graphics, _eosClient), _viewport);
+    }
+
+    private void RefreshMultiplayerAvailability(bool forceLog)
+    {
+        var available = ComputeMultiplayerAvailability(out var reason);
+        if (!forceLog
+            && available == _multiplayerAvailable
+            && string.Equals(reason, _multiplayerDisabledReason, StringComparison.Ordinal))
+        {
+            return;
+        }
+
+        _multiplayerAvailable = available;
+        _multiplayerDisabledReason = reason;
+        _multiBtn.Enabled = available;
+        _multiBtn.ForceDisabledStyle = !available;
+
+        if (forceLog || !available)
+            _log.Info(available ? "Main menu multiplayer enabled." : $"Main menu multiplayer disabled: {reason}");
+    }
+
+    private bool ComputeMultiplayerAvailability(out string reason)
+    {
+        if (_isOffline)
+        {
+            reason = "Offline mode: Multiplayer disabled";
+            return false;
+        }
+
+        _eosClient ??= EosClientProvider.Current;
+        if (_eosClient == null)
+            _eosClient = EosClientProvider.GetOrCreate(_log, "deviceid", allowRetry: true);
+
+        _eosClient?.Tick();
+        var snapshot = EosRuntimeStatus.Evaluate(_eosClient);
+        if (snapshot.Reason == EosRuntimeReason.Ready)
+        {
+            reason = string.Empty;
+            return true;
+        }
+
+        reason = snapshot.Reason switch
+        {
+            EosRuntimeReason.Connecting => "EOS loading: Multiplayer will unlock when login completes",
+            EosRuntimeReason.ConfigMissing => "EOS config missing: Multiplayer disabled",
+            EosRuntimeReason.DisabledByEnvironment => "EOS disabled by environment: Multiplayer disabled",
+            EosRuntimeReason.SdkNotCompiled => "EOS SDK not compiled: Multiplayer disabled",
+            _ => "EOS unavailable: Multiplayer disabled"
+        };
+        return false;
     }
 
     private void UpdateAssetStatus(double now)

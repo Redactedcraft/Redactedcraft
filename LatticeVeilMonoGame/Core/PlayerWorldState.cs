@@ -8,7 +8,7 @@ namespace LatticeVeilMonoGame.Core;
 
 public sealed class PlayerWorldState
 {
-    private const int CurrentVersion = 4;
+    private const int CurrentVersion = 5;
 
     public int Version { get; set; } = CurrentVersion;
     public string Username { get; set; } = "";
@@ -26,6 +26,7 @@ public sealed class PlayerWorldState
     public List<PlayerHomeState> Homes { get; set; } = new();
     public int SelectedIndex { get; set; }
     public HotbarSlot[] Hotbar { get; set; } = new HotbarSlot[Inventory.HotbarSize];
+    public HotbarSlot[] InventoryGrid { get; set; } = new HotbarSlot[Inventory.GridSize];
 
     public static PlayerWorldState LoadOrDefault(string worldPath, string username, Func<PlayerWorldState> defaultFactory, Logger log)
     {
@@ -62,47 +63,98 @@ public sealed class PlayerWorldState
             using var fs = new FileStream(path, FileMode.Create, FileAccess.Write, FileShare.None);
             using var ds = new DeflateStream(fs, CompressionLevel.Fastest);
             using var bw = new BinaryWriter(ds);
-
-            bw.Write(Version);
-            bw.Write(Username ?? string.Empty);
-            bw.Write(PosX);
-            bw.Write(PosY);
-            bw.Write(PosZ);
-            bw.Write(Yaw);
-            bw.Write(Pitch);
-            bw.Write(IsFlying);
-            bw.Write((byte)CurrentGameMode);
-            bw.Write(HasHome);
-            bw.Write(HomeX);
-            bw.Write(HomeY);
-            bw.Write(HomeZ);
-            bw.Write(SelectedIndex);
-
-            var slots = Hotbar ?? Array.Empty<HotbarSlot>();
-            var count = Math.Min(slots.Length, Inventory.HotbarSize);
-            bw.Write((byte)count);
-            for (int i = 0; i < count; i++)
-            {
-                bw.Write((byte)slots[i].Id);
-                bw.Write(slots[i].Count);
-            }
-
-            var homes = Homes ?? new List<PlayerHomeState>();
-            var homeCount = Math.Min(homes.Count, 255);
-            bw.Write((byte)homeCount);
-            for (int i = 0; i < homeCount; i++)
-            {
-                var home = homes[i] ?? new PlayerHomeState();
-                bw.Write(home.Name ?? string.Empty);
-                bw.Write(home.PosX);
-                bw.Write(home.PosY);
-                bw.Write(home.PosZ);
-                bw.Write(home.IconBlockId ?? string.Empty);
-            }
+            WriteBinaryPayload(bw);
         }
         catch (Exception ex)
         {
             log.Warn($"Failed to save player state: {ex.Message}");
+        }
+    }
+
+    public byte[] ToCompressedBytes(Logger? log = null)
+    {
+        try
+        {
+            Version = CurrentVersion;
+            using var ms = new MemoryStream();
+            using (var ds = new DeflateStream(ms, CompressionLevel.Fastest, leaveOpen: true))
+            using (var bw = new BinaryWriter(ds))
+                WriteBinaryPayload(bw);
+            return ms.ToArray();
+        }
+        catch (Exception ex)
+        {
+            log?.Warn($"Failed to serialize player state payload: {ex.Message}");
+            return Array.Empty<byte>();
+        }
+    }
+
+    public static bool TryFromCompressedBytes(byte[] payload, Logger? log, out PlayerWorldState state)
+    {
+        state = new PlayerWorldState();
+        if (payload == null || payload.Length == 0)
+            return false;
+
+        try
+        {
+            using var ms = new MemoryStream(payload, writable: false);
+            using var ds = new DeflateStream(ms, CompressionMode.Decompress);
+            using var br = new BinaryReader(ds);
+            return TryReadBinaryPayload(br, log, out state);
+        }
+        catch (Exception ex)
+        {
+            log?.Warn($"Failed to deserialize player state payload: {ex.Message}");
+            return false;
+        }
+    }
+
+    private void WriteBinaryPayload(BinaryWriter bw)
+    {
+        bw.Write(Version);
+        bw.Write(Username ?? string.Empty);
+        bw.Write(PosX);
+        bw.Write(PosY);
+        bw.Write(PosZ);
+        bw.Write(Yaw);
+        bw.Write(Pitch);
+        bw.Write(IsFlying);
+        bw.Write((byte)CurrentGameMode);
+        bw.Write(HasHome);
+        bw.Write(HomeX);
+        bw.Write(HomeY);
+        bw.Write(HomeZ);
+        bw.Write(SelectedIndex);
+
+        var hotbarSlots = Hotbar ?? Array.Empty<HotbarSlot>();
+        var hotbarCount = Math.Min(hotbarSlots.Length, Inventory.HotbarSize);
+        bw.Write((byte)hotbarCount);
+        for (int i = 0; i < hotbarCount; i++)
+        {
+            bw.Write((byte)hotbarSlots[i].Id);
+            bw.Write(hotbarSlots[i].Count);
+        }
+
+        var homes = Homes ?? new List<PlayerHomeState>();
+        var homeCount = Math.Min(homes.Count, 255);
+        bw.Write((byte)homeCount);
+        for (int i = 0; i < homeCount; i++)
+        {
+            var home = homes[i] ?? new PlayerHomeState();
+            bw.Write(home.Name ?? string.Empty);
+            bw.Write(home.PosX);
+            bw.Write(home.PosY);
+            bw.Write(home.PosZ);
+            bw.Write(home.IconBlockId ?? string.Empty);
+        }
+
+        var gridSlots = InventoryGrid ?? Array.Empty<HotbarSlot>();
+        var gridCount = Math.Min(gridSlots.Length, Inventory.GridSize);
+        bw.Write((byte)gridCount);
+        for (int i = 0; i < gridCount; i++)
+        {
+            bw.Write((byte)gridSlots[i].Id);
+            bw.Write(gridSlots[i].Count);
         }
     }
 
@@ -144,7 +196,20 @@ public sealed class PlayerWorldState
             using var fs = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read);
             using var ds = new DeflateStream(fs, CompressionMode.Decompress);
             using var br = new BinaryReader(ds);
+            return TryReadBinaryPayload(br, log, out state);
+        }
+        catch (Exception ex)
+        {
+            log.Warn($"Failed to load player state (binary): {ex.Message}");
+            return false;
+        }
+    }
 
+    private static bool TryReadBinaryPayload(BinaryReader br, Logger? log, out PlayerWorldState state)
+    {
+        state = new PlayerWorldState();
+        try
+        {
             state.Version = br.ReadInt32();
             state.Username = br.ReadString();
             state.PosX = br.ReadSingle();
@@ -162,15 +227,17 @@ public sealed class PlayerWorldState
                 state.HomeY = br.ReadSingle();
                 state.HomeZ = br.ReadSingle();
             }
-            state.SelectedIndex = br.ReadInt32();
 
-            var count = br.ReadByte();
+            state.SelectedIndex = Math.Clamp(br.ReadInt32(), 0, Inventory.HotbarSize - 1);
+
+            var hotbarCount = br.ReadByte();
             state.Hotbar = new HotbarSlot[Inventory.HotbarSize];
-            for (int i = 0; i < count && i < state.Hotbar.Length; i++)
+            for (int i = 0; i < hotbarCount; i++)
             {
                 var id = (BlockId)br.ReadByte();
                 var c = br.ReadInt32();
-                state.Hotbar[i] = new HotbarSlot { Id = id, Count = c };
+                if (i >= 0 && i < state.Hotbar.Length)
+                    state.Hotbar[i] = new HotbarSlot { Id = id, Count = c };
             }
 
             if (state.Version >= 4)
@@ -192,6 +259,19 @@ public sealed class PlayerWorldState
                 }
             }
 
+            state.InventoryGrid = new HotbarSlot[Inventory.GridSize];
+            if (state.Version >= 5 && br.BaseStream.Position < br.BaseStream.Length)
+            {
+                var gridCount = br.ReadByte();
+                for (int i = 0; i < gridCount; i++)
+                {
+                    var id = (BlockId)br.ReadByte();
+                    var c = br.ReadInt32();
+                    if (i >= 0 && i < state.InventoryGrid.Length)
+                        state.InventoryGrid[i] = new HotbarSlot { Id = id, Count = c };
+                }
+            }
+
             // Backward migration from single-home fields.
             if (state.Homes.Count == 0 && state.HasHome)
             {
@@ -208,7 +288,7 @@ public sealed class PlayerWorldState
         }
         catch (Exception ex)
         {
-            log.Warn($"Failed to load player state (binary): {ex.Message}");
+            log?.Warn($"Failed to parse player state payload: {ex.Message}");
             return false;
         }
     }

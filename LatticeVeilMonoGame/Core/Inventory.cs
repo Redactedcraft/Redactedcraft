@@ -294,4 +294,27 @@ public sealed class Inventory
         if (SelectedIndex >= HotbarSize)
             SelectedIndex = HotbarSize - 1;
     }
+
+    /// <summary>
+    /// Gets a copy of the full inventory grid (excluding hotbar) for persistence.
+    /// </summary>
+    public HotbarSlot[] GetGridData()
+    {
+        var data = new HotbarSlot[GridSize];
+        Array.Copy(_grid, data, GridSize);
+        return data;
+    }
+
+    /// <summary>
+    /// Restores the full inventory grid (excluding hotbar) from persisted data.
+    /// </summary>
+    public void SetGridData(HotbarSlot[] data)
+    {
+        if (data == null || data.Length == 0)
+            return;
+
+        Array.Clear(_grid, 0, _grid.Length);
+        var copy = Math.Min(_grid.Length, data.Length);
+        Array.Copy(data, _grid, copy);
+    }
 }

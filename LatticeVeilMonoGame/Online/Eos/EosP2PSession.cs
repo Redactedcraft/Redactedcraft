@@ -8,6 +8,7 @@ using System.Threading;
 using System.Threading.Tasks;
 using Microsoft.Xna.Framework;
 using LatticeVeilMonoGame.Core;
+using LatticeVeilMonoGame.Online.Gate;
 using LatticeVeilMonoGame.Online.Lan;
 
 #if EOS_SDK
@@ -16,6 +17,12 @@ using Epic.OnlineServices.P2P;
 #endif
 
 namespace LatticeVeilMonoGame.Online.Eos;
+
+public readonly struct EosJoinRequest
+{
+    public string ProductUserId { get; init; }
+    public string DisplayName { get; init; }
+}
 
 public sealed class EosP2PHostSession : ILanSession
 {
@@ -38,13 +45,19 @@ public sealed class EosP2PHostSession : ILanSession
     private readonly ConcurrentQueue<LanPlayerList> _playerLists = new();
     private readonly ConcurrentQueue<LanChunkData> _chunkData = new();
     private readonly ConcurrentQueue<bool> _worldSyncComplete = new();
+    private readonly ConcurrentQueue<LanTeleport> _teleports = new();
+    private readonly ConcurrentQueue<LanPlayerPersistenceSnapshot> _persistenceSnapshots = new();
     private readonly Dictionary<string, ClientState> _clients = new(StringComparer.OrdinalIgnoreCase);
+    private readonly Dictionary<string, PendingJoinState> _pendingJoinByPeer = new(StringComparer.OrdinalIgnoreCase);
+    private readonly HashSet<string> _sociallyApprovedPuids = new(StringComparer.OrdinalIgnoreCase);
+    private readonly ConcurrentQueue<EosJoinRequest> _pendingJoinQueue = new();
     private readonly object _clientLock = new();
     private int _nextId = 1;
     private ulong _notifyRequestId;
     private ulong _notifyClosedId;
     private bool _disposed;
     private readonly VoxelWorld _world;
+    private readonly OnlineGateClient _onlineGate;
 #endif
 
     public EosP2PHostSession(Logger log, EosClient eosClient, string hostName, LanWorldInfo worldInfo, VoxelWorld world)
@@ -62,7 +75,29 @@ public sealed class EosP2PHostSession : ILanSession
         _socketId = EosP2PWire.CreateSocket();
         RegisterNotifications();
         IsConnected = true;
+        _onlineGate = OnlineGateClient.GetOrCreate();
         _log.Info("EOS host session ready.");
+#endif
+    }
+
+    public void PreApprovePuid(string puid)
+    {
+#if EOS_SDK
+        if (string.IsNullOrWhiteSpace(puid)) return;
+        lock (_clientLock)
+        {
+            if (_sociallyApprovedPuids.Add(puid.Trim()))
+            {
+                _log.Info($"PUID {puid} is now socially pre-approved for P2P join.");
+            }
+
+            // If they are already waiting in the native P2P queue, approve them NOW
+            if (_pendingJoinByPeer.ContainsKey(puid.Trim()))
+            {
+                _log.Info($"PUID {puid} was already waiting for P2P approval; auto-approving now.");
+                Task.Run(() => ApproveJoinRequest(puid));
+            }
+        }
 #endif
     }
 
@@ -122,6 +157,46 @@ public sealed class EosP2PHostSession : ILanSession
         BroadcastChat(normalized);
 #else
         // No-op when EOS SDK is not available
+#endif
+    }
+
+    public void SendPersistenceSnapshot(LanPlayerPersistenceSnapshot snapshot)
+    {
+        // Host does not send snapshots to itself.
+    }
+
+    public bool SendPersistenceRestore(int targetPlayerId, LanPlayerPersistenceSnapshot snapshot)
+    {
+#if EOS_SDK
+        if (!IsConnected || targetPlayerId <= 0)
+            return false;
+
+        ClientState? target = null;
+        lock (_clientLock)
+        {
+            foreach (var client in _clients.Values)
+            {
+                if (client.Id != targetPlayerId)
+                    continue;
+                target = client;
+                break;
+            }
+        }
+
+        if (target == null)
+            return false;
+
+        var normalized = new LanPlayerPersistenceSnapshot
+        {
+            PlayerId = targetPlayerId,
+            Username = snapshot.Username ?? string.Empty,
+            Payload = snapshot.Payload ?? Array.Empty<byte>(),
+            TimestampUtc = snapshot.TimestampUtc <= 0 ? DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() : snapshot.TimestampUtc
+        };
+        EosP2PWire.SendPersistenceRestore(_p2p, _localUserId, target.PeerId, _socketId, normalized, _log);
+        return true;
+#else
+        return false;
 #endif
     }
 
@@ -225,6 +300,196 @@ public sealed class EosP2PHostSession : ILanSession
 #endif
     }
 
+    public bool TryDequeueTeleport(out LanTeleport teleport)
+    {
+#if EOS_SDK
+        return _teleports.TryDequeue(out teleport);
+#else
+        teleport = default;
+        return false;
+#endif
+    }
+
+    public bool TryDequeuePersistenceSnapshot(out LanPlayerPersistenceSnapshot snapshot)
+    {
+#if EOS_SDK
+        return _persistenceSnapshots.TryDequeue(out snapshot);
+#else
+        snapshot = default;
+        return false;
+#endif
+    }
+
+    public bool TryDequeuePersistenceRestore(out LanPlayerPersistenceSnapshot snapshot)
+    {
+        snapshot = default;
+        return false;
+    }
+
+    public bool TryDequeueDisconnectReason(out string reason)
+    {
+        reason = string.Empty;
+        return false;
+    }
+
+    public bool SendTeleport(int targetPlayerId, Vector3 position, float yaw, float pitch)
+    {
+#if EOS_SDK
+        if (!IsConnected || targetPlayerId <= 0)
+            return false;
+
+        ClientState? target = null;
+        lock (_clientLock)
+        {
+            foreach (var client in _clients.Values)
+            {
+                if (client.Id != targetPlayerId)
+                    continue;
+                target = client;
+                break;
+            }
+        }
+
+        if (target == null)
+            return false;
+
+        var teleport = new LanTeleport
+        {
+            TargetPlayerId = targetPlayerId,
+            X = (int)MathF.Floor(position.X),
+            Y = (int)MathF.Floor(position.Y),
+            Z = (int)MathF.Floor(position.Z),
+            Yaw = yaw,
+            Pitch = pitch
+        };
+        EosP2PWire.SendTeleport(_p2p, _localUserId, target.PeerId, _socketId, teleport, _log);
+        return true;
+#else
+        return false;
+#endif
+    }
+
+    public bool KickPlayer(int targetPlayerId, string reason)
+    {
+#if EOS_SDK
+        if (!IsConnected || targetPlayerId <= 0)
+            return false;
+
+        ClientState? target = null;
+        lock (_clientLock)
+        {
+            foreach (var client in _clients.Values)
+            {
+                if (client.Id != targetPlayerId)
+                    continue;
+                target = client;
+                break;
+            }
+        }
+
+        if (target == null)
+            return false;
+
+        var normalizedReason = string.IsNullOrWhiteSpace(reason)
+            ? "Kicked by host."
+            : $"Kicked by host: {reason.Trim()}";
+
+        try
+        {
+            EosP2PWire.SendHostShutdown(_p2p, _localUserId, target.PeerId, _socketId, normalizedReason, _log);
+        }
+        catch (Exception ex)
+        {
+            _log.Warn($"Failed to send kick notice to EOS client {targetPlayerId}: {ex.Message}");
+        }
+
+        ClosePeerConnection(target.PeerId);
+        RemoveClient(target.PeerId);
+
+        // Also clear the GateServer invite so they can't just click "CAN JOIN" again instantly
+        _ = _onlineGate.RespondToWorldInviteAsync(target.PeerId.ToString(), "rejected");
+
+        return true;
+#else
+        return false;
+#endif
+    }
+
+    public bool TryDequeueJoinRequest(out EosJoinRequest request)
+    {
+#if EOS_SDK
+        return _pendingJoinQueue.TryDequeue(out request);
+#else
+        request = default;
+        return false;
+#endif
+    }
+
+    public bool ApproveJoinRequest(string peerProductUserId)
+    {
+#if EOS_SDK
+        if (string.IsNullOrWhiteSpace(peerProductUserId))
+            return false;
+
+        PendingJoinState? pending;
+        ClientState? approved = null;
+        lock (_clientLock)
+        {
+            if (!_pendingJoinByPeer.TryGetValue(peerProductUserId.Trim(), out pending))
+                return false;
+
+            _pendingJoinByPeer.Remove(pending.Key);
+            var id = Interlocked.Increment(ref _nextId);
+            approved = new ClientState(pending.PeerId, id)
+            {
+                Name = string.IsNullOrWhiteSpace(pending.Name) ? $"Player{id}" : pending.Name
+            };
+            _clients[approved.Key] = approved;
+        }
+
+        SendWelcome(approved);
+        SendWorldInfo(approved, _worldInfo);
+        SendInitialWorldData(approved);
+        _log.Info($"EOS join request approved ({pending!.Key}).");
+        BroadcastPlayerList();
+
+        // Ensure central gate invite status is updated so the joiner's UI reflects acceptance
+        _ = _onlineGate.RespondToWorldInviteAsync(pending.Key, "accepted");
+
+        return true;
+#else
+        return false;
+#endif
+    }
+
+    public bool DeclineJoinRequest(string peerProductUserId, string reason = "Host declined join request.")
+    {
+#if EOS_SDK
+        if (string.IsNullOrWhiteSpace(peerProductUserId))
+            return false;
+
+        PendingJoinState? pending;
+        lock (_clientLock)
+        {
+            if (!_pendingJoinByPeer.TryGetValue(peerProductUserId.Trim(), out pending))
+                return false;
+
+            _pendingJoinByPeer.Remove(pending.Key);
+        }
+
+        EosP2PWire.SendJoinDenied(_p2p, _localUserId, pending!.PeerId, _socketId, reason, _log);
+        _log.Info($"EOS join request declined ({pending!.Key}).");
+        ClosePeerConnection(pending.PeerId);
+
+        // Also update central gate invite status so the joiner's UI updates
+        _ = _onlineGate.RespondToWorldInviteAsync(pending.Key, "rejected");
+
+        return true;
+#else
+        return false;
+#endif
+    }
+
 #if EOS_SDK
     private void RegisterNotifications()
     {
@@ -296,7 +561,7 @@ public sealed class EosP2PHostSession : ILanSession
                 switch (msg.Type)
                 {
                     case LanMessageType.Hello:
-                        HandleHello(peerId, msg.Name);
+                        HandleHello(peerId, msg.Name, msg.GateTicket);
                         break;
                     case LanMessageType.PlayerState:
                         if (!TryGetClient(peerId, out _))
@@ -351,6 +616,18 @@ public sealed class EosP2PHostSession : ILanSession
                             _chatMessages.Enqueue(normalized);
                         BroadcastChat(normalized);
                         break;
+                    case LanMessageType.PersistenceSnapshot:
+                        if (!TryGetClient(peerId, out var snapshotSender))
+                            break;
+                        var snapshot = msg.PersistenceSnapshot;
+                        _persistenceSnapshots.Enqueue(new LanPlayerPersistenceSnapshot
+                        {
+                            PlayerId = snapshotSender.Id,
+                            Username = snapshot.Username ?? snapshotSender.Name ?? string.Empty,
+                            Payload = snapshot.Payload ?? Array.Empty<byte>(),
+                            TimestampUtc = snapshot.TimestampUtc <= 0 ? DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() : snapshot.TimestampUtc
+                        });
+                        break;
                 }
             }
         }
@@ -360,26 +637,92 @@ public sealed class EosP2PHostSession : ILanSession
         }
 #endif
     }
-    private void HandleHello(ProductUserId peerId, string? name)
+    private void HandleHello(ProductUserId peerId, string? name, string? gateTicket)
     {
-        if (!TryGetClient(peerId, out var client))
+        if (TryGetClient(peerId, out var approvedClient))
         {
-            var id = Interlocked.Increment(ref _nextId);
-            client = new ClientState(peerId, id) { Name = name ?? $"Player{id}" };
-            lock (_clientLock)
-                _clients[client.Key] = client;
+            if (!string.IsNullOrWhiteSpace(name))
+                approvedClient.Name = name;
 
-            _log.Info($"EOS client connected (id={id})");
-        }
-        else if (!string.IsNullOrWhiteSpace(name))
-        {
-            client.Name = name;
+            SendWelcome(approvedClient);
+            SendWorldInfo(approvedClient, _worldInfo);
+            SendInitialWorldData(approvedClient);
+            return;
         }
 
-        SendWelcome(client);
-        SendWorldInfo(client, _worldInfo);
-        SendInitialWorldData(client); // Added
-        BroadcastPlayerList();
+        if (!TryAuthorizePeer(peerId, gateTicket))
+            return;
+
+        var key = peerId.ToString();
+        lock (_clientLock)
+        {
+            if (_sociallyApprovedPuids.Contains(key))
+            {
+                _log.Info($"EOS P2P: Auto-approving pre-approved peer {key}.");
+                
+                // We MUST ensure they are in the pending dictionary for ApproveJoinRequest to find them
+                if (!_pendingJoinByPeer.ContainsKey(key))
+                {
+                    _pendingJoinByPeer[key] = new PendingJoinState(peerId, name);
+                }
+                
+                // Run on a thread to avoid deadlocking the pump
+                Task.Run(() => ApproveJoinRequest(key));
+                return;
+            }
+
+            PendingJoinState? pending;
+            if (!_pendingJoinByPeer.TryGetValue(key, out pending))
+            {
+                pending = new PendingJoinState(peerId, name);
+                _pendingJoinByPeer[pending.Key] = pending;
+                _pendingJoinQueue.Enqueue(new EosJoinRequest
+                {
+                    ProductUserId = pending.Key,
+                    DisplayName = pending.Name
+                });
+                _log.Info($"EOS join request queued ({pending.Key}, name={pending.Name}).");
+            }
+            else if (!string.IsNullOrWhiteSpace(name))
+            {
+                pending.Name = name.Trim();
+            }
+        }
+    }
+
+    private bool TryAuthorizePeer(ProductUserId peerId, string? gateTicket)
+    {
+        if (!_onlineGate.IsGateRequired)
+            return true;
+
+        if (_onlineGate.ValidatePeerTicket(gateTicket, _log, out var denialReason, TimeSpan.FromSeconds(4)))
+            return true;
+
+        _log.Warn($"EOS peer rejected by gate validation ({peerId}): {denialReason}");
+        EosP2PWire.SendJoinDenied(_p2p, _localUserId, peerId, _socketId, denialReason, _log);
+        ClosePeerConnection(peerId);
+        return false;
+    }
+
+    private void ClosePeerConnection(ProductUserId peerId)
+    {
+        try
+        {
+            var closeOptions = new CloseConnectionOptions
+            {
+                LocalUserId = _localUserId,
+                RemoteUserId = peerId,
+                SocketId = _socketId
+            };
+
+            var result = _p2p.CloseConnection(ref closeOptions);
+            if (result != Result.Success)
+                _log.Warn($"EOS close peer failed for {peerId}: {result}");
+        }
+        catch (Exception ex)
+        {
+            _log.Warn($"EOS close peer exception for {peerId}: {ex.Message}");
+        }
     }
 
     private bool TryGetClient(ProductUserId peerId, out ClientState client)
@@ -489,17 +832,24 @@ public sealed class EosP2PHostSession : ILanSession
     private void RemoveClient(ProductUserId peerId)
     {
         ClientState? removed = null;
+        PendingJoinState? removedPending = null;
         var key = peerId.ToString();
         lock (_clientLock)
         {
             if (_clients.TryGetValue(key, out removed))
                 _clients.Remove(key);
+            if (_pendingJoinByPeer.TryGetValue(key, out removedPending))
+                _pendingJoinByPeer.Remove(key);
         }
 
         if (removed != null)
         {
             _log.Info($"EOS client disconnected (id={removed.Id})");
             BroadcastPlayerList();
+        }
+        else if (removedPending != null)
+        {
+            _log.Info($"EOS pending join request removed ({removedPending.Key}).");
         }
     }
 #endif
@@ -512,6 +862,22 @@ public sealed class EosP2PHostSession : ILanSession
 
         _disposed = true;
         IsConnected = false;
+
+        var shutdownReason = "Host disconnected. Returning to menu.";
+        lock (_clientLock)
+        {
+            foreach (var client in _clients.Values)
+            {
+                try
+                {
+                    EosP2PWire.SendHostShutdown(_p2p, _localUserId, client.PeerId, _socketId, shutdownReason, _log);
+                }
+                catch
+                {
+                    // Best effort before closing all connections.
+                }
+            }
+        }
 
         if (_notifyRequestId != 0)
             _p2p.RemoveNotifyPeerConnectionRequest(_notifyRequestId);
@@ -526,7 +892,10 @@ public sealed class EosP2PHostSession : ILanSession
         _p2p.CloseConnections(ref closeOptions);
 
         lock (_clientLock)
+        {
             _clients.Clear();
+            _pendingJoinByPeer.Clear();
+        }
 #endif
     }
 
@@ -545,6 +914,20 @@ public sealed class EosP2PHostSession : ILanSession
         public string Name { get; set; } = string.Empty;
         public string Key { get; }
     }
+
+    private sealed class PendingJoinState
+    {
+        public PendingJoinState(ProductUserId peerId, string? name)
+        {
+            PeerId = peerId;
+            Key = peerId.ToString();
+            Name = string.IsNullOrWhiteSpace(name) ? "Player" : name.Trim();
+        }
+
+        public ProductUserId PeerId { get; }
+        public string Key { get; }
+        public string Name { get; set; }
+    }
 #endif
 }
 
@@ -555,6 +938,7 @@ public sealed class EosP2PClientSession : ILanSession
     public int LocalPlayerId { get; private set; } = -1;
 
     public LanWorldInfo WorldInfo { get; private set; }
+    public string HostProductUserId { get; private set; } = string.Empty;
 
 #if EOS_SDK
     private readonly Logger _log;
@@ -570,8 +954,12 @@ public sealed class EosP2PClientSession : ILanSession
     private readonly ConcurrentQueue<LanPlayerList> _playerLists = new();
     private readonly ConcurrentQueue<LanChunkData> _chunkData = new();
     private readonly ConcurrentQueue<bool> _worldSyncComplete = new();
+    private readonly ConcurrentQueue<LanTeleport> _teleports = new();
+    private readonly ConcurrentQueue<LanPlayerPersistenceSnapshot> _persistenceRestores = new();
+    private readonly ConcurrentQueue<string> _disconnectReasons = new();
     private ulong _notifyClosedId;
     private bool _disposed;
+    private int _disconnectReasonSet;
 #endif
 
     private EosP2PClientSession(
@@ -594,6 +982,7 @@ public sealed class EosP2PClientSession : ILanSession
         _socketId = socketId;
         LocalPlayerId = playerId;
         WorldInfo = worldInfo;
+        HostProductUserId = hostUserId.ToString();
         IsConnected = true;
         RegisterNotifications();
 #endif
@@ -612,6 +1001,33 @@ public sealed class EosP2PClientSession : ILanSession
         var p2p = eosClient.P2PInterface;
         var localId = eosClient.LocalProductUserIdHandle;
         var socketId = EosP2PWire.CreateSocket();
+        var onlineGate = OnlineGateClient.GetOrCreate();
+        string? gateTicket = null;
+
+        if (!onlineGate.CanUseOfficialOnline(log, out var gateDenied))
+            return new LanClientConnectResult { Success = false, Error = gateDenied };
+
+        if (onlineGate.IsGateRequired)
+        {
+            if (!onlineGate.TryGetValidTicketForChildProcess(out gateTicket, out _)
+                && !onlineGate.EnsureTicket(log, TimeSpan.FromSeconds(6)))
+            {
+                return new LanClientConnectResult
+                {
+                    Success = false,
+                    Error = string.IsNullOrWhiteSpace(onlineGate.DenialReason)
+                        ? "Online gate ticket unavailable."
+                        : onlineGate.DenialReason
+                };
+            }
+
+            if (!onlineGate.TryGetValidTicketForChildProcess(out gateTicket, out _))
+                return new LanClientConnectResult { Success = false, Error = "Online gate ticket unavailable." };
+        }
+        else
+        {
+            onlineGate.TryGetValidTicketForChildProcess(out gateTicket, out _);
+        }
 
         var acceptOptions = new AcceptConnectionOptions
         {
@@ -621,7 +1037,7 @@ public sealed class EosP2PClientSession : ILanSession
         };
         p2p.AcceptConnection(ref acceptOptions);
 
-        var helloPayload = EosP2PWire.BuildHelloPayload(username ?? "Player", log);
+        var helloPayload = EosP2PWire.BuildHelloPayload(username ?? "Player", gateTicket, log);
         if (!EosP2PWire.SendRaw(p2p, localId, hostId, socketId, helloPayload, PacketReliability.ReliableOrdered, log))
             return new LanClientConnectResult { Success = false, Error = "Failed to send hello." };
 		var nextHelloResend = DateTime.UtcNow + TimeSpan.FromSeconds(1);
@@ -629,33 +1045,49 @@ public sealed class EosP2PClientSession : ILanSession
         var playerId = -1;
         LanWorldInfo? worldInfo = null;
         var deadline = DateTime.UtcNow + timeout;
+        log.Info($"EOS P2P: Entering connection wait loop (timeout={timeout.TotalSeconds}s)...");
         while (DateTime.UtcNow < deadline && (playerId < 0 || worldInfo == null))
         {
 			// In lossy / relay scenarios the initial HELLO can get dropped.
 			// Re-send periodically until we get the welcome.
 			if (playerId < 0 && DateTime.UtcNow >= nextHelloResend)
 			{
+				log.Info("EOS P2P: Re-sending HELLO...");
 				EosP2PWire.SendRaw(p2p, localId, hostId, socketId, helloPayload, PacketReliability.ReliableOrdered, log);
-				nextHelloResend = DateTime.UtcNow + TimeSpan.FromSeconds(1);
+				nextHelloResend = DateTime.UtcNow + TimeSpan.FromSeconds(1.5);
 			}
 
             if (!EosP2PWire.TryReceivePacket(p2p, localId, socketId, out var peerId, out var msg))
             {
-                await Task.Delay(10);
+                await Task.Delay(50);
                 continue;
             }
 
             if (peerId == null || !peerId.IsValid() || !peerId.Equals(hostId))
                 continue;
 
+            log.Info($"EOS P2P: Received message from host: {msg.Type}");
             if (msg.Type == LanMessageType.Welcome)
+            {
                 playerId = msg.PlayerId;
+                log.Info($"EOS P2P: Received Welcome (PlayerId={playerId})");
+            }
             else if (msg.Type == LanMessageType.WorldInfo)
+            {
                 worldInfo = msg.WorldInfo;
+                log.Info($"EOS P2P: Received WorldInfo (World='{worldInfo.Value.WorldName}')");
+            }
+            else if (msg.Type == LanMessageType.JoinDenied)
+            {
+                var reason = string.IsNullOrWhiteSpace(msg.JoinDeniedReason)
+                    ? "Host denied join request."
+                    : msg.JoinDeniedReason;
+                return new LanClientConnectResult { Success = false, Error = reason };
+            }
         }
 
         if (playerId < 0 || worldInfo == null)
-            return new LanClientConnectResult { Success = false, Error = "Handshake failed." };
+            return new LanClientConnectResult { Success = false, Error = "Join request pending or timed out. Ask host to approve." };
 
         var session = new EosP2PClientSession(log, p2p, localId, hostId, socketId, playerId, worldInfo.Value);
         return new LanClientConnectResult { Success = true, Session = session, WorldInfo = worldInfo.Value };
@@ -742,6 +1174,29 @@ public sealed class EosP2PClientSession : ILanSession
 #endif
     }
 
+    public void SendPersistenceSnapshot(LanPlayerPersistenceSnapshot snapshot)
+    {
+#if EOS_SDK
+        if (!IsConnected)
+            return;
+
+        var normalized = new LanPlayerPersistenceSnapshot
+        {
+            PlayerId = LocalPlayerId,
+            Username = snapshot.Username ?? string.Empty,
+            Payload = snapshot.Payload ?? Array.Empty<byte>(),
+            TimestampUtc = snapshot.TimestampUtc <= 0 ? DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() : snapshot.TimestampUtc
+        };
+
+        EosP2PWire.SendPersistenceSnapshot(_p2p, _localUserId, _hostUserId, _socketId, normalized, _log);
+#endif
+    }
+
+    public bool SendPersistenceRestore(int targetPlayerId, LanPlayerPersistenceSnapshot snapshot)
+    {
+        return false;
+    }
+
 
     public bool TryDequeuePlayerState(out LanPlayerState state)
     {
@@ -823,6 +1278,55 @@ public sealed class EosP2PClientSession : ILanSession
 #endif
     }
 
+    public bool TryDequeueTeleport(out LanTeleport teleport)
+    {
+#if EOS_SDK
+        return _teleports.TryDequeue(out teleport);
+#else
+        teleport = default;
+        return false;
+#endif
+    }
+
+    public bool TryDequeuePersistenceSnapshot(out LanPlayerPersistenceSnapshot snapshot)
+    {
+        snapshot = default;
+        return false;
+    }
+
+    public bool TryDequeuePersistenceRestore(out LanPlayerPersistenceSnapshot snapshot)
+    {
+#if EOS_SDK
+        return _persistenceRestores.TryDequeue(out snapshot);
+#else
+        snapshot = default;
+        return false;
+#endif
+    }
+
+    public bool TryDequeueDisconnectReason(out string reason)
+    {
+#if EOS_SDK
+        if (_disconnectReasons.TryDequeue(out var value))
+        {
+            reason = value;
+            return true;
+        }
+#endif
+        reason = string.Empty;
+        return false;
+    }
+
+    public bool SendTeleport(int targetPlayerId, Vector3 position, float yaw, float pitch)
+    {
+        return false;
+    }
+
+    public bool KickPlayer(int targetPlayerId, string reason)
+    {
+        return false;
+    }
+
 #if EOS_SDK
     private void RegisterNotifications()
     {
@@ -840,7 +1344,10 @@ public sealed class EosP2PClientSession : ILanSession
             return;
 
         if (info.RemoteUserId != null && info.RemoteUserId.IsValid() && info.RemoteUserId.Equals(_hostUserId))
+        {
+            SetDisconnectReasonOnce("Host disconnected. Returning to menu.");
             IsConnected = false;
+        }
     }
 
     public void PumpIncoming(int maxPackets = 128)
@@ -885,12 +1392,35 @@ public sealed class EosP2PClientSession : ILanSession
                     case LanMessageType.WorldSyncComplete:
                         _worldSyncComplete.Enqueue(true);
                         break;
+                    case LanMessageType.Teleport:
+                        _teleports.Enqueue(msg.Teleport);
+                        break;
+                    case LanMessageType.PersistenceRestore:
+                        _persistenceRestores.Enqueue(msg.PersistenceSnapshot);
+                        break;
+                    case LanMessageType.JoinDenied:
+                        SetDisconnectReasonOnce(string.IsNullOrWhiteSpace(msg.JoinDeniedReason)
+                            ? "Host denied join request."
+                            : msg.JoinDeniedReason!);
+                        IsConnected = false;
+                        _log.Warn($"EOS join denied by host: {msg.JoinDeniedReason}");
+                        break;
+                    case LanMessageType.HostShutdown:
+                        SetDisconnectReasonOnce(string.IsNullOrWhiteSpace(msg.DisconnectReason)
+                            ? "Host disconnected. Returning to menu."
+                            : msg.DisconnectReason!);
+                        IsConnected = false;
+                        break;
                 }
             }
         }
         catch (Exception ex)
         {
-            _log.Warn($"EOS client pump failed: {ex.Message}");
+            if (!_disposed)
+            {
+                _log.Warn($"EOS client pump failed: {ex.Message}");
+                SetDisconnectReasonOnce("Connection to host lost.");
+            }
         }
 #endif
     }
@@ -900,10 +1430,23 @@ public sealed class EosP2PClientSession : ILanSession
             return null;
 
         var value = joinInfo.Trim();
+        if (value.StartsWith("latticeveil://join/", StringComparison.OrdinalIgnoreCase))
+            value = value.Substring("latticeveil://join/".Length).Trim();
         if (value.StartsWith("puid=", StringComparison.OrdinalIgnoreCase))
             value = value.Substring(5).Trim();
 
         return ProductUserId.FromString(value);
+    }
+
+    private void SetDisconnectReasonOnce(string reason)
+    {
+        if (Interlocked.Exchange(ref _disconnectReasonSet, 1) != 0)
+            return;
+
+        var text = string.IsNullOrWhiteSpace(reason)
+            ? "Host disconnected. Returning to menu."
+            : reason.Trim();
+        _disconnectReasons.Enqueue(text);
     }
 #endif
 
@@ -953,12 +1496,13 @@ internal static class EosP2PWire
         return string.Equals(incoming.SocketName, expected.SocketName, StringComparison.OrdinalIgnoreCase);
     }
 
-    public static byte[] BuildHelloPayload(string username, Logger log)
+    public static byte[] BuildHelloPayload(string username, string? gateTicket, Logger log)
     {
         return BuildPayload(bw =>
         {
             bw.Write((byte)LanMessageType.Hello);
             bw.Write(username ?? "Player");
+            bw.Write(gateTicket ?? string.Empty);
         }, log);
     }
 
@@ -984,6 +1528,7 @@ internal static class EosP2PWire
             bw.Write(info.Depth);
             bw.Write(info.Seed);
             bw.Write(info.PlayerCollision);
+            bw.Write(info.WorldId ?? string.Empty);
         }, log);
         SendRaw(p2p, localUserId, remoteUserId, socketId, payload, PacketReliability.ReliableOrdered, log);
     }
@@ -1047,6 +1592,16 @@ internal static class EosP2PWire
         SendRaw(p2p, localUserId, remoteUserId, socketId, payload, PacketReliability.ReliableOrdered, log);
     }
 
+    public static void SendJoinDenied(P2PInterface p2p, ProductUserId localUserId, ProductUserId remoteUserId, SocketId socketId, string? reason, Logger log)
+    {
+        var payload = BuildPayload(bw =>
+        {
+            bw.Write((byte)LanMessageType.JoinDenied);
+            bw.Write(string.IsNullOrWhiteSpace(reason) ? "Host denied join request." : reason.Trim());
+        }, log);
+        SendRaw(p2p, localUserId, remoteUserId, socketId, payload, PacketReliability.ReliableOrdered, log);
+    }
+
     public static void SendChat(P2PInterface p2p, ProductUserId localUserId, ProductUserId remoteUserId, SocketId socketId, LanChatMessage chat, Logger log)
     {
         var payload = BuildPayload(bw =>
@@ -1057,6 +1612,36 @@ internal static class EosP2PWire
             bw.Write((byte)chat.Kind);
             bw.Write(chat.TimestampUtc);
             bw.Write(chat.Text ?? string.Empty);
+        }, log);
+        SendRaw(p2p, localUserId, remoteUserId, socketId, payload, PacketReliability.ReliableOrdered, log);
+    }
+
+    public static void SendPersistenceSnapshot(P2PInterface p2p, ProductUserId localUserId, ProductUserId remoteUserId, SocketId socketId, LanPlayerPersistenceSnapshot snapshot, Logger log)
+    {
+        var payload = BuildPayload(bw =>
+        {
+            bw.Write((byte)LanMessageType.PersistenceSnapshot);
+            bw.Write(snapshot.PlayerId);
+            bw.Write(snapshot.Username ?? string.Empty);
+            bw.Write(snapshot.TimestampUtc);
+            var snapshotPayload = snapshot.Payload ?? Array.Empty<byte>();
+            bw.Write(snapshotPayload.Length);
+            bw.Write(snapshotPayload);
+        }, log);
+        SendRaw(p2p, localUserId, remoteUserId, socketId, payload, PacketReliability.ReliableOrdered, log);
+    }
+
+    public static void SendPersistenceRestore(P2PInterface p2p, ProductUserId localUserId, ProductUserId remoteUserId, SocketId socketId, LanPlayerPersistenceSnapshot snapshot, Logger log)
+    {
+        var payload = BuildPayload(bw =>
+        {
+            bw.Write((byte)LanMessageType.PersistenceRestore);
+            bw.Write(snapshot.PlayerId);
+            bw.Write(snapshot.Username ?? string.Empty);
+            bw.Write(snapshot.TimestampUtc);
+            var snapshotPayload = snapshot.Payload ?? Array.Empty<byte>();
+            bw.Write(snapshotPayload.Length);
+            bw.Write(snapshotPayload);
         }, log);
         SendRaw(p2p, localUserId, remoteUserId, socketId, payload, PacketReliability.ReliableOrdered, log);
     }
@@ -1103,6 +1688,31 @@ internal static class EosP2PWire
         var payload = BuildPayload(bw =>
         {
             bw.Write((byte)LanMessageType.WorldSyncComplete);
+        }, log);
+        SendRaw(p2p, localUserId, remoteUserId, socketId, payload, PacketReliability.ReliableOrdered, log);
+    }
+
+    public static void SendTeleport(P2PInterface p2p, ProductUserId localUserId, ProductUserId remoteUserId, SocketId socketId, LanTeleport teleport, Logger log)
+    {
+        var payload = BuildPayload(bw =>
+        {
+            bw.Write((byte)LanMessageType.Teleport);
+            bw.Write(teleport.TargetPlayerId);
+            bw.Write(teleport.X);
+            bw.Write(teleport.Y);
+            bw.Write(teleport.Z);
+            bw.Write(teleport.Yaw);
+            bw.Write(teleport.Pitch);
+        }, log);
+        SendRaw(p2p, localUserId, remoteUserId, socketId, payload, PacketReliability.ReliableOrdered, log);
+    }
+
+    public static void SendHostShutdown(P2PInterface p2p, ProductUserId localUserId, ProductUserId remoteUserId, SocketId socketId, string reason, Logger log)
+    {
+        var payload = BuildPayload(bw =>
+        {
+            bw.Write((byte)LanMessageType.HostShutdown);
+            bw.Write(string.IsNullOrWhiteSpace(reason) ? "Host disconnected." : reason.Trim());
         }, log);
         SendRaw(p2p, localUserId, remoteUserId, socketId, payload, PacketReliability.ReliableOrdered, log);
     }
@@ -1223,7 +1833,8 @@ internal static class EosP2PWire
                         Height = br.ReadInt32(),
                         Depth = br.ReadInt32(),
                         Seed = br.ReadInt32(),
-                        PlayerCollision = br.BaseStream.Position < br.BaseStream.Length ? br.ReadBoolean() : true
+                        PlayerCollision = br.BaseStream.Position < br.BaseStream.Length ? br.ReadBoolean() : true,
+                        WorldId = br.BaseStream.Position < br.BaseStream.Length ? br.ReadString() : string.Empty
                     }
                 };
                 return true;
@@ -1320,7 +1931,19 @@ internal static class EosP2PWire
                 };
                 return true;
             case LanMessageType.Hello:
-                msg = new LanMessage { Type = type, Name = br.ReadString() };
+                {
+                    var name = br.ReadString();
+                    string? gateTicket = null;
+                    if (br.BaseStream.Position < br.BaseStream.Length)
+                        gateTicket = br.ReadString();
+
+                    msg = new LanMessage
+                    {
+                        Type = type,
+                        Name = name,
+                        GateTicket = gateTicket
+                    };
+                }
                 return true;
             case LanMessageType.ChunkData:
                 {
@@ -1348,6 +1971,61 @@ internal static class EosP2PWire
                 }
             case LanMessageType.WorldSyncComplete:
                 msg = new LanMessage { Type = type, WorldSyncComplete = true };
+                return true;
+            case LanMessageType.JoinDenied:
+                msg = new LanMessage
+                {
+                    Type = type,
+                    JoinDeniedReason = br.ReadString()
+                };
+                return true;
+            case LanMessageType.Teleport:
+                msg = new LanMessage
+                {
+                    Type = type,
+                    Teleport = new LanTeleport
+                    {
+                        TargetPlayerId = br.ReadInt32(),
+                        X = br.ReadInt32(),
+                        Y = br.ReadInt32(),
+                        Z = br.ReadInt32(),
+                        Yaw = br.ReadSingle(),
+                        Pitch = br.ReadSingle()
+                    }
+                };
+                return true;
+            case LanMessageType.PersistenceSnapshot:
+            case LanMessageType.PersistenceRestore:
+                {
+                    var playerId = br.ReadInt32();
+                    var username = br.ReadString();
+                    var timestampUtc = br.ReadInt64();
+                    var payloadLen = br.ReadInt32();
+                    if (payloadLen < 0 || payloadLen > 1024 * 1024)
+                        return false;
+                    var payload = br.ReadBytes(payloadLen);
+                    if (payload.Length != payloadLen)
+                        return false;
+
+                    msg = new LanMessage
+                    {
+                        Type = type,
+                        PersistenceSnapshot = new LanPlayerPersistenceSnapshot
+                        {
+                            PlayerId = playerId,
+                            Username = username,
+                            TimestampUtc = timestampUtc,
+                            Payload = payload
+                        }
+                    };
+                    return true;
+                }
+            case LanMessageType.HostShutdown:
+                msg = new LanMessage
+                {
+                    Type = type,
+                    DisconnectReason = br.ReadString()
+                };
                 return true;
             default:
                 return false;

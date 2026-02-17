@@ -11,6 +11,7 @@ sealed class PresenceRegistryProvider
     private const int DefaultTtlSeconds = 90;
 
     private readonly ConcurrentDictionary<string, PresenceEntry> _entries = new(StringComparer.OrdinalIgnoreCase);
+    private readonly ConcurrentDictionary<string, WorldInviteEntry> _invites = new(StringComparer.OrdinalIgnoreCase);
 
     public PresenceRegistryProvider()
     {
@@ -23,9 +24,27 @@ sealed class PresenceRegistryProvider
     {
         CleanupExpired();
 
+        var productUserId = NormalizeRequired(input.ProductUserId);
+        if (string.IsNullOrWhiteSpace(productUserId)) return null!;
+
+        // If not hosting and status is just "Online", we can treat this as a sign-off from the list if we want it instant.
+        if (!input.IsHosting)
+        {
+            _entries.TryRemove(productUserId, out _);
+            
+            // Clear any outgoing invites FROM this user (they are no longer hosting)
+            var outgoingKeys = _invites.Keys.Where(k => k.StartsWith(productUserId + ":")).ToList();
+            foreach (var k in outgoingKeys) _invites.TryRemove(k, out _);
+
+            // Clear any incoming invites TO this user (since they aren't hosting, nobody can join them)
+            var incomingKeys = _invites.Keys.Where(k => k.EndsWith(":" + productUserId)).ToList();
+            foreach (var k in incomingKeys) _invites.TryRemove(k, out _);
+            
+            return null!;
+        }
+
         var now = DateTime.UtcNow;
         var expiresUtc = now.AddSeconds(TtlSeconds);
-        var productUserId = NormalizeRequired(input.ProductUserId);
         var displayName = NormalizeDisplayName(input.DisplayName);
         if (string.IsNullOrWhiteSpace(displayName))
             displayName = string.IsNullOrWhiteSpace(input.Username) ? "Player" : input.Username.Trim();
@@ -37,6 +56,7 @@ sealed class PresenceRegistryProvider
             string.IsNullOrWhiteSpace(input.Status) ? "online" : input.Status.Trim(),
             input.IsHosting,
             (input.WorldName ?? string.Empty).Trim(),
+            (input.GameMode ?? string.Empty).Trim(),
             string.IsNullOrWhiteSpace(input.JoinTarget) ? productUserId : input.JoinTarget.Trim(),
             GenerateFriendCode(productUserId),
             now,
@@ -66,6 +86,50 @@ sealed class PresenceRegistryProvider
         return result;
     }
 
+    public WorldInviteEntry SendInvite(string senderPuid, string senderName, string targetPuid, string worldName)
+    {
+        CleanupExpired();
+        
+        // Reset invite by removing old one first
+        var key = $"{senderPuid}:{targetPuid}";
+        _invites.TryRemove(key, out _);
+
+        var invite = new WorldInviteEntry(
+            senderPuid,
+            senderName,
+            targetPuid,
+            worldName,
+            "pending",
+            DateTime.UtcNow,
+            DateTime.UtcNow.AddMinutes(5));
+        
+        _invites[key] = invite;
+        return invite;
+    }
+
+    public List<WorldInviteEntry> GetInvitesFor(string puid)
+    {
+        CleanupExpired();
+        return _invites.Values.Where(i => string.Equals(i.TargetProductUserId, puid, StringComparison.OrdinalIgnoreCase)).ToList();
+    }
+
+    public List<WorldInviteEntry> GetInvitesFrom(string puid)
+    {
+        CleanupExpired();
+        return _invites.Values.Where(i => string.Equals(i.SenderProductUserId, puid, StringComparison.OrdinalIgnoreCase)).ToList();
+    }
+
+    public bool RespondToInvite(string responderPuid, string senderPuid, string response)
+    {
+        var key = $"{senderPuid}:{responderPuid}";
+        if (_invites.TryGetValue(key, out var invite))
+        {
+            _invites[key] = invite with { Status = response.ToLowerInvariant() };
+            return true;
+        }
+        return false;
+    }
+
     private void CleanupExpired()
     {
         var now = DateTime.UtcNow;
@@ -73,6 +137,12 @@ sealed class PresenceRegistryProvider
         {
             if (pair.Value.ExpiresUtc <= now)
                 _entries.TryRemove(pair.Key, out _);
+        }
+
+        foreach (var pair in _invites)
+        {
+            if (pair.Value.ExpiresUtc <= now)
+                _invites.TryRemove(pair.Key, out _);
         }
     }
 
@@ -117,6 +187,7 @@ sealed record PresenceUpsertInput(
     string Status,
     bool IsHosting,
     string WorldName,
+    string GameMode,
     string JoinTarget);
 
 sealed record PresenceEntry(
@@ -126,7 +197,25 @@ sealed record PresenceEntry(
     string Status,
     bool IsHosting,
     string WorldName,
+    string GameMode,
     string JoinTarget,
     string FriendCode,
     DateTime UpdatedUtc,
     DateTime ExpiresUtc);
+
+sealed record WorldInviteEntry(
+    string SenderProductUserId,
+    string SenderDisplayName,
+    string TargetProductUserId,
+    string WorldName,
+    string Status, // pending, accepted, rejected
+    DateTime CreatedUtc,
+    DateTime ExpiresUtc);
+
+sealed record WorldInviteSendInput(
+    string TargetProductUserId,
+    string WorldName);
+
+sealed record WorldInviteResponseInput(
+    string SenderProductUserId,
+    string Response);

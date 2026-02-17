@@ -9,7 +9,7 @@ using LatticeVeilMonoGame.UI;
 namespace LatticeVeilMonoGame.UI.Screens;
 
 /// <summary>
-/// Simple modal screen that displays a join code for an EOS-hosted session.
+/// Simple modal screen for copying host join identity without exposing raw IDs in UI text.
 /// </summary>
 public sealed class ShareJoinCodeScreen : IScreen
 {
@@ -43,10 +43,7 @@ public sealed class ShareJoinCodeScreen : IScreen
         _code = (joinCode ?? string.Empty).Trim();
         _hostUserId = string.IsNullOrWhiteSpace(hostUserId) ? null : hostUserId.Trim();
 
-        _copyBtn = new Button("COPY CODE", CopyCodeToClipboard) { BoldText = true };
-        // NOTE: Button in this UI framework does not expose an "Enabled" property.
-        // We keep the button clickable and show a toast if the ID isn't available yet.
-        // This is the local user's EOS Product User ID (PUID). Useful when the host needs to share their ID directly.
+        _copyBtn = new Button("COPY HOST CODE", CopyCodeToClipboard) { BoldText = true };
         _copyIdBtn = new Button("COPY MY ID", CopyHostIdToClipboard) { BoldText = true };
         _okBtn = new Button("OK", () => _menus.Pop()) { BoldText = true };
 
@@ -65,8 +62,7 @@ public sealed class ShareJoinCodeScreen : IScreen
         _viewport = viewport;
 
         var panelW = Math.Min(740, (int)(viewport.Width * 0.92f));
-        // Extra height so we can show both the join code and the host's user ID.
-        var panelH = Math.Min(320, (int)(viewport.Height * 0.7f));
+        var panelH = Math.Min(250, (int)(viewport.Height * 0.62f));
         var panelX = viewport.X + (viewport.Width - panelW) / 2;
         var panelY = viewport.Y + (viewport.Height - panelH) / 2;
         _panelRect = new Rectangle(panelX, panelY, panelW, panelH);
@@ -125,37 +121,18 @@ public sealed class ShareJoinCodeScreen : IScreen
         var x = _panelRect.X + 18;
         var y = _panelRect.Y + 16;
 
-        DrawTextBold(sb, "SHARE HOST CODE", new Vector2(x, y), Color.White);
+        DrawTextBold(sb, "SHARE JOIN INFO", new Vector2(x, y), Color.White);
         y += _font.LineHeight + 10;
 
-        _font.DrawString(sb, "Give this code to your friend.", new Vector2(x, y), Color.White);
+        _font.DrawString(sb, "Use COPY HOST CODE to share your join target.", new Vector2(x, y), Color.White);
         y += _font.LineHeight + 2;
-        _font.DrawString(sb, "They can join via Multiplayer > Online > Join.", new Vector2(x, y), Color.White);
-        y += _font.LineHeight + 14;
-
-        DrawTextBold(sb, "HOST CODE:", new Vector2(x, y), new Color(220, 180, 80));
-        y += _font.LineHeight + 4;
-
-        var codeRect = new Rectangle(x, y, _panelRect.Width - 36, _font.LineHeight + 18);
-        sb.Draw(_pixel, codeRect, new Color(30, 30, 30, 230));
-        DrawBorder(sb, codeRect, Color.White);
-        var codePos = new Vector2(codeRect.X + 8, codeRect.Y + (codeRect.Height - _font.LineHeight) / 2f);
-        _font.DrawString(sb, string.IsNullOrWhiteSpace(_code) ? "(missing)" : _code, codePos, Color.White);
-
-        y = codeRect.Bottom + 12;
-
-        DrawTextBold(sb, "YOUR ID:", new Vector2(x, y), new Color(220, 180, 80));
-        y += _font.LineHeight + 4;
-
-        var idRect = new Rectangle(x, y, _panelRect.Width - 36, _font.LineHeight + 18);
-        sb.Draw(_pixel, idRect, new Color(30, 30, 30, 230));
-        DrawBorder(sb, idRect, Color.White);
-        var idPos = new Vector2(idRect.X + 8, idRect.Y + (idRect.Height - _font.LineHeight) / 2f);
-        _font.DrawString(sb, string.IsNullOrWhiteSpace(_hostUserId) ? "(unknown)" : _hostUserId, idPos, Color.White);
+        _font.DrawString(sb, "Use COPY MY ID if someone needs your direct ID.", new Vector2(x, y), Color.White);
+        y += _font.LineHeight + 10;
+        _font.DrawString(sb, "Joiners can paste username or shared code in JOIN ONLINE.", new Vector2(x, y), new Color(180, 180, 180));
 
         if (!string.IsNullOrEmpty(_toast))
         {
-            var toastPos = new Vector2(x, idRect.Bottom + 10);
+            var toastPos = new Vector2(x, _buttonRowTopForToast());
             _font.DrawString(sb, _toast, toastPos, new Color(120, 220, 140));
         }
 
@@ -164,6 +141,11 @@ public sealed class ShareJoinCodeScreen : IScreen
         _okBtn.Draw(sb, _pixel, _font);
 
         sb.End();
+    }
+
+    private int _buttonRowTopForToast()
+    {
+        return _panelRect.Bottom - 72;
     }
 
     private void DrawTextBold(SpriteBatch sb, string text, Vector2 pos, Color color)

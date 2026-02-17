@@ -25,6 +25,7 @@ using System.Windows.Forms;
 using System.Drawing.Drawing2D;
 using LatticeVeilMonoGame.Core;
 using LatticeVeilMonoGame.Online.Eos;
+using LatticeVeilMonoGame.Online.Gate;
 
 namespace LatticeVeilMonoGame.Launcher;
 
@@ -72,6 +73,7 @@ public sealed class LauncherForm : Form
     private readonly Label _offlineNameLabel = new();
     private readonly TextBox _offlineNameBox = new();
     private readonly Button _saveOfflineNameBtn = new();
+    private readonly Button _claimUsernameBtn = new();
     private readonly CheckBox _keepOpenBox = new();
     private readonly CheckBox _darkModeBox = new();
     private readonly Label _recommendedLabel = new();
@@ -81,6 +83,7 @@ public sealed class LauncherForm : Form
     private readonly Button _hubLoginBtn = new();
     private readonly Button _hubResetBtn = new();
     private readonly Label _hubStatusLabel = new();
+    private readonly Panel _onlineStatusIndicator = new();
     private readonly Button _launchBtn = new();
     private readonly ComboBox _launchModeBox = new();
     private readonly Button _openLogsBtn = new();
@@ -146,6 +149,9 @@ public sealed class LauncherForm : Form
     private bool _onlineFunctional;
     private bool _releaseHashAllowed;
     private string _onlineStatusDetail = "Checking online services...";
+    private string? _authTicket; // Store authentication ticket for claiming
+    private const string DefaultGateUrl = "https://eos-service.onrender.com";
+    private string _gateUrl = DefaultGateUrl;
 
     private sealed class ReleaseAllowlist
     {
@@ -214,7 +220,10 @@ public sealed class LauncherForm : Form
 
         // If the game was somehow launched outside the launcher, reflect that.
         RefreshGameProcessState();
-        BeginStartupOnlineChecks();
+
+        // Kick off startup checks after the window is shown.
+        // (Constructors cannot be async, and we want the UI visible before any network-bound checks.)
+        Shown += async (_, _) => await BeginStartupOnlineChecks();
 
         _log.Info("Launcher UI ready.");
     }
@@ -306,11 +315,14 @@ public sealed class LauncherForm : Form
         _offlineNameBox.Leave += (_, _) => SaveOfflineNameFromUi();
         _right.Controls.Add(_offlineNameBox);
 
-        _saveOfflineNameBtn.Text = "Save Username";
-        _saveOfflineNameBtn.Width = 240;
-        _saveOfflineNameBtn.Height = 34;
-        _saveOfflineNameBtn.Click += (_, _) => SaveOfflineNameFromUi();
-        _right.Controls.Add(_saveOfflineNameBtn);
+        // Save username button removed per user request
+
+        _claimUsernameBtn.Text = "CLAIM";
+        _claimUsernameBtn.Width = 240;
+        _claimUsernameBtn.Height = 34;
+        _claimUsernameBtn.Visible = false; // Initially hidden until we check device identity
+        _claimUsernameBtn.Click += async (_, _) => await ClaimUsernameAsync();
+        _right.Controls.Add(_claimUsernameBtn);
 
         // Hide legacy "Change Username" button entirely.
         _changeUsernameBtn.Visible = false;
@@ -365,9 +377,9 @@ public sealed class LauncherForm : Form
         };
         _right.Controls.Add(_advancedModeBox);
 
-        // Recommended label
-        UpdateRecommendedLabel();
-        _right.Controls.Add(_recommendedLabel);
+        // Recommended label - removed per user request
+        // UpdateRecommendedLabel();
+        // _right.Controls.Add(_recommendedLabel);
 
         BuildOnlineSection();
 
@@ -468,10 +480,12 @@ public sealed class LauncherForm : Form
 
     private void BuildOnlineSection()
     {
+        // Hide the online header text - we're using the top bar indicator now
         _onlineHeader.Text = "OFFLINE/LAN";
         _onlineHeader.AutoSize = true;
         _onlineHeader.Font = new DFont(Font.FontFamily, 10f, System.Drawing.FontStyle.Bold);
         _onlineHeader.ForeColor = DColor.Red;
+        _onlineHeader.Visible = false; // Hide the text
         _right.Controls.Add(_onlineHeader);
 
         _hubLoginBtn.Text = "LOGIN WITH EPIC";
@@ -492,8 +506,10 @@ public sealed class LauncherForm : Form
         _hubResetBtn.Click += async (_, _) => await EpicSwitchUserAsync();
         _right.Controls.Add(_hubResetBtn);
 
+        // Hub status label - hidden per user request
         _hubStatusLabel.Text = _onlineStatusDetail;
         _hubStatusLabel.AutoSize = true;
+        _hubStatusLabel.Visible = false; // Hide the status label
         _right.Controls.Add(_hubStatusLabel);
 
         if (EpicLoginInGameOnly)
@@ -537,8 +553,27 @@ public sealed class LauncherForm : Form
         _minBtn.Location = new DPoint(_topBar.Width - 92, 8);
         _minBtn.Click += (_, _) => WindowState = FormWindowState.Minimized;
 
+        // Online status indicator
+        _onlineStatusIndicator.Size = new DSize(12, 12);
+        _onlineStatusIndicator.BackColor = DColor.Red; // Start with offline (red)
+        _onlineStatusIndicator.Anchor = AnchorStyles.Top | AnchorStyles.Right;
+        _onlineStatusIndicator.Location = new DPoint(_topBar.Width - 138, 12);
+        _onlineStatusIndicator.BorderStyle = BorderStyle.None;
+        _toolTip.SetToolTip(_onlineStatusIndicator, "Offline/LAN");
+
+        // Online status text label
+        _onlineHeader.Size = new DSize(60, 20);
+        _onlineHeader.Text = "OFFLINE";
+        _onlineHeader.ForeColor = DColor.Red;
+        _onlineHeader.Font = new DFont(Font.FontFamily, 8f, System.Drawing.FontStyle.Bold);
+        _onlineHeader.Anchor = AnchorStyles.Top | AnchorStyles.Right;
+        _onlineHeader.Location = new DPoint(_topBar.Width - 120, 10);
+        _onlineHeader.TextAlign = System.Drawing.ContentAlignment.MiddleLeft;
+        _topBar.Controls.Add(_onlineHeader);
+
         _topBar.Controls.Add(_logoBox);
         _topBar.Controls.Add(_title);
+        _topBar.Controls.Add(_onlineStatusIndicator);
         _topBar.Controls.Add(_minBtn);
         _topBar.Controls.Add(_closeBtn);
 
@@ -547,6 +582,8 @@ public sealed class LauncherForm : Form
         {
             _closeBtn.Location = new DPoint(_topBar.Width - 46, 8);
             _minBtn.Location = new DPoint(_topBar.Width - 92, 8);
+            _onlineStatusIndicator.Location = new DPoint(_topBar.Width - 138, 12);
+            _onlineHeader.Location = new DPoint(_topBar.Width - 120, 10);
         };
 
         // Make the borderless window draggable.
@@ -866,6 +903,123 @@ public sealed class LauncherForm : Form
         return bmp;
     }
 
+    private async Task BeginStartupOnlineChecks()
+    {
+        await Task.Run(async () =>
+        {
+            var getExecutableHash = () =>
+            {
+                // Hash the game executable (not the launcher) so the allowlist applies to the correct binary.
+                var exePath = Environment.ProcessPath ?? "";
+                if (string.IsNullOrWhiteSpace(exePath) || exePath.Contains("Launcher", StringComparison.OrdinalIgnoreCase))
+                {
+                    exePath = Path.Combine(AppContext.BaseDirectory, "LatticeVeilMonoGame.exe");
+                }
+
+                if (string.IsNullOrWhiteSpace(exePath) || !File.Exists(exePath))
+                    return "";
+                
+                using var stream = File.OpenRead(exePath);
+                using var sha256 = System.Security.Cryptography.SHA256.Create();
+                return Convert.ToHexString(sha256.ComputeHash(stream)).ToLowerInvariant();
+            };
+            
+            SetProgress(30, "Submitting hash for approval...");
+            var ourHash = getExecutableHash();
+            _log.Info($"Our hash: {ourHash}");
+            
+            try
+            {
+                var gate = OnlineGateClient.GetOrCreate();
+                
+                // Admin-only: auto-submit hash if we have an admin token; otherwise, just verify.
+                var adminToken = (Environment.GetEnvironmentVariable("GATE_ADMIN_TOKEN")
+                                  ?? Environment.GetEnvironmentVariable("LV_GATE_ADMIN_TOKEN")
+                                  ?? "").Trim();
+
+                dynamic submitResult;
+                if (!string.IsNullOrWhiteSpace(adminToken))
+                {
+                    submitResult = await gate.SubmitHashForApprovalAsync(ourHash).ConfigureAwait(false);
+                }
+                else
+                {
+                    var verified = await gate.VerifyExecutableHashAsync(_log, target: null).ConfigureAwait(false);
+                    submitResult = new { Ok = verified, Message = verified ? "Verified" : "Not verified" };
+                }
+
+                var ok = false;
+                string message = "";
+                try
+                {
+                    ok = submitResult?.Ok == true;
+                    message = submitResult?.Message ?? "";
+                }
+                catch
+                {
+                    // If the response shape is unexpected, treat it as failure.
+                    ok = false;
+                }
+
+                if (ok)
+                {
+                    _log.Info(string.IsNullOrWhiteSpace(message) ? "Hash approved by gate!" : $"Hash approved by gate: {message}");
+                    SetProgress(50, "Hash approved by gate!");
+                        
+                        // Now proceed with normal EOS initialization
+                        SetProgress(60, "Initializing EOS...");
+                        var eos = await EosClientProvider.GetOrCreateAsync(_log, "deviceid", allowRetry: true, autoLogin: true);
+                        if (eos != null)
+                        {
+                            _eosClient = eos;
+                            var timeout = DateTime.UtcNow.AddSeconds(20);
+                            while (!eos.IsLoggedIn && DateTime.UtcNow < timeout)
+                            {
+                                eos.Tick();
+                                await Task.Delay(250);
+                            }
+                        }
+
+                        SetProgress(80, "Checking device identity...");
+                        // Try to get username by device ID for auto-fill
+                        if (eos?.DeviceId != null)
+                        {
+                            var deviceIdentity = await gate.GetIdentityByDeviceIdAsync(eos.DeviceId);
+                            if (deviceIdentity != null && deviceIdentity.Found && deviceIdentity.User != null)
+                            {
+                                _offlineNameBox.Text = deviceIdentity.User.Username;
+                                _log.Info($"Auto-filled username: {deviceIdentity.User.Username}");
+                            }
+                        }
+                        
+                        SetProgress(100, "Ready");
+                        _onlineFunctional = true;
+                        _releaseHashAllowed = true;
+                        _log.Info("Online status: Functional and hash allowed - marking as ONLINE");
+                        ApplyOnlineStatusVisuals();
+                }
+                else
+                {
+                    _log.Error($"Hash rejected: {message}");
+                    SetProgress(100, "Hash rejected");
+                    _onlineFunctional = false;
+                    _releaseHashAllowed = false;
+                    _log.Info("Online status: Not functional - hash rejected - marking as OFFLINE");
+                    ApplyOnlineStatusVisuals();
+                }
+            }
+            catch (Exception ex)
+            {
+                _log.Error($"Error during startup checks: {ex.Message}");
+                SetProgress(100, "Error during startup checks");
+                _onlineFunctional = false;
+                _releaseHashAllowed = false;
+                _log.Info("Online status: Not functional - exception during checks - marking as OFFLINE");
+                ApplyOnlineStatusVisuals();
+            }
+        });
+    }
+
     private static bool IsGameRunning()
     {
         try
@@ -877,117 +1031,6 @@ public sealed class LauncherForm : Form
         {
             return false;
         }
-        catch
-        {
-            return false;
-        }
-    }
-
-    private void BeginStartupOnlineChecks()
-    {
-        Task.Run(() =>
-        {
-            var status = EvaluateOnlineStartupStatus();
-            try
-            {
-                BeginInvoke(new Action(() =>
-                {
-                    _onlineFunctional = status.OnlineFunctional;
-                    _releaseHashAllowed = status.ReleaseHashAllowed;
-                    _onlineStatusDetail = status.Detail;
-                    ApplyOnlineStatusVisuals();
-                }));
-            }
-            catch
-            {
-                // Best-effort if form is closing.
-            }
-        });
-    }
-
-    private OnlineStartupStatus EvaluateOnlineStartupStatus()
-    {
-        var hashAllowed = VerifyCurrentExecutableHash(out var hashDetail);
-
-        var config = EosConfig.Load(_log);
-        if (config != null)
-            SeedEosEnvironment(config);
-
-        var eosReady = EosRuntimeStatus.IsSdkCompiled() && config != null;
-
-        var detail = eosReady
-            ? (hashAllowed ? "EOS ready. Official build verified." : "EOS ready, but this build is not allowlisted for official online.")
-            : "EOS unavailable. Using OFFLINE/LAN mode.";
-
-        if (!string.IsNullOrWhiteSpace(hashDetail))
-            detail = $"{detail} {hashDetail}";
-
-        return new OnlineStartupStatus
-        {
-            OnlineFunctional = eosReady && hashAllowed,
-            ReleaseHashAllowed = hashAllowed,
-            Detail = detail.Trim()
-        };
-    }
-
-    private void SeedEosEnvironment(EosConfig config)
-    {
-        Environment.SetEnvironmentVariable("EOS_PRODUCT_ID", config.ProductId);
-        Environment.SetEnvironmentVariable("EOS_SANDBOX_ID", config.SandboxId);
-        Environment.SetEnvironmentVariable("EOS_DEPLOYMENT_ID", config.DeploymentId);
-        Environment.SetEnvironmentVariable("EOS_CLIENT_ID", config.ClientId);
-        Environment.SetEnvironmentVariable("EOS_CLIENT_SECRET", config.ClientSecret);
-        Environment.SetEnvironmentVariable("EOS_PRODUCT_NAME", config.ProductName);
-        Environment.SetEnvironmentVariable("EOS_PRODUCT_VERSION", config.ProductVersion);
-        Environment.SetEnvironmentVariable("EOS_LOGIN_MODE", string.IsNullOrWhiteSpace(config.LoginMode) ? "deviceid" : config.LoginMode);
-    }
-
-    private bool VerifyCurrentExecutableHash(out string detail)
-    {
-        detail = string.Empty;
-
-        var exePath = Environment.ProcessPath;
-        if (string.IsNullOrWhiteSpace(exePath) || !File.Exists(exePath))
-        {
-            detail = "Could not resolve launcher executable path for hash verification.";
-            return false;
-        }
-
-        string hash;
-        try
-        {
-            using var stream = File.OpenRead(exePath);
-            using var sha256 = SHA256.Create();
-            hash = Convert.ToHexString(sha256.ComputeHash(stream)).ToLowerInvariant();
-        }
-        catch (Exception ex)
-        {
-            detail = $"Hash verification failed: {ex.Message}";
-            return false;
-        }
-
-        if (!TryLoadAllowedHashes(out var allowedHashes, out var source, out var loadError))
-        {
-            detail = string.IsNullOrWhiteSpace(loadError)
-                ? "Allowlist not found."
-                : $"Allowlist unavailable ({loadError}).";
-            return false;
-        }
-
-        var isAllowed = false;
-        for (var i = 0; i < allowedHashes.Count; i++)
-        {
-            if (!string.Equals(allowedHashes[i], hash, StringComparison.OrdinalIgnoreCase))
-                continue;
-            isAllowed = true;
-            break;
-        }
-
-        detail = isAllowed
-            ? $"Release hash verified ({source})."
-            : $"Release hash rejected ({source}).";
-
-        return isAllowed;
     }
 
     private bool TryLoadAllowedHashes(out List<string> hashes, out string source, out string error)
@@ -1164,13 +1207,40 @@ public sealed class LauncherForm : Form
 
     private void ApplyOnlineStatusVisuals()
     {
+        // Ensure UI updates happen on the UI thread
+        if (InvokeRequired)
+        {
+            BeginInvoke(ApplyOnlineStatusVisuals);
+            return;
+        }
+
+        _log.Info($"ApplyOnlineStatusVisuals: _onlineFunctional={_onlineFunctional}");
+        
         _onlineHeader.Text = _onlineFunctional ? "ONLINE" : "OFFLINE/LAN";
         _onlineHeader.ForeColor = _onlineFunctional ? DColor.LimeGreen : DColor.Red;
-        _hubStatusLabel.Text = _onlineStatusDetail;
+        
+        // Update top bar indicator
+        _onlineStatusIndicator.BackColor = _onlineFunctional ? DColor.LimeGreen : DColor.Red;
+        _toolTip.SetToolTip(_onlineStatusIndicator, _onlineFunctional ? "Online" : "Offline/LAN");
+        
+        // Remove status text updates
+        _claimUsernameBtn.Enabled = _onlineFunctional;
+        
+        // Update username label based on online status
+        UpdateUsernameLabel();
+        
+        _log.Info($"Status indicator color set to: {_onlineStatusIndicator.BackColor}");
     }
 
     private void UpdateHubStatus(string text)
     {
+        // Ensure UI updates happen on the UI thread
+        if (InvokeRequired)
+        {
+            BeginInvoke(() => UpdateHubStatus(text));
+            return;
+        }
+
         _onlineStatusDetail = text;
         ApplyOnlineStatusVisuals();
     }
@@ -1383,11 +1453,13 @@ public sealed class LauncherForm : Form
         try
         {
             ShowAssetPanel("Checking Assets...", "Checking local files...", "");
-            _assetInstaller.PreflightWriteAccess(Paths.AssetsDir);
+            var isDevBuild = Paths.IsDevBuild;
+            var targetAssetsDir = isDevBuild ? Paths.LocalAssetsDir : Paths.AssetsDir;
+            
+            _assetInstaller.PreflightWriteAccess(targetAssetsDir);
 
             var hasAssets = _assetInstaller.CheckLocalAssetsInstalled(out var missing);
             _assetInstaller.EnsureLocalMarkerExists();
-            var isDevBuild = Paths.IsDevBuild;
 
             if (isDevBuild)
             {
@@ -1468,7 +1540,7 @@ public sealed class LauncherForm : Form
             _assetStatus.Text = "Installing...";
             _assetProgress.Value = 0;
 
-            await Task.Run(() => _assetInstaller.InstallStagedAssets(AssetPackInstaller.StagingDir, Paths.AssetsDir), ct);
+            await Task.Run(() => _assetInstaller.InstallStagedAssets(AssetPackInstaller.StagingDir, targetAssetsDir), ct);
             _assetInstaller.WriteInstalledMarker(release);
 
             _assetStatus.Text = "Assets ready.";
@@ -1502,6 +1574,14 @@ public sealed class LauncherForm : Form
 
     private void LaunchGameProcess(string extraArgs)
     {
+        // Verify hash was approved before allowing launch
+        if (!_releaseHashAllowed)
+        {
+            MessageBox.Show("Cannot launch game: Hash verification failed. Please ensure your build is approved.", "Hash Verification Failed", MessageBoxButtons.OK, MessageBoxIcon.Error);
+            _log.Warn("Launch blocked: Hash not approved");
+            return;
+        }
+        
         // Use unified executable with renderer argument
         var exeName = "LatticeVeilMonoGame.exe";
         var exePath = Path.Combine(Path.GetDirectoryName(Environment.ProcessPath) ?? string.Empty, exeName);
@@ -1541,13 +1621,25 @@ public sealed class LauncherForm : Form
         try
         {
             _log.Info($"Launching game process with renderer: {_settings.RendererBackend}...");
-            _gameProcess = Process.Start(new ProcessStartInfo
+            
+            var startInfo = new ProcessStartInfo
             {
                 FileName = exePath,
                 Arguments = args,
                 WorkingDirectory = Path.GetDirectoryName(exePath) ?? string.Empty,
-                UseShellExecute = true
-            });
+                UseShellExecute = false, // Required for environment variables
+                CreateNoWindow = true
+            };
+            
+            // Set environment variables for EOS authorization
+            if (_onlineFunctional && _releaseHashAllowed)
+            {
+                startInfo.EnvironmentVariables["LV_LAUNCHER_ONLINE_AUTH"] = "1";
+                startInfo.EnvironmentVariables["LV_PROCESS_KIND"] = "game";
+                _log.Info("Set EOS authorization environment variables for game process");
+            }
+            
+            _gameProcess = Process.Start(startInfo);
 
             // If the user doesn't want the launcher to stay open, close it after a successful spawn.
             if (_gameProcess != null && !_settings.KeepLauncherOpen)
@@ -1695,6 +1787,25 @@ public sealed class LauncherForm : Form
         _progressFill.Width = Math.Max(0, Math.Min(width, fill));
     }
 
+    private void SetProgress(int percent, string text)
+    {
+        if (IsHandleCreated)
+        {
+            BeginInvoke(new Action(() => {
+                _launchProgress = percent;
+                UpdateProgressFill();
+                _progressLabel.Text = text;
+            }));
+        }
+        else
+        {
+            // Handle is not created yet, update directly
+            _launchProgress = percent;
+            UpdateProgressFill();
+            _progressLabel.Text = text;
+        }
+    }
+
     private void CancelAssetInstall()
     {
         try { _assetCts?.Cancel(); }
@@ -1743,14 +1854,21 @@ public sealed class LauncherForm : Form
 
     private void UpdateUsernameLabel()
     {
+        // Ensure UI updates happen on the UI thread
+        if (InvokeRequired)
+        {
+            BeginInvoke(UpdateUsernameLabel);
+            return;
+        }
+
         _usernameLabel.Text = string.Empty;
-        _offlineNameLabel.Text = "Username";
+        _offlineNameLabel.Text = _onlineFunctional ? "Username" : "OFFLINE USERNAME";
     }
 
     private void UpdateOfflineNameEnabled()
     {
         _offlineNameBox.Enabled = true;
-        _saveOfflineNameBtn.Enabled = true;
+        // Save username button removed - auto-save on focus loss
         if (!_offlineNameBox.Focused)
             _offlineNameBox.Text = _profile.OfflineUsername ?? string.Empty;
     }
@@ -2238,6 +2356,133 @@ public sealed class LauncherForm : Form
 
         ApplyOnlineStatusVisuals();
         SetLaunchButtonState(GetGameState());
+    }
+
+    private async Task ClaimUsernameAsync()
+    {
+        try
+        {
+            var username = _offlineNameBox.Text.Trim();
+            if (string.IsNullOrWhiteSpace(username))
+            {
+                MessageBox.Show("Please enter a username first.", "Username Required", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                return;
+            }
+
+            var isChange = _claimUsernameBtn.Text == "CHANGE";
+            _claimUsernameBtn.Enabled = false;
+            _claimUsernameBtn.Text = isChange ? "CHANGING..." : "CLAIMING...";
+
+            var gate = OnlineGateClient.GetOrCreate();
+            var eos = EosClientProvider.Current;
+            if (eos == null)
+            {
+                // Try to get EOS client with retry
+                eos = await EosClientProvider.GetOrCreateAsync(_log, "deviceid", allowRetry: true, autoLogin: true);
+                if (eos == null)
+                {
+                    MessageBox.Show("EOS client not available. Please restart the launcher.", "Error", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                    return;
+                }
+
+                _eosClient = eos;
+            }
+            
+            // Try to get device ID, with retry logic
+            string? deviceId = null;
+            if (eos?.DeviceId != null && !string.IsNullOrEmpty(eos.DeviceId))
+            {
+                deviceId = eos.DeviceId;
+            }
+            else
+            {
+                // Try to refresh EOS client and get device ID
+                _log.Info("Device ID not available, attempting to refresh EOS client...");
+                eos = await EosClientProvider.GetOrCreateAsync(_log, "deviceid", allowRetry: true, autoLogin: true);
+                if (eos != null)
+                {
+                    _eosClient = eos;
+                    eos.StartLogin();
+                    
+                    // Wait a bit for device ID
+                    var timeout = DateTime.UtcNow.AddSeconds(10);
+                    while (DateTime.UtcNow < timeout && (eos.DeviceId == null || string.IsNullOrEmpty(eos.DeviceId)))
+                    {
+                        eos.Tick();
+                        await Task.Delay(500);
+                    }
+                    deviceId = eos.DeviceId;
+                }
+            }
+            
+            if (string.IsNullOrEmpty(deviceId))
+            {
+                MessageBox.Show("Device ID not available. Please restart the launcher or check EOS configuration.", "Error", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                _log.Error($"Device ID still not available after retry. EOS IsLoggedIn: {eos?.IsLoggedIn}, DeviceId: {eos?.DeviceId}");
+                return;
+            }
+
+            _log.Info($"{(isChange ? "Changing" : "Claiming")} username '{username}' for Device ID: {deviceId}");
+            
+            // Use the correct identity claim endpoint with proper ticket authorization
+            var claimEndpoint = $"{_gateUrl}/identity/claim";
+            var claimRequest = new { 
+                ProductUserId = deviceId,
+                Username = username,
+                DisplayName = username
+            };
+            
+            var client = new HttpClient();
+            client.DefaultRequestHeaders.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", _authTicket);
+            
+            var claimResponse = await client.PostAsync(claimEndpoint, new StringContent(JsonSerializer.Serialize(claimRequest), Encoding.UTF8, "application/json"));
+            
+            if (claimResponse.IsSuccessStatusCode)
+            {
+                var claimContent = await claimResponse.Content.ReadAsStringAsync();
+                _log.Info($"Identity claim response: {claimContent}");
+                
+                using var claimJson = JsonDocument.Parse(claimContent);
+                var ok = claimJson.RootElement.GetProperty("ok").GetBoolean();
+                
+                if (ok)
+                {
+                    MessageBox.Show($"Username '{username}' {(isChange ? "changed" : "claimed")} successfully!", "Success", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                    _log.Info($"Username {(isChange ? "changed" : "claimed")} successfully: {username}");
+                    
+                    // Update button to show current state
+                    _claimUsernameBtn.Text = "CHANGE";
+                    _claimUsernameBtn.Enabled = true;
+                }
+                else
+                {
+                    var message = claimJson.RootElement.TryGetProperty("message", out var msgEl) ? msgEl.GetString() : "Unknown error";
+                    MessageBox.Show($"Failed to {(isChange ? "change" : "claim")} username: {message}", $"{(isChange ? "Change" : "Claim")} Failed", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                    _log.Warn($"Username {(isChange ? "change" : "claim")} failed: {username} - {message}");
+                }
+            }
+            else
+            {
+                var errorContent = await claimResponse.Content.ReadAsStringAsync();
+                MessageBox.Show($"Failed to {(isChange ? "change" : "claim")} username: HTTP {claimResponse.StatusCode}", $"{(isChange ? "Change" : "Claim")} Failed", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                _log.Warn($"Username {(isChange ? "change" : "claim")} HTTP failed: {username} - {claimResponse.StatusCode} - {errorContent}");
+            }
+        }
+        catch (Exception ex)
+        {
+            var wasChange = _claimUsernameBtn.Text.StartsWith("CHANGE") || _claimUsernameBtn.Text.StartsWith("CHANGING");
+            MessageBox.Show($"An error occurred while {(wasChange ? "changing" : "claiming")} username: {ex.Message}", "Error", MessageBoxButtons.OK, MessageBoxIcon.Error);
+            _log.Error(ex, "Username claim error");
+        }
+        finally
+        {
+            // Reset button text if failed
+            if (_claimUsernameBtn.Text != "CHANGE")
+            {
+                _claimUsernameBtn.Enabled = _onlineFunctional;
+                _claimUsernameBtn.Text = "CLAIM";
+            }
+        }
     }
 
 

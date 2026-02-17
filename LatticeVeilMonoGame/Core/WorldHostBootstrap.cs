@@ -29,7 +29,7 @@ public static class WorldHostBootstrap
             hostSession.Start(serverPort);
 
             var discovery = new LanDiscovery(log);
-            discovery.StartBroadcast(meta.Name, GetBuildVersion(), serverPort);
+            discovery.StartBroadcast(meta.Name, GetBuildVersion(), serverPort, meta.CurrentWorldGameMode.ToString());
 
             ILanSession session = new LanDiscoveryHostSession(hostSession, discovery);
             return WorldHostStartResult.CreateSuccess(session, world);
@@ -68,6 +68,8 @@ public static class WorldHostBootstrap
             var session = new EosP2PHostSession(log, eosClient, hostName, BuildWorldInfo(meta), world);
 
             _ = eosClient.SetHostingPresenceAsync(meta.Name, true);
+            _ = UpdateGatePresenceAsync(log, eosClient, meta, true);
+
             return WorldHostStartResult.CreateSuccess(session, world);
         }
         catch (Exception ex)
@@ -94,7 +96,7 @@ public static class WorldHostBootstrap
             hostSession.Start(serverPort);
 
             var discovery = new LanDiscovery(log);
-            discovery.StartBroadcast(meta.Name, GetBuildVersion(), serverPort);
+            discovery.StartBroadcast(meta.Name, GetBuildVersion(), serverPort, meta.CurrentWorldGameMode.ToString());
 
             ILanSession session = new LanDiscoveryHostSession(hostSession, discovery);
             return WorldHostStartResult.CreateSuccess(session, world);
@@ -130,6 +132,8 @@ public static class WorldHostBootstrap
             var session = new EosP2PHostSession(log, eosClient, hostName, BuildWorldInfo(meta), world);
 
             _ = eosClient.SetHostingPresenceAsync(meta.Name, true);
+            _ = UpdateGatePresenceAsync(log, eosClient, meta, true);
+
             return WorldHostStartResult.CreateSuccess(session, world);
         }
         catch (Exception ex)
@@ -147,10 +151,38 @@ public static class WorldHostBootstrap
         try
         {
             _ = eosClient.SetHostingPresenceAsync(null, false);
+            _ = UpdateGatePresenceAsync(log, eosClient, null, false);
         }
         catch (Exception ex)
         {
             log.Warn($"Failed to clear EOS hosting presence: {ex.Message}");
+        }
+    }
+
+    private static async Task UpdateGatePresenceAsync(Logger log, EosClient? eos, WorldMeta? meta, bool hosting)
+    {
+        if (eos == null || !eos.IsLoggedIn)
+            return;
+
+        try
+        {
+            var gate = OnlineGateClient.GetOrCreate();
+            var identity = EosIdentityStore.LoadOrCreate(log);
+            var puid = eos.LocalProductUserId;
+            var displayName = identity.GetDisplayNameOrDefault(puid ?? "Player");
+
+            await gate.UpsertPresenceAsync(
+                productUserId: puid,
+                displayName: displayName,
+                isHosting: hosting,
+                worldName: meta?.Name,
+                gameMode: meta?.CurrentWorldGameMode.ToString(),
+                joinTarget: puid, // For P2P, join target is the host's PUID
+                status: hosting ? $"Hosting {meta?.Name}" : "Online");
+        }
+        catch (Exception ex)
+        {
+            log.Warn($"Failed to update central gate presence: {ex.Message}");
         }
     }
 
@@ -164,7 +196,8 @@ public static class WorldHostBootstrap
             Height = meta.Size.Height,
             Depth = meta.Size.Depth,
             Seed = meta.Seed,
-            PlayerCollision = meta.PlayerCollision
+            PlayerCollision = meta.PlayerCollision,
+            WorldId = meta.WorldId
         };
     }
 
@@ -195,6 +228,9 @@ public static class WorldHostBootstrap
         public void SendItemSpawn(LanItemSpawn item) => _inner.SendItemSpawn(item);
         public void SendItemPickup(int itemId) => _inner.SendItemPickup(itemId);
         public void SendChat(LanChatMessage message) => _inner.SendChat(message);
+        public void SendPersistenceSnapshot(LanPlayerPersistenceSnapshot snapshot) => _inner.SendPersistenceSnapshot(snapshot);
+        public bool SendPersistenceRestore(int targetPlayerId, LanPlayerPersistenceSnapshot snapshot) => _inner.SendPersistenceRestore(targetPlayerId, snapshot);
+        public bool SendTeleport(int targetPlayerId, Vector3 position, float yaw, float pitch) => _inner.SendTeleport(targetPlayerId, position, yaw, pitch);
         public bool TryDequeuePlayerState(out LanPlayerState state) => _inner.TryDequeuePlayerState(out state);
         public bool TryDequeueBlockSet(out LanBlockSet block) => _inner.TryDequeueBlockSet(out block);
         public bool TryDequeueItemSpawn(out LanItemSpawn item) => _inner.TryDequeueItemSpawn(out item);
@@ -203,6 +239,11 @@ public static class WorldHostBootstrap
         public bool TryDequeuePlayerList(out LanPlayerList list) => _inner.TryDequeuePlayerList(out list);
         public bool TryDequeueChunkData(out LanChunkData chunk) => _inner.TryDequeueChunkData(out chunk);
         public bool TryDequeueWorldSyncComplete(out bool complete) => _inner.TryDequeueWorldSyncComplete(out complete);
+        public bool TryDequeueTeleport(out LanTeleport teleport) => _inner.TryDequeueTeleport(out teleport);
+        public bool TryDequeuePersistenceSnapshot(out LanPlayerPersistenceSnapshot snapshot) => _inner.TryDequeuePersistenceSnapshot(out snapshot);
+        public bool TryDequeuePersistenceRestore(out LanPlayerPersistenceSnapshot snapshot) => _inner.TryDequeuePersistenceRestore(out snapshot);
+        public bool TryDequeueDisconnectReason(out string reason) => _inner.TryDequeueDisconnectReason(out reason);
+        public bool KickPlayer(int targetPlayerId, string reason) => _inner.KickPlayer(targetPlayerId, reason);
 
         public void Dispose()
         {

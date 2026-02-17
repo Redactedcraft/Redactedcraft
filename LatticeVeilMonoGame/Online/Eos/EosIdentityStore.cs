@@ -18,6 +18,7 @@ public sealed class EosIdentityStore
 
     public string ProductUserId { get; set; } = "";
     public string DisplayName { get; set; } = "";
+    public string ReservedUsername { get; set; } = "";
 
     public static string IdentityPath => Path.Combine(Paths.ConfigDir, FileName);
 
@@ -49,6 +50,7 @@ public sealed class EosIdentityStore
 
             store.ProductUserId ??= "";
             store.DisplayName ??= "";
+            store.ReservedUsername ??= "";
             return store;
         }
         catch (Exception ex)
@@ -76,6 +78,7 @@ public sealed class EosIdentityStore
     {
         ProductUserId = "";
         DisplayName = "";
+        ReservedUsername = "";
         Save(log);
     }
 

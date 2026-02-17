@@ -43,13 +43,14 @@ public sealed class LanDiscovery : IDisposable
         _listenCts = null;
     }
 
-    public void StartBroadcast(string serverName, string gameVersion, int serverPort)
+    public void StartBroadcast(string serverName, string gameVersion, int serverPort, string gameMode = "Survival")
     {
         StopBroadcast();
         _broadcastCts = new CancellationTokenSource();
         var safeName = Sanitize(serverName);
         var safeVersion = Sanitize(gameVersion);
-        _ = Task.Run(() => BroadcastLoop(safeName, safeVersion, serverPort, _broadcastCts.Token));
+        var safeMode = Sanitize(gameMode);
+        _ = Task.Run(() => BroadcastLoop(safeName, safeVersion, serverPort, safeMode, _broadcastCts.Token));
     }
 
     public void StopBroadcast()
@@ -132,14 +133,14 @@ public sealed class LanDiscovery : IDisposable
         return client;
     }
 
-    private async Task BroadcastLoop(string serverName, string gameVersion, int serverPort, CancellationToken token)
+    private async Task BroadcastLoop(string serverName, string gameVersion, int serverPort, string gameMode, CancellationToken token)
     {
         try
         {
             using var client = new UdpClient();
             client.EnableBroadcast = true;
             var endpoint = new IPEndPoint(IPAddress.Broadcast, _port);
-            var payload = BuildBeacon(serverName, gameVersion, serverPort);
+            var payload = BuildBeacon(serverName, gameVersion, serverPort, gameMode);
 
             while (!token.IsCancellationRequested)
             {
@@ -156,9 +157,9 @@ public sealed class LanDiscovery : IDisposable
         }
     }
 
-    private static byte[] BuildBeacon(string serverName, string gameVersion, int serverPort)
+    private static byte[] BuildBeacon(string serverName, string gameVersion, int serverPort, string gameMode)
     {
-        var text = $"{serverName}|{gameVersion}|{serverPort}";
+        var text = $"{serverName}|{gameVersion}|{serverPort}|{gameMode}";
         return Encoding.UTF8.GetBytes(text);
     }
 
@@ -176,6 +177,9 @@ public sealed class LanDiscovery : IDisposable
         entry.ServerName = parts[0].Trim();
         entry.GameVersion = parts[1].Trim();
         entry.ServerPort = port;
+        if (parts.Length >= 4)
+            entry.GameMode = parts[3].Trim();
+
         return true;
     }
 
@@ -198,6 +202,7 @@ public sealed class LanServerEntry
 {
     public string ServerName { get; set; } = "server";
     public string GameVersion { get; set; } = "dev";
+    public string GameMode { get; set; } = "Survival";
     public int ServerPort { get; set; } = 0;
     public string Host { get; set; } = "";
     public IPEndPoint? Endpoint { get; set; }

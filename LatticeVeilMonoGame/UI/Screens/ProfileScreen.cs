@@ -1,4 +1,5 @@
 using System;
+using System.Threading.Tasks;
 using WinClipboard = System.Windows.Forms.Clipboard;
 using Microsoft.Xna.Framework;
 using Microsoft.Xna.Framework.Graphics;
@@ -12,13 +13,13 @@ namespace LatticeVeilMonoGame.UI.Screens;
 
 public sealed class ProfileScreen : IScreen
 {
-    private enum ProfileTab
+public enum ProfileScreenStartTab
     {
         Identity,
         Friends
     }
 
-    private enum FriendsListMode
+    public enum ProfileScreenFriendsMode
     {
         Friends,
         Requests,
@@ -64,8 +65,8 @@ public sealed class ProfileScreen : IScreen
     private Rectangle _friendsModeBlockedRect;
     private Rectangle _friendsRect;
 
-    private ProfileTab _activeTab = ProfileTab.Identity;
-    private FriendsListMode _friendsListMode = FriendsListMode.Friends;
+    private ProfileScreenStartTab _activeTab = ProfileScreenStartTab.Identity;
+    private ProfileScreenFriendsMode _friendsListMode = ProfileScreenFriendsMode.Friends;
     private int _selectedFriend = -1;
     private int _selectedRequest = -1;
     private int _selectedBlocked = -1;
@@ -81,7 +82,9 @@ public sealed class ProfileScreen : IScreen
     private DateTime _statusExpiryUtc = DateTime.MinValue;
 
     public ProfileScreen(MenuStack menus, AssetLoader assets, PixelFont font, Texture2D pixel, Logger log, PlayerProfile profile,
-        global::Microsoft.Xna.Framework.GraphicsDeviceManager graphics, EosClient? eosClient)
+        global::Microsoft.Xna.Framework.GraphicsDeviceManager graphics, EosClient? eosClient,
+        ProfileScreenStartTab startTab = ProfileScreenStartTab.Identity,
+        ProfileScreenFriendsMode startFriendsMode = ProfileScreenFriendsMode.Friends)
     {
         _menus = menus;
         _assets = assets;
@@ -94,15 +97,18 @@ public sealed class ProfileScreen : IScreen
         _identityStore = EosIdentityStore.LoadOrCreate(_log);
         _gate = OnlineGateClient.GetOrCreate();
 
-        _tabIdentityBtn = new Button("PROFILE", () => _activeTab = ProfileTab.Identity) { BoldText = true };
-        _tabFriendsBtn = new Button("FRIENDS", () => _activeTab = ProfileTab.Friends) { BoldText = true };
-        _friendsModeFriendsBtn = new Button("FRIENDS", () => _friendsListMode = FriendsListMode.Friends) { BoldText = true };
-        _friendsModeRequestsBtn = new Button("REQUESTS", () => _friendsListMode = FriendsListMode.Requests) { BoldText = true };
-        _friendsModeBlockedBtn = new Button("BLOCKED", () => _friendsListMode = FriendsListMode.Blocked) { BoldText = true };
+        _activeTab = startTab;
+        _friendsListMode = startFriendsMode;
+
+        _tabIdentityBtn = new Button("PROFILE", () => _activeTab = ProfileScreenStartTab.Identity) { BoldText = true };
+        _tabFriendsBtn = new Button("FRIENDS", () => _activeTab = ProfileScreenStartTab.Friends) { BoldText = true };
+        _friendsModeFriendsBtn = new Button("FRIENDS", () => _friendsListMode = ProfileScreenFriendsMode.Friends) { BoldText = true };
+        _friendsModeRequestsBtn = new Button("REQUESTS", () => _friendsListMode = ProfileScreenFriendsMode.Requests) { BoldText = true };
+        _friendsModeBlockedBtn = new Button("BLOCKED", () => _friendsListMode = ProfileScreenFriendsMode.Blocked) { BoldText = true };
         _addFriendBtn = new Button("ADD FRIEND", OpenAddFriend) { BoldText = true };
-        _removeFriendBtn = new Button("REMOVE FRIEND", () => _ = RemoveSelectedFriendAsync()) { BoldText = true };
-        _acceptRequestBtn = new Button("ACCEPT", () => _ = AcceptSelectedRequestAsync()) { BoldText = true };
-        _denyRequestBtn = new Button("DENY", () => _ = DenySelectedRequestAsync()) { BoldText = true };
+        _removeFriendBtn = new Button("REMOVE FRIEND", () => _ = RemoveFriendAsync()) { BoldText = true };
+        _acceptRequestBtn = new Button("ACCEPT", () => _ = AcceptRequestAsync()) { BoldText = true };
+        _denyRequestBtn = new Button("DENY", () => _ = DenyRequestAsync()) { BoldText = true };
         _blockUserBtn = new Button("BLOCK", () => _ = BlockSelectedUserAsync()) { BoldText = true };
         _unblockUserBtn = new Button("UNBLOCK", () => _ = UnblockSelectedUserAsync()) { BoldText = true };
         _copyIdBtn = new Button("COPY MY ID", CopyLocalId) { BoldText = true };
@@ -124,53 +130,64 @@ public sealed class ProfileScreen : IScreen
     {
         _viewport = viewport;
 
-        var panelW = Math.Min(860, (int)(viewport.Width * 0.94f));
-        var panelH = Math.Min(520, (int)(viewport.Height * 0.86f));
+        var panelW = Math.Min(1300, viewport.Width - 20);
+        var panelH = Math.Min(700, viewport.Height - 30);
         var panelX = viewport.X + (viewport.Width - panelW) / 2;
         var panelY = viewport.Y + (viewport.Height - panelH) / 2;
         _panelRect = new Rectangle(panelX, panelY, panelW, panelH);
 
-        var pad = 16;
-        var tabY = _panelRect.Y + 52;
-        var tabW = (_panelRect.Width - (pad * 2) - 8) / 2;
+        // 1 inch inset (approx 96 pixels)
+        var margin = 96;
+        var contentRect = new Rectangle(_panelRect.X + margin, _panelRect.Y + margin, _panelRect.Width - margin * 2, _panelRect.Height - margin * 2);
+
+        var tabY = contentRect.Y;
+        var tabW = 200; 
         var tabH = _font.LineHeight + 12;
-        _tabIdentityRect = new Rectangle(_panelRect.X + pad, tabY, tabW, tabH);
+        _tabIdentityRect = new Rectangle(contentRect.X, tabY, tabW, tabH);
         _tabFriendsRect = new Rectangle(_tabIdentityRect.Right + 8, tabY, tabW, tabH);
         _tabIdentityBtn.Bounds = _tabIdentityRect;
         _tabFriendsBtn.Bounds = _tabFriendsRect;
 
-        _usernameRect = new Rectangle(_panelRect.X + pad, _tabIdentityRect.Bottom + _font.LineHeight + 16, _panelRect.Width - pad * 2, _font.LineHeight + 18);
-        _iconRect = new Rectangle(_panelRect.Right - pad - 98, _usernameRect.Bottom + 12, 98, 98);
+        _usernameRect = new Rectangle(contentRect.X, _tabIdentityRect.Bottom + 16, contentRect.Width, _font.LineHeight + 18);
+        _iconRect = new Rectangle(contentRect.Right - 98, _usernameRect.Bottom + 12, 98, 98);
+        
         var modeY = _tabIdentityRect.Bottom + 12;
         var modeH = _font.LineHeight + 10;
         var modeGap = 8;
-        var modeW = (_panelRect.Width - (pad * 2) - (modeGap * 2)) / 3;
-        _friendsModeFriendsRect = new Rectangle(_panelRect.X + pad, modeY, modeW, modeH);
+        var modeW = 150; 
+        _friendsModeFriendsRect = new Rectangle(contentRect.X, modeY, modeW, modeH);
         _friendsModeRequestsRect = new Rectangle(_friendsModeFriendsRect.Right + modeGap, modeY, modeW, modeH);
         _friendsModeBlockedRect = new Rectangle(_friendsModeRequestsRect.Right + modeGap, modeY, modeW, modeH);
         _friendsModeFriendsBtn.Bounds = _friendsModeFriendsRect;
         _friendsModeRequestsBtn.Bounds = _friendsModeRequestsRect;
         _friendsModeBlockedBtn.Bounds = _friendsModeBlockedRect;
 
-        var friendsY = _friendsModeFriendsRect.Bottom + 8;
+        var friendsY = _friendsModeFriendsRect.Bottom + 12;
+        var actionAreaH = 60;
         _friendsRect = new Rectangle(
-            _panelRect.X + pad,
+            contentRect.X,
             friendsY,
-            _panelRect.Width - pad * 2,
-            Math.Max(120, _panelRect.Bottom - 120 - friendsY));
+            contentRect.Width,
+            contentRect.Bottom - friendsY - actionAreaH - 12);
 
-        var buttonY = _panelRect.Bottom - 58;
+        var buttonY = contentRect.Bottom - actionAreaH;
         var gap = 8;
         var buttonH = Math.Max(44, _font.LineHeight * 2);
-        _copyIdBtn.Bounds = new Rectangle(_panelRect.X + pad, buttonY, _panelRect.Width - pad * 2, buttonH);
-        var friendsButtonW = (_panelRect.Width - pad * 2 - gap * 2) / 3;
-        _addFriendBtn.Bounds = new Rectangle(_panelRect.X + pad, buttonY, friendsButtonW, buttonH);
+        
+        // Identity view actions
+        _copyIdBtn.Bounds = new Rectangle(contentRect.X, buttonY, contentRect.Width, buttonH);
+        
+        // Friends view actions
+        var friendsButtonW = (contentRect.Width - gap * 2) / 3;
+        _addFriendBtn.Bounds = new Rectangle(contentRect.X, buttonY, friendsButtonW, buttonH);
         _removeFriendBtn.Bounds = new Rectangle(_addFriendBtn.Bounds.Right + gap, buttonY, friendsButtonW, buttonH);
         _blockUserBtn.Bounds = new Rectangle(_removeFriendBtn.Bounds.Right + gap, buttonY, friendsButtonW, buttonH);
+        
         _acceptRequestBtn.Bounds = _addFriendBtn.Bounds;
         _denyRequestBtn.Bounds = _removeFriendBtn.Bounds;
         _unblockUserBtn.Bounds = _addFriendBtn.Bounds;
 
+        // Back button matches SingleplayerScreen position (outside the main panel, bottom-left of viewport)
         var backBtnMargin = 20;
         var backBtnBaseW = Math.Max(_backBtn.Texture?.Width ?? 0, 320);
         var backBtnBaseH = Math.Max(_backBtn.Texture?.Height ?? 0, (int)(backBtnBaseW * 0.28f));
@@ -198,7 +215,7 @@ public sealed class ProfileScreen : IScreen
         _tabFriendsBtn.Update(input);
         _backBtn.Update(input);
 
-        if (_activeTab == ProfileTab.Identity)
+        if (_activeTab == ProfileScreenStartTab.Identity)
         {
             _copyIdBtn.Update(input);
         }
@@ -208,23 +225,23 @@ public sealed class ProfileScreen : IScreen
             _friendsModeRequestsBtn.Update(input);
             _friendsModeBlockedBtn.Update(input);
 
-            _addFriendBtn.Enabled = _friendsListMode == FriendsListMode.Friends;
-            _removeFriendBtn.Enabled = _friendsListMode == FriendsListMode.Friends
+            _addFriendBtn.Enabled = _friendsListMode == ProfileScreenFriendsMode.Friends;
+            _removeFriendBtn.Enabled = _friendsListMode == ProfileScreenFriendsMode.Friends
                 && _selectedFriend >= 0
                 && _selectedFriend < _profile.Friends.Count;
-            _blockUserBtn.Enabled = (_friendsListMode == FriendsListMode.Friends
+            _blockUserBtn.Enabled = (_friendsListMode == ProfileScreenFriendsMode.Friends
                     && _selectedFriend >= 0
                     && _selectedFriend < _profile.Friends.Count)
-                || (_friendsListMode == FriendsListMode.Requests
+                || (_friendsListMode == ProfileScreenFriendsMode.Requests
                     && _selectedRequest >= 0
                     && _selectedRequest < _incomingRequests.Count);
-            _acceptRequestBtn.Enabled = _friendsListMode == FriendsListMode.Requests
+            _acceptRequestBtn.Enabled = _friendsListMode == ProfileScreenFriendsMode.Requests
                 && _selectedRequest >= 0
                 && _selectedRequest < _incomingRequests.Count;
-            _denyRequestBtn.Enabled = _friendsListMode == FriendsListMode.Requests
+            _denyRequestBtn.Enabled = _friendsListMode == ProfileScreenFriendsMode.Requests
                 && _selectedRequest >= 0
                 && _selectedRequest < _incomingRequests.Count;
-            _unblockUserBtn.Enabled = _friendsListMode == FriendsListMode.Blocked
+            _unblockUserBtn.Enabled = _friendsListMode == ProfileScreenFriendsMode.Blocked
                 && _selectedBlocked >= 0
                 && _selectedBlocked < _blockedUsers.Count;
 
@@ -258,12 +275,9 @@ public sealed class ProfileScreen : IScreen
         if (_panel is not null) sb.Draw(_panel, _panelRect, Color.White);
         else sb.Draw(_pixel, _panelRect, new Color(0, 0, 0, 200));
 
-        var titlePos = new Vector2(_panelRect.X + 18, _panelRect.Y + 14);
-        DrawTextBold(sb, "PROFILE", titlePos, Color.White);
-
         DrawTabs(sb);
 
-        if (_activeTab == ProfileTab.Identity)
+        if (_activeTab == ProfileScreenStartTab.Identity)
             DrawIdentityTab(sb);
         else
             DrawFriendsTab(sb);
@@ -274,7 +288,7 @@ public sealed class ProfileScreen : IScreen
             _font.DrawString(sb, _status, statusPos, Color.White);
         }
 
-        if (_activeTab == ProfileTab.Identity)
+        if (_activeTab == ProfileScreenStartTab.Identity)
         {
             _copyIdBtn.Draw(sb, _pixel, _font);
         }
@@ -284,13 +298,13 @@ public sealed class ProfileScreen : IScreen
             _friendsModeRequestsBtn.Draw(sb, _pixel, _font);
             _friendsModeBlockedBtn.Draw(sb, _pixel, _font);
 
-            if (_friendsListMode == FriendsListMode.Friends)
+            if (_friendsListMode == ProfileScreenFriendsMode.Friends)
             {
                 _addFriendBtn.Draw(sb, _pixel, _font);
                 _removeFriendBtn.Draw(sb, _pixel, _font);
                 _blockUserBtn.Draw(sb, _pixel, _font);
             }
-            else if (_friendsListMode == FriendsListMode.Requests)
+            else if (_friendsListMode == ProfileScreenFriendsMode.Requests)
             {
                 _acceptRequestBtn.Draw(sb, _pixel, _font);
                 _denyRequestBtn.Draw(sb, _pixel, _font);
@@ -311,8 +325,8 @@ public sealed class ProfileScreen : IScreen
 
     private void DrawTabs(SpriteBatch sb)
     {
-        var identityColor = _activeTab == ProfileTab.Identity ? new Color(60, 60, 60, 220) : new Color(30, 30, 30, 220);
-        var friendsColor = _activeTab == ProfileTab.Friends ? new Color(60, 60, 60, 220) : new Color(30, 30, 30, 220);
+        var identityColor = _activeTab == ProfileScreenStartTab.Identity ? new Color(60, 60, 60, 220) : new Color(30, 30, 30, 220);
+        var friendsColor = _activeTab == ProfileScreenStartTab.Friends ? new Color(60, 60, 60, 220) : new Color(30, 30, 30, 220);
         sb.Draw(_pixel, _tabIdentityRect, identityColor);
         sb.Draw(_pixel, _tabFriendsRect, friendsColor);
         DrawBorder(sb, _tabIdentityRect, Color.White);
@@ -323,8 +337,9 @@ public sealed class ProfileScreen : IScreen
     {
         var x = _panelRect.X + 16;
         var y = _tabIdentityRect.Bottom + 14;
-
-        _font.DrawString(sb, "RESERVED USERNAME (LAUNCHER)", new Vector2(x, y), Color.White);
+        
+        // Offset for identity details (1 inch right)
+        var detailX = x + 96;
 
         sb.Draw(_pixel, _usernameRect, new Color(30, 30, 30, 230));
         DrawBorder(sb, _usernameRect, Color.White);
@@ -335,7 +350,7 @@ public sealed class ProfileScreen : IScreen
             name = "(unclaimed)";
         var npos = new Vector2(_usernameRect.X + 8, _usernameRect.Y + (_usernameRect.Height - _font.LineHeight) / 2f);
         _font.DrawString(sb, name, npos, Color.White);
-        _font.DrawString(sb, "Change username in Lattice Launcher (CLAIM/CHANGE).", new Vector2(x, _usernameRect.Bottom + 6), new Color(180, 180, 180));
+        _font.DrawString(sb, "Change username in Lattice Launcher (CLAIM/CHANGE).", new Vector2(detailX, _usernameRect.Bottom + 6), new Color(180, 180, 180));
 
         sb.Draw(_pixel, _iconRect, new Color(26, 26, 26, 220));
         DrawBorder(sb, _iconRect, new Color(160, 160, 160));
@@ -344,19 +359,19 @@ public sealed class ProfileScreen : IScreen
 
         var infoY = _iconRect.Bottom + 12;
         var eosSnapshot = EosRuntimeStatus.Evaluate(_eos);
-        _font.DrawString(sb, eosSnapshot.StatusText, new Vector2(x, infoY), new Color(220, 180, 80));
+        _font.DrawString(sb, eosSnapshot.StatusText, new Vector2(detailX, infoY), new Color(220, 180, 80));
         infoY += _font.LineHeight + 4;
 
         var id = (_eos?.LocalProductUserId ?? _identityStore.ProductUserId ?? string.Empty).Trim();
         var friendCode = string.IsNullOrWhiteSpace(id) ? string.Empty : EosIdentityStore.GenerateFriendCode(id);
         var reserved = (_identityStore.ReservedUsername ?? string.Empty).Trim();
-        _font.DrawString(sb, $"MY ID: {(string.IsNullOrWhiteSpace(id) ? "(waiting...)" : id)}", new Vector2(x, infoY), Color.White);
+        _font.DrawString(sb, $"MY ID: {(string.IsNullOrWhiteSpace(id) ? "(waiting...)" : id)}", new Vector2(detailX, infoY), Color.White);
         infoY += _font.LineHeight + 2;
-        _font.DrawString(sb, $"RESERVED USERNAME: {(string.IsNullOrWhiteSpace(reserved) ? "(unclaimed)" : reserved)}", new Vector2(x, infoY), Color.White);
+        _font.DrawString(sb, $"RESERVED USERNAME: {(string.IsNullOrWhiteSpace(reserved) ? "(unclaimed)" : reserved)}", new Vector2(detailX, infoY), Color.White);
         infoY += _font.LineHeight + 2;
-        _font.DrawString(sb, $"MY FRIEND CODE: {(string.IsNullOrWhiteSpace(friendCode) ? "(waiting...)" : friendCode)}", new Vector2(x, infoY), Color.White);
+        _font.DrawString(sb, $"MY FRIEND CODE: {(string.IsNullOrWhiteSpace(friendCode) ? "(waiting...)" : friendCode)}", new Vector2(detailX, infoY), Color.White);
         infoY += _font.LineHeight + 2;
-        _font.DrawString(sb, $"EOS Config: {EosRuntimeStatus.DescribeConfigSource()}", new Vector2(x, infoY), new Color(180, 180, 180));
+        _font.DrawString(sb, $"EOS Config: {EosRuntimeStatus.DescribeConfigSource()}", new Vector2(detailX, infoY), new Color(180, 180, 180));
     }
 
     private void DrawFriendsTab(SpriteBatch sb)
@@ -368,13 +383,13 @@ public sealed class ProfileScreen : IScreen
 
         var title = _friendsListMode switch
         {
-            FriendsListMode.Requests => "INCOMING REQUESTS",
-            FriendsListMode.Blocked => "BLOCKED USERS",
+            ProfileScreenFriendsMode.Requests => "INCOMING REQUESTS",
+            ProfileScreenFriendsMode.Blocked => "BLOCKED USERS",
             _ => "SAVED FRIENDS"
         };
         _font.DrawString(sb, title, new Vector2(_friendsRect.X + 8, _friendsRect.Y + 6), Color.White);
 
-        if (_friendsListMode == FriendsListMode.Requests)
+        if (_friendsListMode == ProfileScreenFriendsMode.Requests)
         {
             _font.DrawString(
                 sb,
@@ -385,7 +400,7 @@ public sealed class ProfileScreen : IScreen
 
         var rowH = _font.LineHeight + 8;
         var y = _friendsRect.Y + _font.LineHeight + 12;
-        if (_friendsListMode == FriendsListMode.Friends)
+        if (_friendsListMode == ProfileScreenFriendsMode.Friends)
         {
             if (_profile.Friends.Count == 0)
             {
@@ -416,30 +431,62 @@ public sealed class ProfileScreen : IScreen
             return;
         }
 
-        if (_friendsListMode == FriendsListMode.Requests)
+        if (_friendsListMode == ProfileScreenFriendsMode.Requests)
         {
-            if (_incomingRequests.Count == 0)
+            if (_incomingRequests.Count == 0 && _outgoingRequests.Count == 0)
             {
                 _font.DrawString(sb, "(no pending requests)", new Vector2(_friendsRect.X + 8, _friendsRect.Y + _font.LineHeight + 10), new Color(180, 180, 180));
                 return;
             }
 
-            for (var i = 0; i < _incomingRequests.Count; i++)
+            // Incoming
+            if (_incomingRequests.Count > 0)
             {
-                var row = new Rectangle(_friendsRect.X + 6, y, _friendsRect.Width - 12, rowH);
-                var selected = i == _selectedRequest;
-                sb.Draw(_pixel, row, selected ? new Color(90, 72, 40, 220) : new Color(26, 26, 26, 200));
-                DrawBorder(sb, row, selected ? new Color(240, 220, 160) : new Color(110, 110, 110));
+                _font.DrawString(sb, "INCOMING:", new Vector2(_friendsRect.X + 8, y - 4), new Color(200, 200, 200));
+                y += _font.LineHeight + 4;
 
-                var req = _incomingRequests[i];
-                var user = req.User;
-                var displayName = !string.IsNullOrWhiteSpace(user.DisplayName) ? user.DisplayName : PlayerProfile.ShortId(user.ProductUserId);
-                var line = $"{displayName} ({user.FriendCode})";
-                _font.DrawString(sb, line, new Vector2(row.X + 8, row.Y + 3), Color.White);
+                for (var i = 0; i < _incomingRequests.Count; i++)
+                {
+                    var row = new Rectangle(_friendsRect.X + 6, y, _friendsRect.Width - 12, rowH);
+                    var selected = i == _selectedRequest;
+                    sb.Draw(_pixel, row, selected ? new Color(90, 72, 40, 220) : new Color(26, 26, 26, 200));
+                    DrawBorder(sb, row, selected ? new Color(240, 220, 160) : new Color(110, 110, 110));
 
-                y += rowH + 4;
-                if (y + rowH > _friendsRect.Bottom - 8)
-                    break;
+                    var req = _incomingRequests[i];
+                    var user = req.User;
+                    var displayName = !string.IsNullOrWhiteSpace(user.DisplayName) ? user.DisplayName : PlayerProfile.ShortId(user.ProductUserId);
+                    var line = $"{displayName} ({user.FriendCode})";
+                    _font.DrawString(sb, line, new Vector2(row.X + 8, row.Y + 3), Color.White);
+
+                    y += rowH + 4;
+                    if (y + rowH > _friendsRect.Bottom - 8)
+                        break;
+                }
+            }
+
+            // Outgoing
+            if (_outgoingRequests.Count > 0 && y + rowH + 20 < _friendsRect.Bottom)
+            {
+                y += 8;
+                _font.DrawString(sb, "OUTGOING:", new Vector2(_friendsRect.X + 8, y), new Color(200, 200, 200));
+                y += _font.LineHeight + 4;
+
+                for (var i = 0; i < _outgoingRequests.Count; i++)
+                {
+                    var row = new Rectangle(_friendsRect.X + 6, y, _friendsRect.Width - 12, rowH);
+                    sb.Draw(_pixel, row, new Color(20, 20, 20, 180));
+                    DrawBorder(sb, row, new Color(80, 80, 80));
+
+                    var req = _outgoingRequests[i];
+                    var user = req.User;
+                    var displayName = !string.IsNullOrWhiteSpace(user.DisplayName) ? user.DisplayName : PlayerProfile.ShortId(user.ProductUserId);
+                    var line = $"{displayName} ({user.FriendCode}) [PENDING]";
+                    _font.DrawString(sb, line, new Vector2(row.X + 8, row.Y + 3), new Color(180, 180, 180));
+
+                    y += rowH + 4;
+                    if (y + rowH > _friendsRect.Bottom - 8)
+                        break;
+                }
             }
 
             return;
@@ -473,9 +520,9 @@ public sealed class ProfileScreen : IScreen
 
     private void DrawFriendsModeTabs(SpriteBatch sb)
     {
-        var friendsColor = _friendsListMode == FriendsListMode.Friends ? new Color(60, 60, 60, 220) : new Color(30, 30, 30, 220);
-        var requestsColor = _friendsListMode == FriendsListMode.Requests ? new Color(60, 60, 60, 220) : new Color(30, 30, 30, 220);
-        var blockedColor = _friendsListMode == FriendsListMode.Blocked ? new Color(60, 60, 60, 220) : new Color(30, 30, 30, 220);
+        var friendsColor = _friendsListMode == ProfileScreenFriendsMode.Friends ? new Color(60, 60, 60, 220) : new Color(30, 30, 30, 220);
+        var requestsColor = _friendsListMode == ProfileScreenFriendsMode.Requests ? new Color(60, 60, 60, 220) : new Color(30, 30, 30, 220);
+        var blockedColor = _friendsListMode == ProfileScreenFriendsMode.Blocked ? new Color(60, 60, 60, 220) : new Color(30, 30, 30, 220);
         sb.Draw(_pixel, _friendsModeFriendsRect, friendsColor);
         sb.Draw(_pixel, _friendsModeRequestsRect, requestsColor);
         sb.Draw(_pixel, _friendsModeBlockedRect, blockedColor);
@@ -499,7 +546,7 @@ public sealed class ProfileScreen : IScreen
             return;
 
         var index = relY / (rowH + 4);
-        if (_friendsListMode == FriendsListMode.Friends)
+        if (_friendsListMode == ProfileScreenFriendsMode.Friends)
         {
             if (index < 0 || index >= _profile.Friends.Count)
                 return;
@@ -507,7 +554,7 @@ public sealed class ProfileScreen : IScreen
             return;
         }
 
-        if (_friendsListMode == FriendsListMode.Requests)
+        if (_friendsListMode == ProfileScreenFriendsMode.Requests)
         {
             if (index < 0 || index >= _incomingRequests.Count)
                 return;
@@ -522,10 +569,10 @@ public sealed class ProfileScreen : IScreen
 
     private void OpenAddFriend()
     {
-        _menus.Push(new JoinByCodeScreen(_menus, _assets, _font, _pixel, _log, _profile, _graphics, _eos, null), _viewport);
+        _menus.Push(new AddFriendScreen(_menus, _assets, _font, _pixel, _log, _profile, _graphics, _eos), _viewport);
     }
 
-    private async Task RemoveSelectedFriendAsync()
+    private async Task RemoveFriendAsync()
     {
         if (_selectedFriend < 0 || _selectedFriend >= _profile.Friends.Count)
         {
@@ -566,7 +613,7 @@ public sealed class ProfileScreen : IScreen
         SetStatus($"Removed {PlayerProfile.ShortId(entry.UserId)}.");
     }
 
-    private async Task AcceptSelectedRequestAsync()
+    private async Task AcceptRequestAsync()
     {
         if (_selectedRequest < 0 || _selectedRequest >= _incomingRequests.Count)
         {
@@ -574,31 +621,19 @@ public sealed class ProfileScreen : IScreen
             return;
         }
 
-        if (!_gate.CanUseOfficialOnline(_log, out var gateDenied))
+        var req = _incomingRequests[_selectedRequest];
+        var result = await _gate.RespondToFriendRequestAsync(requesterProductUserId: req.ProductUserId, accept: true);
+        if (!result.Ok)
         {
-            SetStatus(gateDenied);
-            return;
-        }
-
-        var request = _incomingRequests[_selectedRequest];
-        var respond = await _gate.RespondToFriendRequestAsync(request.ProductUserId, accept: true, block: false);
-        if (!respond.Ok)
-        {
-            if (IsMissingFriendsEndpointError(respond.Message))
-            {
-                _friendsEndpointUnavailable = true;
-                _nextFriendsSyncUtc = DateTime.UtcNow.AddSeconds(45);
-            }
-
-            SetStatus(string.IsNullOrWhiteSpace(respond.Message) ? "Could not accept request." : respond.Message);
+            SetStatus(result.Message ?? "Failed to accept request.");
             return;
         }
 
         await SyncCanonicalFriendsAsync(seedFromLocal: false);
-        SetStatus("Friend request accepted.");
+        SetStatus($"Accepted {req.User.DisplayName}.");
     }
 
-    private async Task DenySelectedRequestAsync()
+    private async Task DenyRequestAsync()
     {
         if (_selectedRequest < 0 || _selectedRequest >= _incomingRequests.Count)
         {
@@ -606,34 +641,22 @@ public sealed class ProfileScreen : IScreen
             return;
         }
 
-        if (!_gate.CanUseOfficialOnline(_log, out var gateDenied))
+        var req = _incomingRequests[_selectedRequest];
+        var result = await _gate.RespondToFriendRequestAsync(requesterProductUserId: req.ProductUserId, accept: false);
+        if (!result.Ok)
         {
-            SetStatus(gateDenied);
-            return;
-        }
-
-        var request = _incomingRequests[_selectedRequest];
-        var respond = await _gate.RespondToFriendRequestAsync(request.ProductUserId, accept: false, block: false);
-        if (!respond.Ok)
-        {
-            if (IsMissingFriendsEndpointError(respond.Message))
-            {
-                _friendsEndpointUnavailable = true;
-                _nextFriendsSyncUtc = DateTime.UtcNow.AddSeconds(45);
-            }
-
-            SetStatus(string.IsNullOrWhiteSpace(respond.Message) ? "Could not deny request." : respond.Message);
+            SetStatus(result.Message ?? "Failed to deny request.");
             return;
         }
 
         await SyncCanonicalFriendsAsync(seedFromLocal: false);
-        SetStatus("Friend request denied.");
+        SetStatus($"Denied {req.User.DisplayName}.");
     }
 
     private async Task BlockSelectedUserAsync()
     {
         string targetId;
-        if (_friendsListMode == FriendsListMode.Friends)
+        if (_friendsListMode == ProfileScreenFriendsMode.Friends)
         {
             if (_selectedFriend < 0 || _selectedFriend >= _profile.Friends.Count)
             {
@@ -643,7 +666,7 @@ public sealed class ProfileScreen : IScreen
 
             targetId = (_profile.Friends[_selectedFriend].UserId ?? string.Empty).Trim();
         }
-        else if (_friendsListMode == FriendsListMode.Requests)
+        else if (_friendsListMode == ProfileScreenFriendsMode.Requests)
         {
             if (_selectedRequest < 0 || _selectedRequest >= _incomingRequests.Count)
             {
@@ -686,7 +709,7 @@ public sealed class ProfileScreen : IScreen
 
         await SyncCanonicalFriendsAsync(seedFromLocal: false);
         SetStatus("User blocked.");
-        _friendsListMode = FriendsListMode.Blocked;
+        _friendsListMode = ProfileScreenFriendsMode.Blocked;
     }
 
     private async Task UnblockSelectedUserAsync()
@@ -744,7 +767,7 @@ public sealed class ProfileScreen : IScreen
                 if (IsMissingFriendsEndpointError(serverFriends.Message))
                 {
                     if (!_friendsEndpointUnavailable)
-                        SetStatus("Server friends endpoint unavailable. Using local friends list.");
+                        SetStatus(string.IsNullOrWhiteSpace(serverFriends.Message) ? "Server friends endpoint unavailable." : serverFriends.Message);
                     _friendsEndpointUnavailable = true;
                     _friendsSeedAttempted = true;
                     _nextFriendsSyncUtc = DateTime.UtcNow.AddSeconds(45);
@@ -855,6 +878,17 @@ public sealed class ProfileScreen : IScreen
         {
             _friendsSyncInProgress = false;
         }
+    }
+
+    private void ShowFriendsUnavailableError()
+    {
+        _friendsEndpointUnavailable = true;
+        _nextFriendsSyncUtc = DateTime.UtcNow.AddSeconds(45);
+    }
+
+    private async Task RefreshProfileDataAsync()
+    {
+        await SyncCanonicalFriendsAsync(seedFromLocal: false);
     }
 
     private static bool IsMissingFriendsEndpointError(string? message)

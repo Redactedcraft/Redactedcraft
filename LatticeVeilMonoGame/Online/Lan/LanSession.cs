@@ -24,7 +24,12 @@ public enum LanMessageType : byte
     WorldSyncComplete = 8,
     ItemSpawn = 9,
     ItemPickup = 10,
-    Chat = 11
+    Chat = 11,
+    JoinDenied = 12,
+    Teleport = 13,
+    HostShutdown = 14,
+    PersistenceSnapshot = 15,
+    PersistenceRestore = 16
 }
 
 public enum LanChatKind : byte
@@ -44,6 +49,7 @@ public readonly struct LanWorldInfo
     public int Depth { get; init; }
     public int Seed { get; init; }
     public bool PlayerCollision { get; init; }
+    public string WorldId { get; init; }
 }
 
 public readonly struct LanPlayerState
@@ -111,6 +117,24 @@ public readonly struct LanChatMessage
     public long TimestampUtc { get; init; }
 }
 
+public readonly struct LanTeleport
+{
+    public int TargetPlayerId { get; init; }
+    public int X { get; init; }
+    public int Y { get; init; }
+    public int Z { get; init; }
+    public float Yaw { get; init; }
+    public float Pitch { get; init; }
+}
+
+public readonly struct LanPlayerPersistenceSnapshot
+{
+    public int PlayerId { get; init; }
+    public string Username { get; init; }
+    public byte[] Payload { get; init; }
+    public long TimestampUtc { get; init; }
+}
+
 public interface ILanSession : IDisposable
 {
     bool IsHost { get; }
@@ -121,6 +145,9 @@ public interface ILanSession : IDisposable
     void SendItemSpawn(LanItemSpawn item);
     void SendItemPickup(int itemId);
     void SendChat(LanChatMessage message);
+    void SendPersistenceSnapshot(LanPlayerPersistenceSnapshot snapshot);
+    bool SendPersistenceRestore(int targetPlayerId, LanPlayerPersistenceSnapshot snapshot);
+    bool SendTeleport(int targetPlayerId, Vector3 position, float yaw, float pitch);
     bool TryDequeuePlayerState(out LanPlayerState state);
     bool TryDequeueBlockSet(out LanBlockSet block);
     bool TryDequeueItemSpawn(out LanItemSpawn item);
@@ -129,6 +156,11 @@ public interface ILanSession : IDisposable
     bool TryDequeuePlayerList(out LanPlayerList list);
     bool TryDequeueChunkData(out LanChunkData chunk);
     bool TryDequeueWorldSyncComplete(out bool complete);
+    bool TryDequeueTeleport(out LanTeleport teleport);
+    bool TryDequeuePersistenceSnapshot(out LanPlayerPersistenceSnapshot snapshot);
+    bool TryDequeuePersistenceRestore(out LanPlayerPersistenceSnapshot snapshot);
+    bool TryDequeueDisconnectReason(out string reason);
+    bool KickPlayer(int targetPlayerId, string reason);
 }
 
 public sealed class LanHostSession : ILanSession
@@ -145,6 +177,7 @@ public sealed class LanHostSession : ILanSession
     private readonly ConcurrentQueue<LanPlayerList> _playerLists = new();
     private readonly ConcurrentQueue<LanChunkData> _chunkData = new();
     private readonly ConcurrentQueue<bool> _worldSyncComplete = new();
+    private readonly ConcurrentQueue<LanPlayerPersistenceSnapshot> _persistenceSnapshots = new();
     private readonly Dictionary<int, ClientState> _clients = new();
     private readonly object _clientLock = new();
     private CancellationTokenSource? _cts;
@@ -219,6 +252,34 @@ public sealed class LanHostSession : ILanSession
         BroadcastChat(normalized);
     }
 
+    public void SendPersistenceSnapshot(LanPlayerPersistenceSnapshot snapshot)
+    {
+        // Host does not send snapshots to itself.
+    }
+
+    public bool SendPersistenceRestore(int targetPlayerId, LanPlayerPersistenceSnapshot snapshot)
+    {
+        if (!IsConnected || targetPlayerId <= 0)
+            return false;
+
+        ClientState? target = null;
+        lock (_clientLock)
+            _clients.TryGetValue(targetPlayerId, out target);
+
+        if (target == null)
+            return false;
+
+        var normalized = new LanPlayerPersistenceSnapshot
+        {
+            PlayerId = targetPlayerId,
+            Username = snapshot.Username ?? string.Empty,
+            Payload = snapshot.Payload ?? Array.Empty<byte>(),
+            TimestampUtc = snapshot.TimestampUtc <= 0 ? DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() : snapshot.TimestampUtc
+        };
+        LanWire.SendPersistenceRestore(target, normalized);
+        return true;
+    }
+
     public bool TryDequeuePlayerState(out LanPlayerState state) => _playerStates.TryDequeue(out state);
     public bool TryDequeueBlockSet(out LanBlockSet block) => _blockSets.TryDequeue(out block);
     public bool TryDequeueItemSpawn(out LanItemSpawn item) => _itemSpawns.TryDequeue(out item);
@@ -227,6 +288,75 @@ public sealed class LanHostSession : ILanSession
     public bool TryDequeuePlayerList(out LanPlayerList list) => _playerLists.TryDequeue(out list);
     public bool TryDequeueChunkData(out LanChunkData chunk) => _chunkData.TryDequeue(out chunk);
     public bool TryDequeueWorldSyncComplete(out bool complete) => _worldSyncComplete.TryDequeue(out complete);
+    public bool TryDequeueTeleport(out LanTeleport teleport)
+    {
+        teleport = default;
+        return false;
+    }
+    public bool TryDequeuePersistenceSnapshot(out LanPlayerPersistenceSnapshot snapshot) => _persistenceSnapshots.TryDequeue(out snapshot);
+    public bool TryDequeuePersistenceRestore(out LanPlayerPersistenceSnapshot snapshot)
+    {
+        snapshot = default;
+        return false;
+    }
+    public bool TryDequeueDisconnectReason(out string reason)
+    {
+        reason = string.Empty;
+        return false;
+    }
+
+    public bool SendTeleport(int targetPlayerId, Vector3 position, float yaw, float pitch)
+    {
+        if (!IsConnected || targetPlayerId <= 0)
+            return false;
+
+        ClientState? target = null;
+        lock (_clientLock)
+            _clients.TryGetValue(targetPlayerId, out target);
+
+        if (target == null)
+            return false;
+
+        var teleport = new LanTeleport
+        {
+            TargetPlayerId = targetPlayerId,
+            X = (int)MathF.Floor(position.X),
+            Y = (int)MathF.Floor(position.Y),
+            Z = (int)MathF.Floor(position.Z),
+            Yaw = yaw,
+            Pitch = pitch
+        };
+        LanWire.SendTeleport(target, teleport);
+        return true;
+    }
+
+    public bool KickPlayer(int targetPlayerId, string reason)
+    {
+        if (!IsConnected || targetPlayerId <= 0)
+            return false;
+
+        ClientState? target = null;
+        lock (_clientLock)
+            _clients.TryGetValue(targetPlayerId, out target);
+
+        if (target == null)
+            return false;
+
+        var normalizedReason = string.IsNullOrWhiteSpace(reason)
+            ? "Kicked by host."
+            : $"Kicked by host: {reason.Trim()}";
+        try
+        {
+            LanWire.SendHostShutdown(target, normalizedReason);
+        }
+        catch (Exception ex)
+        {
+            _log.Warn($"Failed to send kick notice to player {targetPlayerId}: {ex.Message}");
+        }
+
+        RemoveClient(targetPlayerId);
+        return true;
+    }
 
     private void HandleClientConnected(LocalLanConnection connection)
     {
@@ -300,6 +430,16 @@ public sealed class LanHostSession : ILanSession
                         if (normalized.ToPlayerId < 0 || normalized.ToPlayerId == LocalPlayerId || normalized.FromPlayerId == LocalPlayerId)
                             _chatMessages.Enqueue(normalized);
                         BroadcastChat(normalized);
+                        break;
+                    case LanMessageType.PersistenceSnapshot:
+                        var snapshot = msg.Value.PersistenceSnapshot;
+                        _persistenceSnapshots.Enqueue(new LanPlayerPersistenceSnapshot
+                        {
+                            PlayerId = client.Id,
+                            Username = snapshot.Username ?? string.Empty,
+                            Payload = snapshot.Payload ?? Array.Empty<byte>(),
+                            TimestampUtc = snapshot.TimestampUtc <= 0 ? DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() : snapshot.TimestampUtc
+                        });
                         break;
                 }
             }
@@ -426,6 +566,22 @@ public sealed class LanHostSession : ILanSession
 
     public void Dispose()
     {
+        var shutdownReason = "Host disconnected. Returning to menu.";
+        lock (_clientLock)
+        {
+            foreach (var client in _clients.Values)
+            {
+                try
+                {
+                    LanWire.SendHostShutdown(client, shutdownReason);
+                }
+                catch
+                {
+                    // Best effort; disconnect cleanup continues.
+                }
+            }
+        }
+
         _cts?.Cancel();
         _cts = null;
         _server.ClientConnected -= HandleClientConnected;
@@ -484,6 +640,7 @@ public sealed class LanHostSession : ILanSession
                 bw.Write(info.Depth);
                 bw.Write(info.Seed);
                 bw.Write(info.PlayerCollision);
+                bw.Write(info.WorldId ?? string.Empty);
             });
         }
 
@@ -555,6 +712,34 @@ public sealed class LanHostSession : ILanSession
             });
         }
 
+        public static void SendPersistenceSnapshot(ClientState client, LanPlayerPersistenceSnapshot snapshot)
+        {
+            Write(client, bw =>
+            {
+                bw.Write((byte)LanMessageType.PersistenceSnapshot);
+                bw.Write(snapshot.PlayerId);
+                bw.Write(snapshot.TimestampUtc);
+                bw.Write(snapshot.Username ?? string.Empty);
+                var payload = snapshot.Payload ?? Array.Empty<byte>();
+                bw.Write(payload.Length);
+                bw.Write(payload);
+            });
+        }
+
+        public static void SendPersistenceRestore(ClientState client, LanPlayerPersistenceSnapshot snapshot)
+        {
+            Write(client, bw =>
+            {
+                bw.Write((byte)LanMessageType.PersistenceRestore);
+                bw.Write(snapshot.PlayerId);
+                bw.Write(snapshot.TimestampUtc);
+                bw.Write(snapshot.Username ?? string.Empty);
+                var payload = snapshot.Payload ?? Array.Empty<byte>();
+                bw.Write(payload.Length);
+                bw.Write(payload);
+            });
+        }
+
         public static void SendPlayerList(ClientState client, LanPlayerList list)
         {
             Write(client, bw =>
@@ -595,6 +780,29 @@ public sealed class LanHostSession : ILanSession
             Write(client, bw =>
             {
                 bw.Write((byte)LanMessageType.WorldSyncComplete);
+            });
+        }
+
+        public static void SendTeleport(ClientState client, LanTeleport teleport)
+        {
+            Write(client, bw =>
+            {
+                bw.Write((byte)LanMessageType.Teleport);
+                bw.Write(teleport.TargetPlayerId);
+                bw.Write(teleport.X);
+                bw.Write(teleport.Y);
+                bw.Write(teleport.Z);
+                bw.Write(teleport.Yaw);
+                bw.Write(teleport.Pitch);
+            });
+        }
+
+        public static void SendHostShutdown(ClientState client, string reason)
+        {
+            Write(client, bw =>
+            {
+                bw.Write((byte)LanMessageType.HostShutdown);
+                bw.Write(string.IsNullOrWhiteSpace(reason) ? "Host disconnected." : reason.Trim());
             });
         }
 
@@ -642,7 +850,12 @@ public sealed class LanClientSession : ILanSession
     private readonly ConcurrentQueue<LanPlayerList> _playerLists = new();
     private readonly ConcurrentQueue<LanChunkData> _chunkData = new();
     private readonly ConcurrentQueue<bool> _worldSyncComplete = new();
+    private readonly ConcurrentQueue<LanPlayerPersistenceSnapshot> _persistenceSnapshots = new();
+    private readonly ConcurrentQueue<LanTeleport> _teleports = new();
+    private readonly ConcurrentQueue<string> _disconnectReasons = new();
     private CancellationTokenSource? _cts;
+    private int _disconnectReasonSet;
+    private bool _disposed;
 
     public LanWorldInfo WorldInfo { get; }
     public int LocalPlayerId { get; }
@@ -748,6 +961,63 @@ public sealed class LanClientSession : ILanSession
     public bool TryDequeuePlayerList(out LanPlayerList list) => _playerLists.TryDequeue(out list);
     public bool TryDequeueChunkData(out LanChunkData chunk) => _chunkData.TryDequeue(out chunk);
     public bool TryDequeueWorldSyncComplete(out bool complete) => _worldSyncComplete.TryDequeue(out complete);
+    public bool TryDequeueTeleport(out LanTeleport teleport) => _teleports.TryDequeue(out teleport);
+    public bool TryDequeuePersistenceSnapshot(out LanPlayerPersistenceSnapshot snapshot)
+    {
+        snapshot = default;
+        return false;
+    }
+    public bool TryDequeuePersistenceRestore(out LanPlayerPersistenceSnapshot snapshot) => _persistenceSnapshots.TryDequeue(out snapshot);
+    public bool TryDequeueDisconnectReason(out string reason)
+    {
+        if (_disconnectReasons.TryDequeue(out var value))
+        {
+            reason = value;
+            return true;
+        }
+
+        reason = string.Empty;
+        return false;
+    }
+
+    public bool SendTeleport(int targetPlayerId, Vector3 position, float yaw, float pitch)
+    {
+        return false;
+    }
+
+    public void SendPersistenceSnapshot(LanPlayerPersistenceSnapshot snapshot)
+    {
+        if (!IsConnected)
+            return;
+
+        var normalized = new LanPlayerPersistenceSnapshot
+        {
+            PlayerId = LocalPlayerId,
+            Username = snapshot.Username ?? string.Empty,
+            Payload = snapshot.Payload ?? Array.Empty<byte>(),
+            TimestampUtc = snapshot.TimestampUtc <= 0 ? DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() : snapshot.TimestampUtc
+        };
+
+        Write(bw =>
+        {
+            bw.Write((byte)LanMessageType.PersistenceSnapshot);
+            bw.Write(normalized.PlayerId);
+            bw.Write(normalized.TimestampUtc);
+            bw.Write(normalized.Username);
+            bw.Write(normalized.Payload.Length);
+            bw.Write(normalized.Payload);
+        });
+    }
+
+    public bool SendPersistenceRestore(int targetPlayerId, LanPlayerPersistenceSnapshot snapshot)
+    {
+        return false;
+    }
+
+    public bool KickPlayer(int targetPlayerId, string reason)
+    {
+        return false;
+    }
 
     public void SendItemSpawn(LanItemSpawn item)
     {
@@ -835,16 +1105,32 @@ public sealed class LanClientSession : ILanSession
                     case LanMessageType.WorldSyncComplete:
                         _worldSyncComplete.Enqueue(true);
                         break;
+                    case LanMessageType.Teleport:
+                        _teleports.Enqueue(msg.Value.Teleport);
+                        break;
+                    case LanMessageType.PersistenceRestore:
+                        _persistenceSnapshots.Enqueue(msg.Value.PersistenceSnapshot);
+                        break;
+                    case LanMessageType.HostShutdown:
+                        SetDisconnectReasonOnce(msg.Value.DisconnectReason);
+                        IsConnected = false;
+                        return;
                 }
             }
         }
         catch (Exception ex)
         {
-            _log.Warn($"LAN read failed: {ex.Message}");
+            if (!_disposed)
+            {
+                _log.Warn($"LAN read failed: {ex.Message}");
+                SetDisconnectReasonOnce("Connection to host lost.");
+            }
         }
         finally
         {
             IsConnected = false;
+            if (!_disposed)
+                SetDisconnectReasonOnce("Host disconnected. Returning to menu.");
         }
     }
 
@@ -870,11 +1156,23 @@ public sealed class LanClientSession : ILanSession
 
     public void Dispose()
     {
+        _disposed = true;
         _cts?.Cancel();
         _cts = null;
         try { _stream.Close(); } catch { }
         _connection.Dispose();
         IsConnected = false;
+    }
+
+    private void SetDisconnectReasonOnce(string reason)
+    {
+        if (Interlocked.Exchange(ref _disconnectReasonSet, 1) != 0)
+            return;
+
+        var text = string.IsNullOrWhiteSpace(reason)
+            ? "Host disconnected. Returning to menu."
+            : reason.Trim();
+        _disconnectReasons.Enqueue(text);
     }
 
     // LanMessage defined at namespace scope.
@@ -885,6 +1183,8 @@ public readonly struct LanMessage
     public LanMessageType Type { get; init; }
     public int PlayerId { get; init; }
     public string? Name { get; init; }
+    public string? GateTicket { get; init; }
+    public string? JoinDeniedReason { get; init; }
     public LanWorldInfo WorldInfo { get; init; }
     public LanPlayerState PlayerState { get; init; }
     public LanBlockSet BlockSet { get; init; }
@@ -893,7 +1193,10 @@ public readonly struct LanMessage
     public LanChatMessage Chat { get; init; }
     public LanPlayerList PlayerList { get; init; }
     public LanChunkData ChunkData { get; init; }
+    public LanTeleport Teleport { get; init; }
+    public LanPlayerPersistenceSnapshot PersistenceSnapshot { get; init; }
     public bool WorldSyncComplete { get; init; }
+    public string? DisconnectReason { get; init; }
 }
 
 public static class LanReader
@@ -931,7 +1234,8 @@ public static class LanReader
                         Height = br.ReadInt32(),
                         Depth = br.ReadInt32(),
                         Seed = br.ReadInt32(),
-                        PlayerCollision = br.BaseStream.Position < br.BaseStream.Length ? br.ReadBoolean() : true
+                        PlayerCollision = br.BaseStream.Position < br.BaseStream.Length ? br.ReadBoolean() : true,
+                        WorldId = br.BaseStream.Position < br.BaseStream.Length ? br.ReadString() : string.Empty
                     }
                 };
             case LanMessageType.PlayerState:
@@ -1021,7 +1325,13 @@ public static class LanReader
                     PlayerList = new LanPlayerList { Players = players }
                 };
             case LanMessageType.Hello:
-                return new LanMessage { Type = type, Name = br.ReadString() };
+                {
+                    var name = br.ReadString();
+                    string? gateTicket = null;
+                    if (br.BaseStream.Position < br.BaseStream.Length)
+                        gateTicket = br.ReadString();
+                    return new LanMessage { Type = type, Name = name, GateTicket = gateTicket };
+                }
             case LanMessageType.ChunkData:
                 {
                     var x = br.ReadInt32();
@@ -1047,6 +1357,57 @@ public static class LanReader
                 }
             case LanMessageType.WorldSyncComplete:
                 return new LanMessage { Type = type, WorldSyncComplete = true };
+            case LanMessageType.JoinDenied:
+                return new LanMessage
+                {
+                    Type = type,
+                    JoinDeniedReason = br.ReadString()
+                };
+            case LanMessageType.Teleport:
+                return new LanMessage
+                {
+                    Type = type,
+                    Teleport = new LanTeleport
+                    {
+                        TargetPlayerId = br.ReadInt32(),
+                        X = br.ReadInt32(),
+                        Y = br.ReadInt32(),
+                        Z = br.ReadInt32(),
+                        Yaw = br.ReadSingle(),
+                        Pitch = br.ReadSingle()
+                    }
+                };
+            case LanMessageType.PersistenceSnapshot:
+            case LanMessageType.PersistenceRestore:
+                {
+                    var playerId = br.ReadInt32();
+                    var timestampUtc = br.ReadInt64();
+                    var username = br.ReadString();
+                    var payloadLength = br.ReadInt32();
+                    if (payloadLength < 0 || payloadLength > 1024 * 1024)
+                        return null;
+                    var snapshotPayload = br.ReadBytes(payloadLength);
+                    if (snapshotPayload.Length != payloadLength)
+                        return null;
+
+                    return new LanMessage
+                    {
+                        Type = type,
+                        PersistenceSnapshot = new LanPlayerPersistenceSnapshot
+                        {
+                            PlayerId = playerId,
+                            TimestampUtc = timestampUtc,
+                            Username = username,
+                            Payload = snapshotPayload
+                        }
+                    };
+                }
+            case LanMessageType.HostShutdown:
+                return new LanMessage
+                {
+                    Type = type,
+                    DisconnectReason = br.ReadString()
+                };
             default:
                 return null;
         }

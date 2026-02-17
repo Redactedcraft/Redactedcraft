@@ -830,6 +830,20 @@ sealed class IdentityRegistryProvider
         }
     }
 
+    public async Task<ProviderResult> ForceRefreshAsync(CancellationToken ct)
+    {
+        await _sync.WaitAsync(ct);
+        try
+        {
+            var result = await EnsureLoadedUnsafe(ct, forceRefresh: true);
+            return result;
+        }
+        finally
+        {
+            _sync.Release();
+        }
+    }
+
     private async Task<ProviderResult> EnsureLoadedUnsafe(CancellationToken ct, bool forceRefresh)
     {
         if (!forceRefresh && DateTime.UtcNow - _documentLoadedUtc < _refreshInterval)
@@ -2009,15 +2023,6 @@ sealed class IdentityRegistryProvider
         public string? Sha { get; set; }
     }
 
-    private sealed class ProviderResult
-    {
-        public bool Ok { get; private init; }
-        public string Error { get; private init; } = string.Empty;
-
-        public static ProviderResult Success() => new() { Ok = true };
-        public static ProviderResult Fail(string error) => new() { Ok = false, Error = error };
-    }
-
     private sealed class SaveResult
     {
         public bool Ok { get; private init; }
@@ -2028,6 +2033,15 @@ sealed class IdentityRegistryProvider
         public static SaveResult Success(string? sha) => new() { Ok = true, Sha = sha ?? string.Empty };
         public static SaveResult Fail(string error, bool retryable) => new() { Ok = false, Error = error, Retryable = retryable };
     }
+}
+
+sealed class ProviderResult
+{
+    public bool Ok { get; init; }
+    public string Error { get; init; } = string.Empty;
+
+    public static ProviderResult Success() => new() { Ok = true };
+    public static ProviderResult Fail(string error) => new() { Ok = false, Error = error };
 }
 
 sealed class IdentityRegistryDocument

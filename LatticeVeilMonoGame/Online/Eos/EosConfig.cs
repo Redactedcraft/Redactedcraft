@@ -49,115 +49,35 @@ public sealed class EosConfig
 
     public static EosConfig? Load(Logger log)
     {
-        if (IsDisabled())
+        // Try remote bootstrap first
+        log.Info("EOS config: Attempting remote bootstrap...");
+        
+        // Check if remote config was already applied by bootstrap
+        var productId = Environment.GetEnvironmentVariable("EOS_PRODUCT_ID") ?? "";
+        var sandboxId = Environment.GetEnvironmentVariable("EOS_SANDBOX_ID") ?? "";
+        var deploymentId = Environment.GetEnvironmentVariable("EOS_DEPLOYMENT_ID") ?? "";
+        var clientId = Environment.GetEnvironmentVariable("EOS_CLIENT_ID") ?? "";
+        var clientSecret = Environment.GetEnvironmentVariable("EOS_CLIENT_SECRET") ?? "";
+        
+        if (!string.IsNullOrWhiteSpace(productId) && !string.IsNullOrWhiteSpace(sandboxId) && 
+            !string.IsNullOrWhiteSpace(deploymentId) && !string.IsNullOrWhiteSpace(clientId))
         {
-            if (!_disabledLogged)
+            log.Info("EOS config: Using remote bootstrap configuration");
+            return new EosConfig
             {
-                log.Info("EOS disabled; LAN-only.");
-                _disabledLogged = true;
-            }
-            return null;
+                ProductId = productId,
+                SandboxId = sandboxId,
+                DeploymentId = deploymentId,
+                ClientId = clientId,
+                ClientSecret = clientSecret,
+                ProductName = Environment.GetEnvironmentVariable("EOS_PRODUCT_NAME") ?? "LatticeVeil",
+                ProductVersion = Environment.GetEnvironmentVariable("EOS_PRODUCT_VERSION") ?? "1.0.0",
+                LoginMode = Environment.GetEnvironmentVariable("EOS_LOGIN_MODE") ?? "deviceid"
+            };
         }
-
-        if (TryLoadFullEnvironmentConfig(out var envConfig))
-        {
-            if (envConfig.IsValid(out var envError))
-                return envConfig;
-
-            if (!_invalidEnvLogged)
-            {
-                log.Warn($"EOS environment config invalid: {envError}");
-                _invalidEnvLogged = true;
-            }
-        }
-
-        if (TryLoadLegacyConfig(out var legacyConfig, out var legacySource, out var legacyError))
-        {
-            if (string.IsNullOrWhiteSpace(legacyConfig.ProductName))
-                legacyConfig.ProductName = "LatticeVeil";
-
-            if (string.IsNullOrWhiteSpace(legacyConfig.ProductVersion))
-                legacyConfig.ProductVersion = "1.0.0";
-
-            if (legacyConfig.IsValid(out var legacyValidationError))
-            {
-                if (string.IsNullOrWhiteSpace(legacyConfig.LoginMode))
-                    legacyConfig.LoginMode = "deviceid";
-
-                log.Info($"EOS config loaded ({legacySource}).");
-                return legacyConfig;
-            }
-
-            if (!_invalidLegacyLogged)
-            {
-                log.Warn($"EOS legacy config invalid: {legacyValidationError}");
-                _invalidLegacyLogged = true;
-            }
-        }
-        else if (!string.IsNullOrWhiteSpace(legacyError) && !_invalidLegacyLogged)
-        {
-            log.Warn(legacyError);
-            _invalidLegacyLogged = true;
-        }
-
-        if (!TryLoadPublicConfig(out var publicConfig, out var publicSource, out var publicError))
-        {
-            if (!_missingPublicLogged)
-            {
-                log.Info("EOS disabled; LAN-only.");
-                _missingPublicLogged = true;
-            }
-
-            if (!string.IsNullOrWhiteSpace(publicError) && !_invalidPublicLogged)
-            {
-                log.Warn(publicError);
-                _invalidPublicLogged = true;
-            }
-
-            return null;
-        }
-
-        if (!TryResolveClientSecret(out var clientSecret, out var secretSource, out var secretError))
-        {
-            if (!_missingSecretLogged)
-            {
-                log.Warn("EOS public config found but secret missing; set EOS_CLIENT_SECRET or provide eos.private.json.");
-                _missingSecretLogged = true;
-            }
-
-            if (!string.IsNullOrWhiteSpace(secretError) && !_invalidSecretFileLogged)
-            {
-                log.Warn(secretError);
-                _invalidSecretFileLogged = true;
-            }
-
-            return null;
-        }
-
-        var config = new EosConfig
-        {
-            ProductId = publicConfig.ProductId.Trim(),
-            SandboxId = publicConfig.SandboxId.Trim(),
-            DeploymentId = publicConfig.DeploymentId.Trim(),
-            ClientId = publicConfig.ClientId.Trim(),
-            ClientSecret = clientSecret.Trim(),
-            ProductName = string.IsNullOrWhiteSpace(publicConfig.ProductName) ? "LatticeVeil" : publicConfig.ProductName.Trim(),
-            ProductVersion = string.IsNullOrWhiteSpace(publicConfig.ProductVersion) ? "1.0.0" : publicConfig.ProductVersion.Trim(),
-            LoginMode = string.IsNullOrWhiteSpace(publicConfig.LoginMode) ? "deviceid" : publicConfig.LoginMode.Trim()
-        };
-
-        if (!config.IsValid(out var error))
-        {
-            if (!_invalidPublicLogged)
-            {
-                log.Warn($"EOS config invalid: {error}");
-                _invalidPublicLogged = true;
-            }
-            return null;
-        }
-
-        log.Info($"EOS config loaded ({publicSource}; secret={secretSource}).");
-        return config;
+        
+        log.Warn("EOS config: Remote bootstrap not available, EOS client will not work");
+        return null;
     }
 
     public bool IsValid(out string? error)

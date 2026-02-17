@@ -470,6 +470,7 @@ public sealed class InviteFriendsScreen : IScreen
                 displayName: displayName,
                 isHosting: true,
                 worldName: _worldName,
+                gameMode: "Survival", // Default or resolve from world
                 joinTarget: hostCode,
                 status: $"hosting {_worldName}");
 

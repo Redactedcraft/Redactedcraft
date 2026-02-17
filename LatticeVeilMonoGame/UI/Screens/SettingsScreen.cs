@@ -47,6 +47,13 @@ public sealed class OptionsScreen : IScreen
     private static readonly string[] GuiScaleLabels = GuiScaleCandidates.Select(c => c.label).ToArray();
     private static readonly string[] QualityPresets = { "LOW", "MEDIUM", "HIGH", "ULTRA" };
     private static readonly string[] ParticlePresets = { "AUTO", "OFF", "LOW", "MEDIUM", "HIGH", "ULTRA" };
+    private static readonly (SocialNotificationMode value, string label)[] NotificationModeOptions = new[]
+    {
+        (SocialNotificationMode.Off, "OFF"),
+        (SocialNotificationMode.MessageOnly, "MESSAGE ONLY"),
+        (SocialNotificationMode.On, "ON")
+    };
+    private static readonly string[] NotificationModeLabels = NotificationModeOptions.Select(o => o.label).ToArray();
     private const int ReticleSizeMin = 2;
     private const int ReticleSizeMax = 32;
     private const int ReticleThicknessMin = 1;
@@ -163,6 +170,8 @@ public sealed class OptionsScreen : IScreen
     private bool _qualityOpen;
     private Rectangle _particleBox;
     private bool _particleOpen;
+    private Rectangle _notificationModeBox;
+    private bool _notificationModeOpen;
     private Slider _brightness;
     private Slider _fov;
     private Slider _renderDistance;
@@ -498,9 +507,10 @@ public sealed class OptionsScreen : IScreen
         _reticleStyleBox = new Rectangle(contentX + 60, reticleTop + 50, Math.Min(400, contentW - 120), 40);
         _reticleColorBox = new Rectangle(contentX + 60, reticleTop + 110, Math.Min(400, contentW - 120), 40);
         _blockOutlineColorBox = new Rectangle(contentX + 60, reticleTop + 170, Math.Min(400, contentW - 120), 40);
-        _reticleSize.Bounds = new Rectangle(contentX + 60, reticleTop + 230, Math.Min(400, contentW - 120), 18);
-        _reticleThickness.Bounds = new Rectangle(contentX + 60, reticleTop + 290, Math.Min(400, contentW - 120), 18);
-        _controlsListRect = new Rectangle(contentX + 60, reticleTop + 350, Math.Min(500, contentW - 120), 300);
+        _notificationModeBox = new Rectangle(contentX + 60, reticleTop + 230, Math.Min(400, contentW - 120), 40);
+        _reticleSize.Bounds = new Rectangle(contentX + 60, reticleTop + 290, Math.Min(400, contentW - 120), 18);
+        _reticleThickness.Bounds = new Rectangle(contentX + 60, reticleTop + 350, Math.Min(400, contentW - 120), 18);
+        _controlsListRect = new Rectangle(contentX + 60, reticleTop + 410, Math.Min(500, contentW - 120), 300);
         _packsListRect = new Rectangle(contentX + 60, contentY + 20, Math.Min(500, contentW - 120), 300);
 
         ClampAllScroll();
@@ -558,6 +568,7 @@ public sealed class OptionsScreen : IScreen
                 UpdateReticleStyleDropdown(input);
                 UpdateReticleColorDropdown(input);
                 UpdateBlockOutlineColorDropdown(input);
+                UpdateNotificationModeDropdown(input);
                 UpdateSliderWithScroll(_reticleSize, input);
                 UpdateSliderWithScroll(_reticleThickness, input);
                 UpdateControlsBinding(input);
@@ -783,6 +794,18 @@ public sealed class OptionsScreen : IScreen
         {
             _working.BlockOutlineColor = ReticleColorOptions[idx].hex;
             _log.Info($"Option changed: BlockOutlineColor = {_working.BlockOutlineColor}");
+        });
+    }
+
+    private void UpdateNotificationModeDropdown(InputState input)
+    {
+        var scroll = GetScrollOffset();
+        var box = ScrollRect(_notificationModeBox, scroll);
+        UpdateSimpleDropdown(input, box, ref _notificationModeOpen, NotificationModeLabels, idx =>
+        {
+            var selected = NotificationModeOptions[Math.Clamp(idx, 0, NotificationModeOptions.Length - 1)].value;
+            _working.SetSocialNotificationMode(selected);
+            _log.Info($"Option changed: SocialNotifications = {_working.SocialNotifications}");
         });
     }
 
@@ -1041,6 +1064,10 @@ public sealed class OptionsScreen : IScreen
         var outlineIndex = GetReticleColorIndex(_working.BlockOutlineColor);
         DrawColorDropdownBox(sb, outlineBox, "BLOCK OUTLINE", _blockOutlineColorOpen, outlineIndex);
 
+        var notificationBox = ScrollRect(_notificationModeBox, scroll);
+        var notificationModeIndex = GetNotificationModeIndex(_working.GetSocialNotificationMode());
+        DrawSimpleDropdownBox(sb, notificationBox, "NOTIFICATIONS", _notificationModeOpen, NotificationModeLabels, notificationModeIndex);
+
         DrawSliderWithScroll(_reticleSize, sb);
         DrawSliderWithScroll(_reticleThickness, sb);
         var sizeRect = ScrollRect(_reticleSize.Bounds, scroll);
@@ -1067,12 +1094,19 @@ public sealed class OptionsScreen : IScreen
             _font.DrawString(sb, keyText, new Vector2(row.Right - 220, row.Y + 10), Color.White);
         }
 
+        var notesY = listRect.Bottom + 8;
+        _font.DrawString(sb, "NON-REBINDABLE: HOLD TAB = PLAYER LIST", new Vector2(listRect.X, notesY), new Color(210, 210, 210));
+        _font.DrawString(sb, "MOUSE: LEFT BREAK/USE | RIGHT PLACE/USE | WHEEL OR 1-9 HOTBAR", new Vector2(listRect.X, notesY + _font.LineHeight + 2), new Color(180, 180, 180));
+        _font.DrawString(sb, "UI: ENTER SENDS CHAT/COMMAND | ESC CLOSES MENUS", new Vector2(listRect.X, notesY + (_font.LineHeight + 2) * 2), new Color(180, 180, 180));
+
         if (_reticleStyleOpen)
             DrawSimpleDropdownList(sb, styleBox, ReticleStyleLabels, styleIndex);
         if (_reticleColorOpen)
             DrawColorDropdownList(sb, colorBox, colorIndex);
         if (_blockOutlineColorOpen)
             DrawColorDropdownList(sb, outlineBox, outlineIndex);
+        if (_notificationModeOpen)
+            DrawSimpleDropdownList(sb, notificationBox, NotificationModeLabels, notificationModeIndex);
     }
 
     private void RefreshPacks()
@@ -1173,6 +1207,7 @@ public sealed class OptionsScreen : IScreen
         _reticleStyleOpen = false;
         _reticleColorOpen = false;
         _blockOutlineColorOpen = false;
+        _notificationModeOpen = false;
     }
 
     private void UpdateSimpleDropdown(InputState input, Rectangle box, ref bool open, IReadOnlyList<string> items, Action<int> onSelect)
@@ -1686,6 +1721,7 @@ public sealed class OptionsScreen : IScreen
             {
                 var bottom = Math.Max(_controlsListRect.Bottom, _mouseSensitivity.Bounds.Bottom);
                 bottom = Math.Max(bottom, _reticleThickness.Bounds.Bottom);
+                bottom = Math.Max(bottom, _notificationModeBox.Bottom);
                 return Math.Max(0, bottom - top + padding);
             }
             case Tab.Packs:
@@ -1713,6 +1749,17 @@ public sealed class OptionsScreen : IScreen
             }
         }
         return bestIndex;
+    }
+
+    private static int GetNotificationModeIndex(SocialNotificationMode mode)
+    {
+        for (var i = 0; i < NotificationModeOptions.Length; i++)
+        {
+            if (NotificationModeOptions[i].value == mode)
+                return i;
+        }
+
+        return NotificationModeOptions.Length - 1;
     }
 
     private static int GetQualityIndex(string? value)

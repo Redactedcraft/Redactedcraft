@@ -71,6 +71,16 @@ public static class EosRuntimeStatus
 #endif
     }
 
+    public static bool IsEosLibraryPresent()
+    {
+        try
+        {
+            var path = System.IO.Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "EOSSDK-Win64-Shipping.dll");
+            return System.IO.File.Exists(path);
+        }
+        catch { return false; }
+    }
+
     public static bool HasAnyConfigSource()
     {
         if (IsDisabledByEnvironment())

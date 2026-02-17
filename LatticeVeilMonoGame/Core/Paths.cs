@@ -36,17 +36,37 @@ public static class Paths
     /// Local development assets directory for dev builds.
     /// </summary>
     public static string LocalAssetsDir =>
-        Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "Defaults", "Assets");
+        Path.Combine(DocumentsDir, "LatticeVeil_project", "LatticeVeilMonoGame", "Defaults", "Assets");
 
     /// <summary>
     /// Returns the appropriate assets directory based on environment.
-    /// Dev builds use local Defaults assets; release builds use Documents assets.
+    /// Dev builds prefer local Defaults assets when present, otherwise fall back
+    /// to Documents assets so packaged/dev test EXEs still run on other machines.
     /// </summary>
     public static string GetAssetsDir()
     {
-        if (IsDevBuild)
+        if (IsDevBuild && HasUsableLocalDefaultsAssets())
             return LocalAssetsDir;
         return AssetsDir;
+    }
+
+    private static bool HasUsableLocalDefaultsAssets()
+    {
+        try
+        {
+            if (!Directory.Exists(LocalAssetsDir))
+                return false;
+
+            var texturesDir = Path.Combine(LocalAssetsDir, "textures");
+            var menuDir = Path.Combine(texturesDir, "menu");
+            var blocksDir = Path.Combine(texturesDir, "blocks");
+            return Directory.Exists(texturesDir)
+                || (Directory.Exists(menuDir) && Directory.Exists(blocksDir));
+        }
+        catch
+        {
+            return false;
+        }
     }
 
     public static string TexturesDir =>

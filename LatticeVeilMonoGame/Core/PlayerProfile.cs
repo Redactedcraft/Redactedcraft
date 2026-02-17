@@ -22,6 +22,14 @@ public sealed class PlayerProfile
     /// Saved EOS friends (Product User IDs) so you can join without retyping/copying IDs every time.
     /// </summary>
     public List<FriendEntry> Friends { get; set; } = new();
+    /// <summary>
+    /// Incoming friend requests (Product User IDs).
+    /// </summary>
+    public List<string> ReceivedRequests { get; set; } = new();
+    /// <summary>
+    /// Outgoing friend requests (Product User IDs).
+    /// </summary>
+    public List<string> SentRequests { get; set; } = new();
 
     public sealed class FriendEntry
     {

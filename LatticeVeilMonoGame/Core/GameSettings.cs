@@ -9,6 +9,13 @@ using Microsoft.Xna.Framework.Input;
 
 namespace LatticeVeilMonoGame.Core;
 
+public enum SocialNotificationMode
+{
+    Off,
+    MessageOnly,
+    On
+}
+
 public sealed class GameSettings
 {
     private const int EnumCurrentSettings = -1;
@@ -74,6 +81,9 @@ public sealed class GameSettings
     public int RenderDistanceChunks { get; set; } = EngineRenderDistanceMax;
     public string ParticlePreset { get; set; } = "AUTO";
     public bool ShowSeedInfoInWorldList { get; set; } = false;
+    public int CreateWorldHomesCap { get; set; } = 10;
+    public bool EnableInviteLinks { get; set; } = false;
+    public string SocialNotifications { get; set; } = nameof(SocialNotificationMode.On);
 
     // Launcher
     public bool KeepLauncherOpen { get; set; } = true;
@@ -160,7 +170,9 @@ public sealed class GameSettings
         s.Brightness = ClampRange(s.Brightness, 0.5f, 1.5f);
         s.FieldOfView = Math.Clamp(s.FieldOfView, 60, 110);
         s.RenderDistanceChunks = Math.Clamp(s.RenderDistanceChunks, RenderDistanceMin, EngineRenderDistanceMax);
+        s.CreateWorldHomesCap = Math.Clamp(s.CreateWorldHomesCap, 1, 64);
         s.ParticlePreset = NormalizeParticlePreset(s.ParticlePreset);
+        s.SocialNotifications = NormalizeSocialNotifications(s.SocialNotifications);
         s.MouseSensitivity = ClampRange(s.MouseSensitivity, 0.0005f, 0.01f);
         s.QualityPreset = NormalizeQuality(s.QualityPreset);
         s.AudioInputDeviceId ??= "";
@@ -198,6 +210,40 @@ public sealed class GameSettings
     {
         var preset = string.IsNullOrWhiteSpace(value) ? "AUTO" : value.Trim().ToUpperInvariant();
         return preset is "AUTO" or "OFF" or "LOW" or "MEDIUM" or "HIGH" or "ULTRA" ? preset : "AUTO";
+    }
+
+    private static string NormalizeSocialNotifications(string? value)
+    {
+        var mode = (value ?? string.Empty).Trim();
+        if (mode.Equals("off", StringComparison.OrdinalIgnoreCase))
+            return nameof(SocialNotificationMode.Off);
+        if (mode.Equals("messageonly", StringComparison.OrdinalIgnoreCase)
+            || mode.Equals("message_only", StringComparison.OrdinalIgnoreCase)
+            || mode.Equals("message only", StringComparison.OrdinalIgnoreCase))
+        {
+            return nameof(SocialNotificationMode.MessageOnly);
+        }
+
+        return nameof(SocialNotificationMode.On);
+    }
+
+    public SocialNotificationMode GetSocialNotificationMode()
+    {
+        if (SocialNotifications.Equals(nameof(SocialNotificationMode.Off), StringComparison.OrdinalIgnoreCase))
+            return SocialNotificationMode.Off;
+        if (SocialNotifications.Equals(nameof(SocialNotificationMode.MessageOnly), StringComparison.OrdinalIgnoreCase))
+            return SocialNotificationMode.MessageOnly;
+        return SocialNotificationMode.On;
+    }
+
+    public void SetSocialNotificationMode(SocialNotificationMode mode)
+    {
+        SocialNotifications = mode switch
+        {
+            SocialNotificationMode.Off => nameof(SocialNotificationMode.Off),
+            SocialNotificationMode.MessageOnly => nameof(SocialNotificationMode.MessageOnly),
+            _ => nameof(SocialNotificationMode.On)
+        };
     }
 
     private static string NormalizeReticleStyle(string? value)

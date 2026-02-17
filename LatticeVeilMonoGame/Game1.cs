@@ -5,6 +5,7 @@ using Microsoft.Xna.Framework.Graphics;
 using Microsoft.Xna.Framework.Input;
 using LatticeVeilMonoGame.Core;
 using LatticeVeilMonoGame.Online.Eos;
+using LatticeVeilMonoGame.Online.Gate;
 using LatticeVeilMonoGame.UI;
 using LatticeVeilMonoGame.UI.Screens;
 
@@ -24,6 +25,8 @@ public sealed class Game1 : Game
     private readonly InputState _input = new();
     private readonly Logger _log;
     private readonly PlayerProfile _profile;
+    private readonly OnlineSocialStateService _socialState;
+    private readonly SocialNotificationOverlay _socialOverlay = new();
     private EosClient? _eosClient;
     private bool _wasActive;
     private GameSettings _settings = new();
@@ -45,7 +48,7 @@ public sealed class Game1 : Game
     private const double StallLogCooldownSeconds = 10.0;
     private Vector2 _smoothedLookDelta = Vector2.Zero;
     private const float CaptureDeltaSmoothing = 0.45f;
-    private const int CaptureDeltaClampPixels = 180;
+    private const int CaptureDeltaClampPixels = 200;
     private const float CaptureDeltaClampRadians = 0.45f;
 
 	public PlayerProfile Profile => _profile;
@@ -54,7 +57,14 @@ public sealed class Game1 : Game
     {
         _log = log;
         _profile = profile;
+        _socialState = OnlineSocialStateService.GetOrCreate(_log);
         _startOptions = startOptions;
+
+        // Log build SHA if provided
+        if (!string.IsNullOrEmpty(_startOptions?.BuildSha))
+        {
+            _log.Info($"Game1 constructor received BuildSha: {_startOptions.BuildSha}");
+        }
 
         // Set renderer backend via environment variable before creating GraphicsDeviceManager
         var rendererBackend = _startOptions?.RendererBackend ?? "OpenGL";
@@ -69,6 +79,11 @@ public sealed class Game1 : Game
         
         // Prevent throttling when inactive - keep loading running
         InactiveSleepTime = TimeSpan.Zero;
+
+        // Force window to be visible and focused
+        Window.IsBorderless = false;
+        Window.Position = new Point(100, 100); // Position away from launcher
+        _log.Info($"Window properties: Title='{Window.Title}', IsBorderless={Window.IsBorderless}, IsMouseVisible={IsMouseVisible}, Position={Window.Position}");
 
         // Initialize Vulkan backend if requested
         // OpenGL renderer - stable and optimized
@@ -89,10 +104,22 @@ public sealed class Game1 : Game
     {
         try
         {
-            // Configure OpenGL backend
-            Environment.SetEnvironmentVariable("MONOGAME_GRAPHICS_BACKEND", "OpenGL");
-            Environment.SetEnvironmentVariable("SDL_VIDEODRIVER", "opengl");
-            _log.Info("Configured OpenGL backend via environment variables");
+            _log.Info($"Configuring renderer backend: {rendererBackend}");
+            
+            if (string.Equals(rendererBackend, "DirectX", StringComparison.OrdinalIgnoreCase))
+            {
+                // Configure DirectX backend
+                Environment.SetEnvironmentVariable("MONOGAME_GRAPHICS_BACKEND", "DirectX");
+                Environment.SetEnvironmentVariable("SDL_VIDEODRIVER", "direct3d11");
+                _log.Info("Configured DirectX backend via environment variables");
+            }
+            else
+            {
+                // Configure OpenGL backend (default)
+                Environment.SetEnvironmentVariable("MONOGAME_GRAPHICS_BACKEND", "OpenGL");
+                Environment.SetEnvironmentVariable("SDL_VIDEODRIVER", "opengl");
+                _log.Info("Configured OpenGL backend via environment variables");
+            }
         }
         catch (Exception ex)
         {
@@ -102,7 +129,9 @@ public sealed class Game1 : Game
 
     protected override void Initialize()
     {
+        _log.Info("Game1.Initialize() started");
         base.Initialize();
+        _log.Info("base.Initialize() completed");
 
         Window.ClientSizeChanged += (_, _) =>
         {
@@ -110,18 +139,22 @@ public sealed class Game1 : Game
         };
 
         ApplyStartupSettings();
-
+        _log.Info("Game1.Initialize() completed");
     }
 
     protected override void LoadContent()
     {
+        _log.Info("Game1.LoadContent() started");
         _spriteBatch = new SpriteBatch(GraphicsDevice);
+        _log.Info("SpriteBatch created");
 
         _pixel = new Texture2D(GraphicsDevice, 1, 1);
         _pixel.SetData(new[] { Color.White });
+        _log.Info("Pixel texture created");
 
         _font = new PixelFont(_pixel, scale: 2);
         _assets = new AssetLoader(GraphicsDevice, _log);
+        _log.Info("Font and AssetLoader created");
 
         // EOS initialization is deferred to Update() to avoid blocking load-time hangs.
         // Update() will retry creation when not in offline mode.
@@ -231,6 +264,22 @@ public sealed class Game1 : Game
         if (_input.IsNewKeyPress(Keys.F2))
             RequestScreenshot();
 
+        _socialState.Tick();
+        while (_socialState.TryDequeueNewRequestNotification(out var request))
+            _socialOverlay.EnqueueRequest(request);
+        var socialMode = _settings.GetSocialNotificationMode();
+        var consumedBySocialOverlay = _socialOverlay.Update(
+            gameTime,
+            _input,
+            socialMode,
+            OpenProfileRequestsFromOverlay);
+        if (consumedBySocialOverlay)
+        {
+            UpdateMouseCapture(computeDelta: false);
+            base.Update(gameTime);
+            return;
+        }
+
         // Global quit (Alt+F4 is handled by OS; Esc handled in screens)
         _menus.Update(gameTime, _input);
         
@@ -265,6 +314,7 @@ public sealed class Game1 : Game
             _screenshotRequested = false;
         }
         DrawScreenshotToast(gameTime);
+        _socialOverlay.Draw(_spriteBatch, _font, _pixel, UiLayout.Viewport, _settings.GetSocialNotificationMode());
 
         base.Draw(gameTime);
     }
@@ -559,6 +609,26 @@ public sealed class Game1 : Game
         }
 
         _lastUpdateSeconds = now;
+    }
+
+    private void OpenProfileRequestsFromOverlay()
+    {
+        if (_assets is null || _font is null || _pixel is null)
+            return;
+
+        _menus.Push(
+            new ProfileScreen(
+                _menus,
+                _assets,
+                _font,
+                _pixel,
+                _log,
+                _profile,
+                _graphics,
+                _eosClient,
+                startTab: ProfileScreen.ProfileScreenStartTab.Friends,
+                startFriendsMode: ProfileScreen.ProfileScreenFriendsMode.Requests),
+            UiLayout.Viewport);
     }
 }
 

@@ -578,7 +578,7 @@ public sealed class AssetPackInstaller
         }
     }
 
-    public void InstallStagedAssets(string stagingDir, string assetsDir)
+    public void InstallStagedAssets(string stagingDir, string assetsDir, bool forceCleanInstall = false)
     {
         if (!Directory.Exists(stagingDir))
             throw new DirectoryNotFoundException("Staging folder missing.");
@@ -603,6 +603,12 @@ public sealed class AssetPackInstaller
         var backupDir = $"{assetsDir}_backup";
 
         TryDeleteDirectory(backupDir);
+
+        if (forceCleanInstall)
+        {
+            InstallStagedAssetsForceClean(stagingDir, assetsDir, stagingRoot, backupDir);
+            return;
+        }
 
         var movedToBackup = false;
 
@@ -651,6 +657,41 @@ public sealed class AssetPackInstaller
             throw;
         }
 
+    }
+
+    private void InstallStagedAssetsForceClean(string stagingDir, string assetsDir, string stagingRoot, string backupDir)
+    {
+        try
+        {
+            if (Directory.Exists(assetsDir))
+            {
+                RetryIo(
+                    () => Directory.Move(assetsDir, backupDir),
+                    _log,
+                    "Move Assets to backup (force reset)",
+                    assetsDir);
+            }
+
+            RetryIo(
+                () => Directory.Move(stagingRoot, assetsDir),
+                _log,
+                "Swap staging to Assets (force reset)",
+                stagingRoot);
+
+            if (!string.Equals(stagingRoot, stagingDir, StringComparison.OrdinalIgnoreCase))
+                TryDeleteDirectory(stagingDir);
+
+            if (Directory.Exists(backupDir) && !TryDeleteDirectory(backupDir))
+                _log.Warn($"Asset reset left backup folder (locked?): {backupDir}");
+        }
+        catch (Exception ex) when (ex is IOException || ex is UnauthorizedAccessException)
+        {
+            LogInstallFailureDiagnostics(stagingDir, stagingRoot, assetsDir, backupDir, ex);
+            throw new InvalidOperationException(
+                "Asset reset requires replacing the full Assets folder, but some files are locked.\n" +
+                "Close the game/launcher and any Explorer windows previewing files, then retry.",
+                ex);
+        }
     }
 
     public InstalledAssetsMarker? ReadInstalledMarker()
