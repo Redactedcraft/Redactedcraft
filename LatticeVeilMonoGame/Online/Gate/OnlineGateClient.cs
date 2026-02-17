@@ -335,15 +335,7 @@ public class OnlineGateClient
 
             log.Info($"Local EXE hash: {currentHash}");
 
-            // First try to get a ticket for authentication
-            var ticketOk = await EnsureTicketAsync(log, CancellationToken.None, target);
-            if (!ticketOk)
-            {
-                log.Warn("Failed to get ticket for hash verification");
-                return false;
-            }
-
-            // Now try to get server hash with authentication
+            // Try to get server hash (new public endpoint doesn't require authentication)
             var serverHashResult = await GetCurrentHashAsync(target);
             log.Info($"Server response: Ok={serverHashResult.Ok}, Hash={serverHashResult.Hash}, Message={serverHashResult.Message}");
             
@@ -351,6 +343,12 @@ public class OnlineGateClient
             {
                 log.Error($"Failed to get server hash: {serverHashResult.Message}");
                 return false;
+            }
+
+            if (string.IsNullOrWhiteSpace(serverHashResult.Hash))
+            {
+                log.Warn("No hash configured on server - allowing verification");
+                return true;
             }
 
             if (!string.Equals(currentHash, serverHashResult.Hash, StringComparison.OrdinalIgnoreCase))
