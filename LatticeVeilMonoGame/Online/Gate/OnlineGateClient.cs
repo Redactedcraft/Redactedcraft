@@ -297,7 +297,8 @@ public class OnlineGateClient
 
     public async Task<GateCurrentHashResult> GetCurrentHashAsync(string? target = null)
     {
-        var endpoint = $"{_gateUrl}/admin/allowlist/runtime/current-hash";
+        // Use specific endpoint based on build flavor
+        var endpoint = $"{_gateUrl}/admin/allowlist/current-hash/{(target?.ToLowerInvariant() ?? _buildFlavor?.ToLowerInvariant() ?? "release")}";
         
         // Try GET request without authentication first
         try
