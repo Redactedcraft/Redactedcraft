@@ -38,6 +38,17 @@ public static class EosClientProvider
             return null;
         }
 
+        if (IsGameProcess() && IsLauncherOnlineAuthorized() && !HasVeilnetLogin())
+        {
+            if (!_launcherGateWarned)
+            {
+                _launcherGateWarned = true;
+                log.Warn("Online features require Veilnet login.");
+            }
+
+            return null;
+        }
+
         // Fast path.
         lock (Sync)
         {
@@ -45,9 +56,8 @@ public static class EosClientProvider
                 return _client;
         }
 
-        // EOS config is currently expected to come from environment variables populated by the
-        // remote gate bootstrap. If it's not present, bootstrap asynchronously.
-        if (!HasBootstrapEnvironment())
+        // If no environment config and no local public config is available, bootstrap asynchronously.
+        if (!HasBootstrapEnvironment() && !EosConfig.HasPublicConfigSource())
         {
             EnsureBootstrapTask(log, allowRetry);
             return null;
@@ -134,8 +144,7 @@ public static class EosClientProvider
         return !string.IsNullOrWhiteSpace(Get("EOS_PRODUCT_ID"))
             && !string.IsNullOrWhiteSpace(Get("EOS_SANDBOX_ID"))
             && !string.IsNullOrWhiteSpace(Get("EOS_DEPLOYMENT_ID"))
-            && !string.IsNullOrWhiteSpace(Get("EOS_CLIENT_ID"))
-            && !string.IsNullOrWhiteSpace(Get("EOS_CLIENT_SECRET"));
+            && !string.IsNullOrWhiteSpace(Get("EOS_CLIENT_ID"));
     }
 
     private static bool IsGameProcess()
@@ -149,6 +158,12 @@ public static class EosClientProvider
         var authorized = Environment.GetEnvironmentVariable("LV_LAUNCHER_ONLINE_AUTH");
         return string.Equals(authorized, "1", StringComparison.Ordinal)
             || string.Equals(authorized, "true", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static bool HasVeilnetLogin()
+    {
+        var token = (Environment.GetEnvironmentVariable("LV_VEILNET_ACCESS_TOKEN") ?? string.Empty).Trim();
+        return !string.IsNullOrWhiteSpace(token);
     }
 
     public static EosClient? Current

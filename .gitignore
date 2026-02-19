@@ -16,8 +16,9 @@ Tools/gate.cfg
 **/*.cfg
 
 # EOS secure config split
-eos.private.json
-eos.public.json
+eos/eos.private.json
+**/eos.private.json
+*.private.json
 eos.config.json
 eos.*.secret.json
 *.secret.json
@@ -28,7 +29,6 @@ Artifacts/Render/*.secret.json
 Artifacts/Render/*.secret.env
 Artifacts/Render/render-gate.env
 LatticeVeil_project/eos.private.json
-LatticeVeil_project/eos.public.json
 LatticeVeil_project/eos.config.json
 
 # Builder directories (safe to ignore)
@@ -55,6 +55,8 @@ LatticeVeil_project/eos.config.json
 *.cache
 *.log
 .env
+.env.local
+.env.*.local
 .env.*
 *.env
 !*.example.env

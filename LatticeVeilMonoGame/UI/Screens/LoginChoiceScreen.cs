@@ -17,6 +17,7 @@ public sealed class LoginChoiceScreen : IScreen
     private readonly Logger _log;
     private readonly PlayerProfile _profile;
     private readonly global::Microsoft.Xna.Framework.GraphicsDeviceManager _graphics;
+    private readonly GameWindow _window;
     private readonly GameStartOptions? _startOptions;
     private readonly Action<EosClient?> _setEosClient;
 
@@ -44,6 +45,7 @@ public sealed class LoginChoiceScreen : IScreen
         Logger log,
         PlayerProfile profile,
         global::Microsoft.Xna.Framework.GraphicsDeviceManager graphics,
+        GameWindow window,
         GameStartOptions? startOptions,
         Action<EosClient?> setEosClient)
     {
@@ -54,6 +56,7 @@ public sealed class LoginChoiceScreen : IScreen
         _log = log;
         _profile = profile;
         _graphics = graphics;
+        _window = window;
         _startOptions = startOptions;
         _setEosClient = setEosClient;
 
@@ -238,7 +241,7 @@ public sealed class LoginChoiceScreen : IScreen
         }
         else
         {
-            _menus.Push(new MainMenuScreen(_menus, _assets, _font, _pixel, _log, _profile, _graphics, client), _viewport);
+            _menus.Push(new MainMenuScreen(_menus, _assets, _font, _pixel, _log, _profile, _graphics, _window, client, _startOptions?.Offline ?? false), _viewport);
         }
     }
 

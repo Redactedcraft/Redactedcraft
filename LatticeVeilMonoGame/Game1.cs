@@ -189,7 +189,7 @@ public sealed class Game1 : Game
         else
         {
             _menus.Push(
-                new MainMenuScreen(_menus, _assets, _font, _pixel, _log, _profile, _graphics, _eosClient, _startOptions?.Offline ?? false),
+                new MainMenuScreen(_menus, _assets, _font, _pixel, _log, _profile, _graphics, Window, _eosClient, _startOptions?.Offline ?? false),
                 UiLayout.Viewport);
         }
 
@@ -207,6 +207,18 @@ public sealed class Game1 : Game
 
     protected override void Update(GameTime gameTime)
     {
+        try
+        {
+            var exitRequestPath = Path.Combine(Paths.RootDir, "exit.request");
+            if (File.Exists(exitRequestPath))
+            {
+                File.Delete(exitRequestPath);
+                Exit();
+                return;
+            }
+        }
+        catch { }
+
         // 5) FIX FOCUS PAUSE - Don't early-return on !IsActive during preparing
         bool isPreparing = false;
         var topScreen = _menus.Peek();
@@ -284,14 +296,8 @@ public sealed class Game1 : Game
         _menus.Update(gameTime, _input);
         
         HandleSmoke(gameTime);
-        if (!_exitRequested && _menus.Count == 0)
-        {
-            _exitRequested = true;
-            ReleaseMouseCapture();
-            _log.Info("Menu stack empty. Exiting game.");
-            Exit();
-            return;
-        }
+        // Do not auto-exit when the menu stack is momentarily empty during startup transitions.
+        // Exit should be driven by an explicit request (Quit button / OS close).
         UpdateMouseCapture(computeDelta: false);
         base.Update(gameTime);
     }
@@ -433,6 +439,8 @@ public sealed class Game1 : Game
                 var sensitivity = Math.Clamp(_settings.MouseSensitivity, 0.0005f, 0.01f);
                 var clampedPxX = Math.Clamp(deltaPx.X, -CaptureDeltaClampPixels, CaptureDeltaClampPixels);
                 var clampedPxY = Math.Clamp(deltaPx.Y, -CaptureDeltaClampPixels, CaptureDeltaClampPixels);
+                if (Math.Abs(clampedPxX) <= 1) clampedPxX = 0;
+                if (Math.Abs(clampedPxY) <= 1) clampedPxY = 0;
                 var delta = new Vector2(clampedPxX * sensitivity, clampedPxY * sensitivity);
                 delta.X = Math.Clamp(delta.X, -CaptureDeltaClampRadians, CaptureDeltaClampRadians);
                 delta.Y = Math.Clamp(delta.Y, -CaptureDeltaClampRadians, CaptureDeltaClampRadians);

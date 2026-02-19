@@ -81,6 +81,7 @@ public sealed class LauncherForm : Form
     private readonly CheckBox _advancedModeBox = new();
     private readonly Label _onlineHeader = new();
     private readonly Button _hubLoginBtn = new();
+    private readonly Button _hubGoogleBtn = new();
     private readonly Button _hubResetBtn = new();
     private readonly Label _hubStatusLabel = new();
     private readonly Panel _onlineStatusIndicator = new();
@@ -94,6 +95,7 @@ public sealed class LauncherForm : Form
     private DImage? _paperIcon;
     private DImage? _folderIcon;
     private DImage? _skullIcon;
+    private DImage? _windowIconImage;
     private readonly TextBox _logBox = new();
     private readonly Queue<string> _logTail = new();
     private readonly TableLayoutPanel _logPanel = new();
@@ -141,21 +143,41 @@ public sealed class LauncherForm : Form
     private readonly Label _logfile = new();
     private bool _nameEditInProgress;
     private string _pendingLaunchArgs = "";
+    private bool _pendingLaunchRequireHashApproval = true;
     private bool _hubLoggedIn;
     private EosClient? _eosClient;
     private string? _epicProductUserId;
     private string? _epicDisplayNameShown;
     private bool _epicLoginRequested;
+
+    private bool _veilnetAutoLoginAttempted;
+    private VeilnetClient? _veilnetClient;
+    private string _veilnetFunctionsBaseUrl = string.Empty;
+    private readonly OfficialBuildVerifier _officialBuildVerifier;
+
+    private const string DefaultVeilnetLauncherPageUrl = "https://latticeveil.github.io/veilnet/launcher/";
+    private const string DefaultVeilnetFunctionsBaseUrl = "https://lqghurvonrvrxfwjgkuu.supabase.co/functions/v1";
+    private const string DefaultGameHashesGetUrl = "https://lqghurvonrvrxfwjgkuu.supabase.co/functions/v1/game-hashes-get";
+    private static readonly string VeilnetAuthDir = Path.Combine(
+        Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
+        "RedactedCraft");
+    private static readonly string VeilnetAuthPath = Path.Combine(VeilnetAuthDir, "veilnet_launcher_token.json");
     private bool _onlineFunctional;
     private bool _releaseHashAllowed;
     private string _onlineStatusDetail = "Checking online services...";
     private string? _authTicket; // Store authentication ticket for claiming
-    private const string DefaultGateUrl = "https://eos-service.onrender.com";
-    private string _gateUrl = DefaultGateUrl;
 
     private sealed class ReleaseAllowlist
     {
         public string[] AllowedClientExeSha256 { get; set; } = Array.Empty<string>();
+    }
+
+    private sealed class VeilnetTokenRecord
+    {
+        public string Username { get; set; } = string.Empty;
+        public string Token { get; set; } = string.Empty;
+        public string UserId { get; set; } = string.Empty;
+        public DateTime SavedAtUtc { get; set; } = DateTime.UtcNow;
     }
 
     private readonly struct OnlineStartupStatus
@@ -170,9 +192,16 @@ public sealed class LauncherForm : Form
         _log = log;
         _profile = profile;
         _settings = GameSettings.LoadOrCreate(_log);
+        _officialBuildVerifier = new OfficialBuildVerifier(_log, GetGameHashesGetUrl());
         _assetInstaller = new AssetPackInstaller(_log);
         _logFilePath = _log.LogFilePath;
         ResetLogSessionDate(_logFilePath);
+
+        if (string.IsNullOrWhiteSpace(_profile.OfflineUsername))
+        {
+            _profile.OfflineUsername = GenerateOfflineUsername();
+            _profile.Save(_log);
+        }
 
         Text = Paths.IsDevBuild ? "[DEV] Lattice Launcher" : "Lattice Launcher";
 
@@ -192,12 +221,28 @@ public sealed class LauncherForm : Form
         catch { }
 
         BuildLayout();
+
+        try
+        {
+            if (Icon != null)
+            {
+                _windowIconImage?.Dispose();
+                _windowIconImage = Icon.ToBitmap();
+                _logoBox.Image = _windowIconImage;
+            }
+        }
+        catch { }
         ApplyTheme(_settings.DarkMode);
+
+        TryLoadVeilnetAuth();
 
         FormClosed += (_, _) =>
         {
             SaveProfile();
             _pollTimer.Stop();
+
+            try { _windowIconImage?.Dispose(); _windowIconImage = null; }
+            catch { }
 
             try { _gameProcess?.Dispose(); }
             catch { }
@@ -317,12 +362,7 @@ public sealed class LauncherForm : Form
 
         // Save username button removed per user request
 
-        _claimUsernameBtn.Text = "CLAIM";
-        _claimUsernameBtn.Width = 240;
-        _claimUsernameBtn.Height = 34;
-        _claimUsernameBtn.Visible = false; // Initially hidden until we check device identity
-        _claimUsernameBtn.Click += async (_, _) => await ClaimUsernameAsync();
-        _right.Controls.Add(_claimUsernameBtn);
+        _claimUsernameBtn.Visible = false;
 
         // Hide legacy "Change Username" button entirely.
         _changeUsernameBtn.Visible = false;
@@ -406,7 +446,8 @@ public sealed class LauncherForm : Form
                 var mode = (_launchModeBox.SelectedItem as string) ?? "Online";
                 if (string.Equals(mode, "Offline", StringComparison.OrdinalIgnoreCase))
                 {
-                    StartAssetCheckAndLaunch("--offline");
+                    LaunchGameProcess("--offline", requireHashApproval: false);
+                    return;
                 }
                 else
                 {
@@ -498,6 +539,16 @@ public sealed class LauncherForm : Form
         _hubLoginBtn.Click += async (_, _) => await OnEpicLoginClicked();
         _right.Controls.Add(_hubLoginBtn);
 
+        _hubGoogleBtn.Text = "LOGIN WITH VEILNET";
+        _hubGoogleBtn.Width = 240;
+        _hubGoogleBtn.Height = 40;
+        _hubGoogleBtn.TextImageRelation = TextImageRelation.ImageBeforeText;
+        _hubGoogleBtn.ImageAlign = System.Drawing.ContentAlignment.MiddleLeft;
+        _hubGoogleBtn.TextAlign = System.Drawing.ContentAlignment.MiddleCenter;
+        _hubGoogleBtn.Image = null;
+        _hubGoogleBtn.Click += async (_, _) => await OnGoogleLoginClicked();
+        _right.Controls.Add(_hubGoogleBtn);
+
         _hubResetBtn.Text = "SWITCH USER";
         _hubResetBtn.Width = 240;
         _hubResetBtn.Height = 34;
@@ -519,6 +570,415 @@ public sealed class LauncherForm : Form
         }
     }
 
+    private async Task OnGoogleLoginClicked()
+    {
+        try
+        {
+            var existingToken = (Environment.GetEnvironmentVariable("LV_VEILNET_ACCESS_TOKEN") ?? string.Empty).Trim();
+            if (!string.IsNullOrWhiteSpace(existingToken))
+            {
+                TryClearVeilnetAuth();
+                BeginInvoke(new Action(() =>
+                {
+                    RefreshVeilnetLoginVisuals();
+                    UpdateHubStatus("Veilnet: unlinked");
+                }));
+                return;
+            }
+
+            _hubGoogleBtn.Enabled = false;
+            UpdateHubStatus("Veilnet: open browser to link...");
+
+            OpenUrlInBrowser(GetVeilnetLauncherPageUrl());
+            UpdateHubStatus("Veilnet: paste your link code from the browser page.");
+
+            string? code = null;
+            if (InvokeRequired)
+            {
+                var tcs = new TaskCompletionSource<string?>();
+                BeginInvoke(new Action(() =>
+                {
+                    try { tcs.SetResult(PromptForVeilnetCode()); }
+                    catch (Exception ex) { tcs.SetException(ex); }
+                }));
+                code = await tcs.Task.ConfigureAwait(false);
+            }
+            else
+            {
+                code = PromptForVeilnetCode();
+            }
+
+            if (string.IsNullOrWhiteSpace(code))
+            {
+                BeginInvoke(new Action(() => UpdateHubStatus("Veilnet: link canceled")));
+                return;
+            }
+
+            var exchange = await GetVeilnetClient().ExchangeCodeAsync(code).ConfigureAwait(false);
+
+            Environment.SetEnvironmentVariable("LV_VEILNET_USERNAME", exchange.Username);
+            Environment.SetEnvironmentVariable("LV_VEILNET_ACCESS_TOKEN", exchange.Token);
+            TrySaveVeilnetAuth(exchange.Username, exchange.Token, exchange.UserId);
+
+            BeginInvoke(new Action(() =>
+            {
+                RefreshVeilnetLoginVisuals(exchange.Username);
+                UpdateHubStatus($"Veilnet: linked as {exchange.Username}");
+            }));
+        }
+        catch (Exception ex)
+        {
+            BeginInvoke(new Action(() => UpdateHubStatus($"Veilnet: {ex.Message}")));
+        }
+        finally
+        {
+            BeginInvoke(new Action(() => _hubGoogleBtn.Enabled = true));
+        }
+    }
+
+    private string GetVeilnetLauncherPageUrl()
+    {
+        var fromEnv = (Environment.GetEnvironmentVariable("LV_VEILNET_LAUNCHER_URL") ?? string.Empty).Trim();
+        if (!string.IsNullOrWhiteSpace(fromEnv))
+            return fromEnv;
+
+        return DefaultVeilnetLauncherPageUrl;
+    }
+
+    private string GetVeilnetFunctionsBaseUrl()
+    {
+        var fromEnv = (Environment.GetEnvironmentVariable("LV_VEILNET_FUNCTIONS_URL") ?? string.Empty).Trim();
+        if (!string.IsNullOrWhiteSpace(fromEnv))
+            return fromEnv.TrimEnd('/');
+
+        var legacy = (Environment.GetEnvironmentVariable("LV_VEILNET_URL") ?? string.Empty).Trim();
+        if (!string.IsNullOrWhiteSpace(legacy)
+            && legacy.Contains("supabase.co", StringComparison.OrdinalIgnoreCase)
+            && legacy.Contains("/functions/v1", StringComparison.OrdinalIgnoreCase))
+        {
+            return legacy.TrimEnd('/');
+        }
+
+        return DefaultVeilnetFunctionsBaseUrl;
+    }
+
+    private string GetGameHashesGetUrl()
+    {
+        var fromEnv = (Environment.GetEnvironmentVariable("LV_GAME_HASHES_GET_URL") ?? string.Empty).Trim();
+        if (!string.IsNullOrWhiteSpace(fromEnv))
+            return fromEnv;
+
+        return DefaultGameHashesGetUrl;
+    }
+
+    private string ResolveOfficialHashTargetPath()
+    {
+        var fromSettings = (_settings.OfficialBuildHashFilePath ?? string.Empty).Trim();
+        if (!string.IsNullOrWhiteSpace(fromSettings))
+            return fromSettings;
+
+        var baseDir = AppContext.BaseDirectory;
+        var candidates = new[]
+        {
+            Path.Combine(baseDir, "LatticeVeilMonoGame.exe"),
+            Path.Combine(baseDir, "LatticeVeil.exe")
+        };
+
+        for (var i = 0; i < candidates.Length; i++)
+        {
+            if (File.Exists(candidates[i]))
+                return candidates[i];
+        }
+
+        var processPath = (Environment.ProcessPath ?? string.Empty).Trim();
+        if (!string.IsNullOrWhiteSpace(processPath))
+            return processPath;
+
+        return Path.Combine(baseDir, "LatticeVeilMonoGame.exe");
+    }
+
+    private bool VerifyOfficialBuildForOnline()
+    {
+        var channel = Paths.IsDevBuild ? "dev" : "release";
+        var hashTargetPath = ResolveOfficialHashTargetPath();
+
+        OfficialBuildVerifier.VerifyResult verify;
+        try
+        {
+            verify = _officialBuildVerifier.VerifyAsync(channel, hashTargetPath).GetAwaiter().GetResult();
+        }
+        catch (Exception ex)
+        {
+            _log.Warn($"Official build verification exception: {ex.Message}");
+            MessageBox.Show(
+                "Failed to verify official build hash for online play.",
+                "Build Verification Failed",
+                MessageBoxButtons.OK,
+                MessageBoxIcon.Warning);
+            return false;
+        }
+
+        if (verify.Ok)
+        {
+            _log.Info($"Official hash verified for {channel} channel.");
+            return true;
+        }
+
+        var message = verify.Failure == OfficialBuildVerifier.VerifyFailure.HashMismatch
+            ? "This build is not official for online play. Please download the official release."
+            : verify.Message;
+
+        _log.Warn($"Official hash verification failed ({verify.Failure}) channel={channel}: {verify.Message}");
+        MessageBox.Show(
+            message,
+            "Official Build Verification",
+            MessageBoxButtons.OK,
+            MessageBoxIcon.Warning);
+        return false;
+    }
+
+    private VeilnetClient GetVeilnetClient()
+    {
+        var baseUrl = GetVeilnetFunctionsBaseUrl();
+        if (_veilnetClient == null || !string.Equals(baseUrl, _veilnetFunctionsBaseUrl, StringComparison.OrdinalIgnoreCase))
+        {
+            _veilnetClient = new VeilnetClient(baseUrl);
+            _veilnetFunctionsBaseUrl = baseUrl;
+        }
+
+        return _veilnetClient;
+    }
+
+    private void OpenUrlInBrowser(string url)
+    {
+        url = (url ?? string.Empty).Trim();
+        if (string.IsNullOrWhiteSpace(url))
+            return;
+
+        try
+        {
+            Process.Start(new ProcessStartInfo
+            {
+                FileName = url,
+                UseShellExecute = true
+            });
+        }
+        catch (Exception ex)
+        {
+            _log.Warn($"Veilnet browser open failed: {ex.Message}");
+        }
+    }
+
+    private string? PromptForVeilnetCode()
+    {
+        using var form = new Form
+        {
+            Text = "Link with Veilnet",
+            Width = 520,
+            Height = 220,
+            StartPosition = FormStartPosition.CenterParent,
+            FormBorderStyle = FormBorderStyle.FixedDialog,
+            MinimizeBox = false,
+            MaximizeBox = false,
+            ShowInTaskbar = false
+        };
+
+        var label = new Label
+        {
+            Text = "Paste the Veilnet launcher code from your browser:",
+            Left = 16,
+            Top = 16,
+            Width = 470
+        };
+
+        var input = new TextBox
+        {
+            Left = 16,
+            Top = 46,
+            Width = 470
+        };
+
+        var hint = new Label
+        {
+            Text = "Code expires in 10 minutes. Example: ABCD1234X",
+            Left = 16,
+            Top = 76,
+            Width = 470
+        };
+
+        var okBtn = new Button
+        {
+            Text = "Link",
+            DialogResult = DialogResult.OK,
+            Left = 310,
+            Top = 120,
+            Width = 86
+        };
+
+        var cancelBtn = new Button
+        {
+            Text = "Cancel",
+            DialogResult = DialogResult.Cancel,
+            Left = 400,
+            Top = 120,
+            Width = 86
+        };
+
+        form.Controls.Add(label);
+        form.Controls.Add(input);
+        form.Controls.Add(hint);
+        form.Controls.Add(okBtn);
+        form.Controls.Add(cancelBtn);
+        form.AcceptButton = okBtn;
+        form.CancelButton = cancelBtn;
+
+        var result = form.ShowDialog(this);
+        if (result != DialogResult.OK)
+            return null;
+
+        return (input.Text ?? string.Empty).Trim();
+    }
+
+    private void TrySaveVeilnetAuth(string username, string token, string userId)
+    {
+        try
+        {
+            Directory.CreateDirectory(VeilnetAuthDir);
+            var payload = JsonSerializer.Serialize(new VeilnetTokenRecord
+            {
+                Username = (username ?? string.Empty).Trim(),
+                Token = (token ?? string.Empty).Trim(),
+                UserId = (userId ?? string.Empty).Trim(),
+                SavedAtUtc = DateTime.UtcNow
+            });
+            var bytes = Encoding.UTF8.GetBytes(payload);
+            var protectedBytes = ProtectedData.Protect(bytes, null, DataProtectionScope.CurrentUser);
+            File.WriteAllBytes(VeilnetAuthPath, protectedBytes);
+        }
+        catch (Exception ex)
+        {
+            _log.Warn($"Failed to save Veilnet auth: {ex.Message}");
+        }
+    }
+
+    private VeilnetTokenRecord? TryReadVeilnetAuth()
+    {
+        try
+        {
+            if (!File.Exists(VeilnetAuthPath))
+                return null;
+
+            var protectedBytes = File.ReadAllBytes(VeilnetAuthPath);
+            var bytes = ProtectedData.Unprotect(protectedBytes, null, DataProtectionScope.CurrentUser);
+            var json = Encoding.UTF8.GetString(bytes);
+            var record = JsonSerializer.Deserialize<VeilnetTokenRecord>(json, JsonOptions);
+            if (record == null)
+                return null;
+
+            record.Username = (record.Username ?? string.Empty).Trim();
+            record.Token = (record.Token ?? string.Empty).Trim();
+            record.UserId = (record.UserId ?? string.Empty).Trim();
+
+            if (string.IsNullOrWhiteSpace(record.Token))
+                return null;
+
+            return record;
+        }
+        catch (Exception ex)
+        {
+            _log.Warn($"Failed to load Veilnet auth: {ex.Message}");
+            return null;
+        }
+    }
+
+    private void TryLoadVeilnetAuth()
+    {
+        var record = TryReadVeilnetAuth();
+        if (record == null)
+            return;
+
+        Environment.SetEnvironmentVariable("LV_VEILNET_ACCESS_TOKEN", record.Token);
+        if (!string.IsNullOrWhiteSpace(record.Username))
+            Environment.SetEnvironmentVariable("LV_VEILNET_USERNAME", record.Username);
+
+        var updateUi = new Action(() =>
+        {
+            RefreshVeilnetLoginVisuals(record.Username);
+            UpdateHubStatus(string.IsNullOrWhiteSpace(record.Username)
+                ? "Veilnet: validating saved login..."
+                : $"Veilnet: restoring {record.Username}...");
+        });
+
+        if (IsHandleCreated)
+            BeginInvoke(updateUi);
+        else
+            updateUi();
+
+        TryAutoLoginVeilnetFromEosPuid();
+    }
+
+    private void TryClearVeilnetAuth()
+    {
+        try
+        {
+            if (File.Exists(VeilnetAuthPath))
+                File.Delete(VeilnetAuthPath);
+        }
+        catch (Exception ex)
+        {
+            _log.Warn($"Failed to clear Veilnet auth: {ex.Message}");
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("LV_VEILNET_USERNAME", null);
+            Environment.SetEnvironmentVariable("LV_VEILNET_ACCESS_TOKEN", null);
+            _veilnetAutoLoginAttempted = false;
+        }
+    }
+
+    private void TryAutoLoginVeilnetFromEosPuid()
+    {
+        if (_veilnetAutoLoginAttempted)
+            return;
+
+        _veilnetAutoLoginAttempted = true;
+        var record = TryReadVeilnetAuth();
+        if (record == null || string.IsNullOrWhiteSpace(record.Token))
+            return;
+
+        _ = Task.Run(async () =>
+        {
+            try
+            {
+                var me = await GetVeilnetClient().GetMeAsync(record.Token).ConfigureAwait(false);
+                Environment.SetEnvironmentVariable("LV_VEILNET_USERNAME", me.Username);
+                Environment.SetEnvironmentVariable("LV_VEILNET_ACCESS_TOKEN", record.Token);
+                TrySaveVeilnetAuth(me.Username, record.Token, me.UserId);
+
+                BeginInvoke(new Action(() =>
+                {
+                    RefreshVeilnetLoginVisuals(me.Username);
+                    UpdateHubStatus($"Veilnet: linked as {me.Username}");
+                }));
+            }
+            catch (Exception ex)
+            {
+                _log.Warn($"Veilnet token refresh failed: {ex.Message}");
+                TryClearVeilnetAuth();
+                BeginInvoke(new Action(() =>
+                {
+                    RefreshVeilnetLoginVisuals();
+                    UpdateHubStatus("Veilnet: saved link expired. Link again.");
+                }));
+            }
+        });
+    }
+
+    private void RefreshVeilnetLoginVisuals(string? usernameOverride = null)
+    {
+        var username = (usernameOverride ?? (Environment.GetEnvironmentVariable("LV_VEILNET_USERNAME") ?? string.Empty)).Trim();
+        _hubGoogleBtn.Text = string.IsNullOrWhiteSpace(username) ? "LOGIN WITH VEILNET" : $"LINKED: {username}";
+    }
 
     private void BuildTopBar()
     {
@@ -733,6 +1193,8 @@ public sealed class LauncherForm : Form
         _hubResetBtn.Visible = false;
         _hubStatusLabel.Text = status ?? "Epic: Not logged in";
 
+        _hubGoogleBtn.Text = "LOGIN WITH VEILNET";
+
         _usernameBox.Text = _profile.Username ?? string.Empty;
         UpdateUsernameLabel();
         UpdateOfflineNameEnabled();
@@ -748,6 +1210,32 @@ public sealed class LauncherForm : Form
         catch (Exception ex)
         {
             _log.Warn($"Profile button load failed: {ex.Message}");
+        }
+
+        return null;
+    }
+
+    private DImage? LoadGoogleButtonImage()
+    {
+        try
+        {
+            var candidates = new[]
+            {
+                Path.Combine(Paths.AssetsDir, "textures", "menu", "buttons", "Google.png"),
+                Path.Combine(Paths.AssetsDir, "textures", "menu", "buttons", "GoogleLogo.png"),
+                Path.Combine(Paths.AssetsDir, "textures", "ui", "Google.png"),
+                Path.Combine(Paths.AssetsDir, "textures", "ui", "GoogleLogo.png")
+            };
+
+            foreach (var path in candidates)
+            {
+                if (File.Exists(path))
+                    return LoadImageUnlocked(path);
+            }
+        }
+        catch (Exception ex)
+        {
+            _log.Warn($"Google button load failed: {ex.Message}");
         }
 
         return null;
@@ -909,12 +1397,8 @@ public sealed class LauncherForm : Form
         {
             var getExecutableHash = () =>
             {
-                // Hash the game executable (not the launcher) so the allowlist applies to the correct binary.
+                // Hash the running executable (single-EXE model). Do not rely on a fixed filename.
                 var exePath = Environment.ProcessPath ?? "";
-                if (string.IsNullOrWhiteSpace(exePath) || exePath.Contains("Launcher", StringComparison.OrdinalIgnoreCase))
-                {
-                    exePath = Path.Combine(AppContext.BaseDirectory, "LatticeVeilMonoGame.exe");
-                }
 
                 if (string.IsNullOrWhiteSpace(exePath) || !File.Exists(exePath))
                     return "";
@@ -965,38 +1449,22 @@ public sealed class LauncherForm : Form
                 {
                     _log.Info(string.IsNullOrWhiteSpace(message) ? "Hash approved by gate!" : $"Hash approved by gate: {message}");
                     SetProgress(50, "Hash approved by gate!");
-                        
-                        // Now proceed with normal EOS initialization
-                        SetProgress(60, "Initializing EOS...");
-                        var eos = await EosClientProvider.GetOrCreateAsync(_log, "deviceid", allowRetry: true, autoLogin: true);
-                        if (eos != null)
-                        {
-                            _eosClient = eos;
-                            var timeout = DateTime.UtcNow.AddSeconds(20);
-                            while (!eos.IsLoggedIn && DateTime.UtcNow < timeout)
-                            {
-                                eos.Tick();
-                                await Task.Delay(250);
-                            }
-                        }
 
-                        SetProgress(80, "Checking device identity...");
-                        // Try to get username by device ID for auto-fill
-                        if (eos?.DeviceId != null)
-                        {
-                            var deviceIdentity = await gate.GetIdentityByDeviceIdAsync(eos.DeviceId);
-                            if (deviceIdentity != null && deviceIdentity.Found && deviceIdentity.User != null)
-                            {
-                                _offlineNameBox.Text = deviceIdentity.User.Username;
-                                _log.Info($"Auto-filled username: {deviceIdentity.User.Username}");
-                            }
-                        }
-                        
-                        SetProgress(100, "Ready");
-                        _onlineFunctional = true;
-                        _releaseHashAllowed = true;
-                        _log.Info("Online status: Functional and hash allowed - marking as ONLINE");
-                        ApplyOnlineStatusVisuals();
+                    SetProgress(60, "Fetching EOS config...");
+                    string? ticket = null;
+                    gate.TryGetValidTicketForChildProcess(out ticket, out _);
+                    if (!EosRemoteConfigBootstrap.TryBootstrap(_log, gate, allowRetry: false, ticket))
+                    {
+                        throw new Exception("Failed to fetch EOS config from gate");
+                    }
+
+                    SetProgress(100, "Ready");
+                    _onlineFunctional = true;
+                    _releaseHashAllowed = true;
+                    _onlineStatusDetail = "Online ready";
+                    _log.Info("Online status: Functional and hash allowed - marking as ONLINE");
+                    ApplyOnlineStatusVisuals();
+                    BeginInvoke(new Action(() => SetLaunchButtonState(GetGameState())));
                 }
                 else
                 {
@@ -1004,8 +1472,10 @@ public sealed class LauncherForm : Form
                     SetProgress(100, "Hash rejected");
                     _onlineFunctional = false;
                     _releaseHashAllowed = false;
+                    _onlineStatusDetail = string.IsNullOrWhiteSpace(message) ? "Hash rejected" : message;
                     _log.Info("Online status: Not functional - hash rejected - marking as OFFLINE");
                     ApplyOnlineStatusVisuals();
+                    BeginInvoke(new Action(() => SetLaunchButtonState(GetGameState())));
                 }
             }
             catch (Exception ex)
@@ -1014,8 +1484,10 @@ public sealed class LauncherForm : Form
                 SetProgress(100, "Error during startup checks");
                 _onlineFunctional = false;
                 _releaseHashAllowed = false;
+                _onlineStatusDetail = ex.Message;
                 _log.Info("Online status: Not functional - exception during checks - marking as OFFLINE");
                 ApplyOnlineStatusVisuals();
+                BeginInvoke(new Action(() => SetLaunchButtonState(GetGameState())));
             }
         });
     }
@@ -1223,11 +1695,13 @@ public sealed class LauncherForm : Form
         _onlineStatusIndicator.BackColor = _onlineFunctional ? DColor.LimeGreen : DColor.Red;
         _toolTip.SetToolTip(_onlineStatusIndicator, _onlineFunctional ? "Online" : "Offline/LAN");
         
-        // Remove status text updates
-        _claimUsernameBtn.Enabled = _onlineFunctional;
-        
         // Update username label based on online status
         UpdateUsernameLabel();
+        
+        // Only allow Veilnet login button to appear when online is functional AND build is verified/allowed.
+        _hubGoogleBtn.Visible = _onlineFunctional && _releaseHashAllowed;
+
+        TryAutoLoginVeilnetFromEosPuid();
         
         _log.Info($"Status indicator color set to: {_onlineStatusIndicator.BackColor}");
     }
@@ -1242,6 +1716,7 @@ public sealed class LauncherForm : Form
         }
 
         _onlineStatusDetail = text;
+        _progressLabel.Text = string.IsNullOrWhiteSpace(text) ? "Idle" : text;
         ApplyOnlineStatusVisuals();
     }
 
@@ -1423,12 +1898,13 @@ public sealed class LauncherForm : Form
         return string.Empty;
     }
 
-    private async void StartAssetCheckAndLaunch(string args)
+    private async void StartAssetCheckAndLaunch(string args, bool requireHashApproval = true)
     {
         if (_launching || _assetBusy)
             return;
 
         _pendingLaunchArgs = args ?? string.Empty;
+        _pendingLaunchRequireHashApproval = requireHashApproval;
         _launching = true;
         _assetBusy = true;
         _assetPendingLaunch = true;
@@ -1455,6 +1931,12 @@ public sealed class LauncherForm : Form
             ShowAssetPanel("Checking Assets...", "Checking local files...", "");
             var isDevBuild = Paths.IsDevBuild;
             var targetAssetsDir = isDevBuild ? Paths.LocalAssetsDir : Paths.AssetsDir;
+            var devAssetsMissing = false;
+            if (isDevBuild && !Directory.Exists(Paths.LocalAssetsDir))
+            {
+                devAssetsMissing = true;
+                targetAssetsDir = Paths.AssetsDir;
+            }
             
             _assetInstaller.PreflightWriteAccess(targetAssetsDir);
 
@@ -1463,21 +1945,18 @@ public sealed class LauncherForm : Form
 
             if (isDevBuild)
             {
-                if (!hasAssets)
+                if (!devAssetsMissing && hasAssets)
                 {
-                    ShowAssetError(
-                        "Dev assets missing.",
-                        $"Expected Defaults assets at: {Paths.LocalAssetsDir}");
+                    HideAssetPanel();
                     _assetBusy = false;
                     _assetPendingLaunch = false;
+                    LaunchGameProcess(_pendingLaunchArgs);
                     return;
                 }
 
-                HideAssetPanel();
-                _assetBusy = false;
-                _assetPendingLaunch = false;
-                LaunchGameProcess(_pendingLaunchArgs);
-                return;
+                // Dev build but local dev assets are missing: fall back to remote fetch/install like release.
+                if (devAssetsMissing)
+                    _log.Warn($"Dev assets folder missing: {Paths.LocalAssetsDir}. Falling back to remote asset install.");
             }
 
             AssetPackCheckResult? check = null;
@@ -1551,7 +2030,7 @@ public sealed class LauncherForm : Form
             if (_assetPendingLaunch)
             {
                 _assetPendingLaunch = false;
-                LaunchGameProcess(_pendingLaunchArgs);
+                LaunchGameProcess(_pendingLaunchArgs, requireHashApproval: _pendingLaunchRequireHashApproval);
             }
         }
         catch (OperationCanceledException)
@@ -1572,10 +2051,10 @@ public sealed class LauncherForm : Form
         }
     }
 
-    private void LaunchGameProcess(string extraArgs)
+    private void LaunchGameProcess(string extraArgs, bool requireHashApproval = true)
     {
         // Verify hash was approved before allowing launch
-        if (!_releaseHashAllowed)
+        if (requireHashApproval && !_releaseHashAllowed)
         {
             MessageBox.Show("Cannot launch game: Hash verification failed. Please ensure your build is approved.", "Hash Verification Failed", MessageBoxButtons.OK, MessageBoxIcon.Error);
             _log.Warn("Launch blocked: Hash not approved");
@@ -1583,8 +2062,7 @@ public sealed class LauncherForm : Form
         }
         
         // Use unified executable with renderer argument
-        var exeName = "LatticeVeilMonoGame.exe";
-        var exePath = Path.Combine(Path.GetDirectoryName(Environment.ProcessPath) ?? string.Empty, exeName);
+        var exePath = Environment.ProcessPath ?? string.Empty;
         
         if (!File.Exists(exePath))
         {
@@ -1618,6 +2096,12 @@ public sealed class LauncherForm : Form
             args += $" --render-distance={_settings.LauncherRenderDistance}";
         }
 
+        var launchingOffline = args.Contains("--offline", StringComparison.OrdinalIgnoreCase);
+        if (!launchingOffline && !VerifyOfficialBuildForOnline())
+        {
+            return;
+        }
+
         try
         {
             _log.Info($"Launching game process with renderer: {_settings.RendererBackend}...");
@@ -1632,12 +2116,29 @@ public sealed class LauncherForm : Form
             };
             
             // Set environment variables for EOS authorization
+            startInfo.EnvironmentVariables["LV_PROCESS_KIND"] = "game";
             if (_onlineFunctional && _releaseHashAllowed)
             {
                 startInfo.EnvironmentVariables["LV_LAUNCHER_ONLINE_AUTH"] = "1";
-                startInfo.EnvironmentVariables["LV_PROCESS_KIND"] = "game";
                 _log.Info("Set EOS authorization environment variables for game process");
             }
+            else
+            {
+                startInfo.EnvironmentVariables["LV_LAUNCHER_ONLINE_AUTH"] = "0";
+            }
+
+            var veilnetUrl = (Environment.GetEnvironmentVariable("LV_VEILNET_URL") ?? string.Empty).Trim();
+            if (string.IsNullOrWhiteSpace(veilnetUrl))
+                veilnetUrl = "https://veilnet.onrender.com";
+            startInfo.EnvironmentVariables["LV_VEILNET_URL"] = veilnetUrl;
+
+            var veilnetUsername = (Environment.GetEnvironmentVariable("LV_VEILNET_USERNAME") ?? string.Empty).Trim();
+            if (!launchingOffline && !string.IsNullOrWhiteSpace(veilnetUsername))
+                startInfo.EnvironmentVariables["LV_VEILNET_USERNAME"] = veilnetUsername;
+
+            var veilnetToken = (Environment.GetEnvironmentVariable("LV_VEILNET_ACCESS_TOKEN") ?? string.Empty).Trim();
+            if (!launchingOffline && !string.IsNullOrWhiteSpace(veilnetToken))
+                startInfo.EnvironmentVariables["LV_VEILNET_ACCESS_TOKEN"] = veilnetToken;
             
             _gameProcess = Process.Start(startInfo);
 
@@ -1761,12 +2262,11 @@ public sealed class LauncherForm : Form
         switch (state)
         {
             case GameState.NotRunning:
-                _launchBtn.Text = "Launch";
+                _launchBtn.Text = "LAUNCH";
                 _launchBtn.Enabled = true;
                 _launchModeBox.Enabled = true;
                 if (_rocketIcon != null) { _launchBtn.Image = _rocketIcon; }
                 _toolTip.SetToolTip(_launchBtn, "Launch game");
-                _progressLabel.Text = "Idle";
                 break;
             default:
                 _launchBtn.Text = "KILL";
@@ -1867,22 +2367,23 @@ public sealed class LauncherForm : Form
 
     private void UpdateOfflineNameEnabled()
     {
-        _offlineNameBox.Enabled = true;
-        // Save username button removed - auto-save on focus loss
+        _offlineNameBox.Enabled = false;
+        _offlineNameBox.ReadOnly = true;
         if (!_offlineNameBox.Focused)
             _offlineNameBox.Text = _profile.OfflineUsername ?? string.Empty;
     }
 
     private void SaveOfflineNameFromUi()
     {
-        var desired = (_offlineNameBox.Text ?? string.Empty).Trim();
-        if (desired.Length > 24)
-            desired = desired.Substring(0, 24);
+        _offlineNameBox.Text = _profile.OfflineUsername ?? string.Empty;
+    }
 
-        // Empty is allowed: game will fall back to a deterministic default.
-        _profile.OfflineUsername = desired;
-        _profile.Save(_log);
-        _offlineNameBox.Text = desired;
+    private static string GenerateOfflineUsername()
+    {
+        var bytes = new byte[4];
+        RandomNumberGenerator.Fill(bytes);
+        var suffix = Convert.ToHexString(bytes).ToLowerInvariant();
+        return "player_" + suffix;
     }
 
     private static string Truncate(string? text, int max)
@@ -2358,131 +2859,9 @@ public sealed class LauncherForm : Form
         SetLaunchButtonState(GetGameState());
     }
 
-    private async Task ClaimUsernameAsync()
+    private void ClaimUsernameAsync()
     {
-        try
-        {
-            var username = _offlineNameBox.Text.Trim();
-            if (string.IsNullOrWhiteSpace(username))
-            {
-                MessageBox.Show("Please enter a username first.", "Username Required", MessageBoxButtons.OK, MessageBoxIcon.Warning);
-                return;
-            }
-
-            var isChange = _claimUsernameBtn.Text == "CHANGE";
-            _claimUsernameBtn.Enabled = false;
-            _claimUsernameBtn.Text = isChange ? "CHANGING..." : "CLAIMING...";
-
-            var gate = OnlineGateClient.GetOrCreate();
-            var eos = EosClientProvider.Current;
-            if (eos == null)
-            {
-                // Try to get EOS client with retry
-                eos = await EosClientProvider.GetOrCreateAsync(_log, "deviceid", allowRetry: true, autoLogin: true);
-                if (eos == null)
-                {
-                    MessageBox.Show("EOS client not available. Please restart the launcher.", "Error", MessageBoxButtons.OK, MessageBoxIcon.Error);
-                    return;
-                }
-
-                _eosClient = eos;
-            }
-            
-            // Try to get device ID, with retry logic
-            string? deviceId = null;
-            if (eos?.DeviceId != null && !string.IsNullOrEmpty(eos.DeviceId))
-            {
-                deviceId = eos.DeviceId;
-            }
-            else
-            {
-                // Try to refresh EOS client and get device ID
-                _log.Info("Device ID not available, attempting to refresh EOS client...");
-                eos = await EosClientProvider.GetOrCreateAsync(_log, "deviceid", allowRetry: true, autoLogin: true);
-                if (eos != null)
-                {
-                    _eosClient = eos;
-                    eos.StartLogin();
-                    
-                    // Wait a bit for device ID
-                    var timeout = DateTime.UtcNow.AddSeconds(10);
-                    while (DateTime.UtcNow < timeout && (eos.DeviceId == null || string.IsNullOrEmpty(eos.DeviceId)))
-                    {
-                        eos.Tick();
-                        await Task.Delay(500);
-                    }
-                    deviceId = eos.DeviceId;
-                }
-            }
-            
-            if (string.IsNullOrEmpty(deviceId))
-            {
-                MessageBox.Show("Device ID not available. Please restart the launcher or check EOS configuration.", "Error", MessageBoxButtons.OK, MessageBoxIcon.Error);
-                _log.Error($"Device ID still not available after retry. EOS IsLoggedIn: {eos?.IsLoggedIn}, DeviceId: {eos?.DeviceId}");
-                return;
-            }
-
-            _log.Info($"{(isChange ? "Changing" : "Claiming")} username '{username}' for Device ID: {deviceId}");
-            
-            // Use the correct identity claim endpoint with proper ticket authorization
-            var claimEndpoint = $"{_gateUrl}/identity/claim";
-            var claimRequest = new { 
-                ProductUserId = deviceId,
-                Username = username,
-                DisplayName = username
-            };
-            
-            var client = new HttpClient();
-            client.DefaultRequestHeaders.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", _authTicket);
-            
-            var claimResponse = await client.PostAsync(claimEndpoint, new StringContent(JsonSerializer.Serialize(claimRequest), Encoding.UTF8, "application/json"));
-            
-            if (claimResponse.IsSuccessStatusCode)
-            {
-                var claimContent = await claimResponse.Content.ReadAsStringAsync();
-                _log.Info($"Identity claim response: {claimContent}");
-                
-                using var claimJson = JsonDocument.Parse(claimContent);
-                var ok = claimJson.RootElement.GetProperty("ok").GetBoolean();
-                
-                if (ok)
-                {
-                    MessageBox.Show($"Username '{username}' {(isChange ? "changed" : "claimed")} successfully!", "Success", MessageBoxButtons.OK, MessageBoxIcon.Information);
-                    _log.Info($"Username {(isChange ? "changed" : "claimed")} successfully: {username}");
-                    
-                    // Update button to show current state
-                    _claimUsernameBtn.Text = "CHANGE";
-                    _claimUsernameBtn.Enabled = true;
-                }
-                else
-                {
-                    var message = claimJson.RootElement.TryGetProperty("message", out var msgEl) ? msgEl.GetString() : "Unknown error";
-                    MessageBox.Show($"Failed to {(isChange ? "change" : "claim")} username: {message}", $"{(isChange ? "Change" : "Claim")} Failed", MessageBoxButtons.OK, MessageBoxIcon.Warning);
-                    _log.Warn($"Username {(isChange ? "change" : "claim")} failed: {username} - {message}");
-                }
-            }
-            else
-            {
-                var errorContent = await claimResponse.Content.ReadAsStringAsync();
-                MessageBox.Show($"Failed to {(isChange ? "change" : "claim")} username: HTTP {claimResponse.StatusCode}", $"{(isChange ? "Change" : "Claim")} Failed", MessageBoxButtons.OK, MessageBoxIcon.Warning);
-                _log.Warn($"Username {(isChange ? "change" : "claim")} HTTP failed: {username} - {claimResponse.StatusCode} - {errorContent}");
-            }
-        }
-        catch (Exception ex)
-        {
-            var wasChange = _claimUsernameBtn.Text.StartsWith("CHANGE") || _claimUsernameBtn.Text.StartsWith("CHANGING");
-            MessageBox.Show($"An error occurred while {(wasChange ? "changing" : "claiming")} username: {ex.Message}", "Error", MessageBoxButtons.OK, MessageBoxIcon.Error);
-            _log.Error(ex, "Username claim error");
-        }
-        finally
-        {
-            // Reset button text if failed
-            if (_claimUsernameBtn.Text != "CHANGE")
-            {
-                _claimUsernameBtn.Enabled = _onlineFunctional;
-                _claimUsernameBtn.Text = "CLAIM";
-            }
-        }
+        MessageBox.Show("Username claiming has been removed. Use Veilnet login to link your online username, or edit your offline username locally.", "Not Available", MessageBoxButtons.OK, MessageBoxIcon.Information);
     }
 
 

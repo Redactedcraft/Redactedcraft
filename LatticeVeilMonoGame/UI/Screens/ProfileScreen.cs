@@ -148,8 +148,10 @@ public enum ProfileScreenStartTab
         _tabIdentityBtn.Bounds = _tabIdentityRect;
         _tabFriendsBtn.Bounds = _tabFriendsRect;
 
-        _usernameRect = new Rectangle(contentRect.X, _tabIdentityRect.Bottom + 16, contentRect.Width, _font.LineHeight + 18);
-        _iconRect = new Rectangle(contentRect.Right - 98, _usernameRect.Bottom + 12, 98, 98);
+        var iconSize = 98;
+        var iconGap = 12;
+        _iconRect = new Rectangle(contentRect.X, _tabIdentityRect.Bottom + 16, iconSize, iconSize);
+        _usernameRect = new Rectangle(_iconRect.Right + iconGap, _tabIdentityRect.Bottom + 16, Math.Max(1, contentRect.Width - iconSize - iconGap), _font.LineHeight + 18);
         
         var modeY = _tabIdentityRect.Bottom + 12;
         var modeH = _font.LineHeight + 10;
@@ -350,7 +352,7 @@ public enum ProfileScreenStartTab
             name = "(unclaimed)";
         var npos = new Vector2(_usernameRect.X + 8, _usernameRect.Y + (_usernameRect.Height - _font.LineHeight) / 2f);
         _font.DrawString(sb, name, npos, Color.White);
-        _font.DrawString(sb, "Change username in Lattice Launcher (CLAIM/CHANGE).", new Vector2(detailX, _usernameRect.Bottom + 6), new Color(180, 180, 180));
+        _font.DrawString(sb, "Change username in Lattice Launcher (CLAIM/CHANGE).", new Vector2(detailX, _iconRect.Bottom + 6), new Color(180, 180, 180));
 
         sb.Draw(_pixel, _iconRect, new Color(26, 26, 26, 220));
         DrawBorder(sb, _iconRect, new Color(160, 160, 160));
@@ -363,13 +365,7 @@ public enum ProfileScreenStartTab
         infoY += _font.LineHeight + 4;
 
         var id = (_eos?.LocalProductUserId ?? _identityStore.ProductUserId ?? string.Empty).Trim();
-        var friendCode = string.IsNullOrWhiteSpace(id) ? string.Empty : EosIdentityStore.GenerateFriendCode(id);
-        var reserved = (_identityStore.ReservedUsername ?? string.Empty).Trim();
         _font.DrawString(sb, $"MY ID: {(string.IsNullOrWhiteSpace(id) ? "(waiting...)" : id)}", new Vector2(detailX, infoY), Color.White);
-        infoY += _font.LineHeight + 2;
-        _font.DrawString(sb, $"RESERVED USERNAME: {(string.IsNullOrWhiteSpace(reserved) ? "(unclaimed)" : reserved)}", new Vector2(detailX, infoY), Color.White);
-        infoY += _font.LineHeight + 2;
-        _font.DrawString(sb, $"MY FRIEND CODE: {(string.IsNullOrWhiteSpace(friendCode) ? "(waiting...)" : friendCode)}", new Vector2(detailX, infoY), Color.White);
         infoY += _font.LineHeight + 2;
         _font.DrawString(sb, $"EOS Config: {EosRuntimeStatus.DescribeConfigSource()}", new Vector2(detailX, infoY), new Color(180, 180, 180));
     }

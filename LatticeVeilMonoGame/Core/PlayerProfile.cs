@@ -2,15 +2,18 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Text.Json;
+using System.Text.Json.Serialization;
 
 namespace LatticeVeilMonoGame.Core;
 
 public sealed class PlayerProfile
 {
+    [JsonIgnore]
     public string PlayerId { get; set; } = "";
     /// <summary>
     /// Online (account) username (legacy). For EOS builds this is usually empty and Epic display name is used instead.
     /// </summary>
+    [JsonIgnore]
     public string Username { get; set; } = "";
 
     /// <summary>
@@ -21,14 +24,17 @@ public sealed class PlayerProfile
     /// <summary>
     /// Saved EOS friends (Product User IDs) so you can join without retyping/copying IDs every time.
     /// </summary>
+    [JsonIgnore]
     public List<FriendEntry> Friends { get; set; } = new();
     /// <summary>
     /// Incoming friend requests (Product User IDs).
     /// </summary>
+    [JsonIgnore]
     public List<string> ReceivedRequests { get; set; } = new();
     /// <summary>
     /// Outgoing friend requests (Product User IDs).
     /// </summary>
+    [JsonIgnore]
     public List<string> SentRequests { get; set; } = new();
 
     public sealed class FriendEntry
@@ -41,6 +47,10 @@ public sealed class PlayerProfile
 
     public string GetDisplayUsername()
     {
+        var veilnetName = (Environment.GetEnvironmentVariable("LV_VEILNET_USERNAME") ?? string.Empty).Trim();
+        if (!string.IsNullOrWhiteSpace(veilnetName))
+            return veilnetName;
+
         if (!string.IsNullOrWhiteSpace(OfflineUsername))
             return OfflineUsername.Trim();
         if (!string.IsNullOrWhiteSpace(Username))

@@ -46,7 +46,17 @@ public sealed class EosClient : IDisposable
 
     public static EosClient? TryCreate(Logger log, string? loginModeOverride = null, bool autoLogin = true)
     {
-        var config = EosConfig.Load(log);
+        EosConfig? config;
+        try
+        {
+            config = EosConfig.Load(log);
+        }
+        catch (Exception ex)
+        {
+            log.Error($"EOS config validation failed: {ex.Message}");
+            return null;
+        }
+
         if (config == null) return null;
 #if EOS_SDK
         if (!string.IsNullOrWhiteSpace(loginModeOverride)) config.LoginMode = loginModeOverride;
@@ -75,9 +85,9 @@ public sealed class EosClient : IDisposable
 
     public void Tick() { lock (_sdkLock) { if (!_disposed) _platform?.Tick(); } }
 
-    public void StartLogin() { if (IsLoggedIn || _deviceLoginStarted) return; BeginDeviceIdLogin(); }
+    public void StartLogin() { if (IsLoggedIn || _deviceLoginStarted) return; BeginLogin(); }
 
-    public void StartSilentLogin() { if (IsLoggedIn || _deviceLoginStarted) return; BeginDeviceIdLogin(); }
+    public void StartSilentLogin() { if (IsLoggedIn || _deviceLoginStarted) return; BeginLogin(); }
 
     private bool Initialize()
     {
@@ -87,7 +97,7 @@ public sealed class EosClient : IDisposable
             InitializeOptions initOptions = new InitializeOptions { ProductName = _config.ProductName, ProductVersion = _config.ProductVersion };
             Result initResult; lock (_sdkLock) initResult = PlatformInterface.Initialize(ref initOptions);
             if (initResult != Result.Success && initResult != Result.AlreadyConfigured) return false;
-            Options options = new Options { ProductId = _config.ProductId, SandboxId = _config.SandboxId, DeploymentId = _config.DeploymentId, ClientCredentials = new ClientCredentials { ClientId = _config.ClientId, ClientSecret = _config.ClientSecret }, IsServer = false };
+            Options options = new Options { ProductId = _config.ProductId, SandboxId = _config.SandboxId, DeploymentId = _config.DeploymentId, ClientCredentials = new ClientCredentials { ClientId = _config.ClientId, ClientSecret = _config.ClientSecret ?? string.Empty }, IsServer = false };
             lock (_sdkLock) _platform = PlatformInterface.Create(ref options);
             if (_platform == null) return false;
             _connect = _platform.GetConnectInterface();
@@ -105,14 +115,37 @@ public sealed class EosClient : IDisposable
 #endif
     }
 
-    private void BeginLogin() { BeginDeviceIdLogin(); }
+    private void BeginLogin()
+    {
+#if EOS_SDK
+        var mode = (_config.LoginMode ?? "deviceid").Trim().ToLowerInvariant();
+        if (mode == "epic")
+        {
+            BeginDeviceIdLogin();
+            return;
+        }
+
+        BeginDeviceIdLogin();
+#endif
+    }
 
     private void BeginDeviceIdLogin()
     {
 #if EOS_SDK
         if (_connect == null || _deviceLoginStarted) return;
         _deviceLoginStarted = true;
-        LoginOptions opts = new LoginOptions { Credentials = new Credentials { Type = ExternalCredentialType.DeviceidAccessToken } };
+        LoginOptions opts = new LoginOptions
+        {
+            Credentials = new Credentials
+            {
+                Type = ExternalCredentialType.DeviceidAccessToken,
+                Token = ""
+            },
+            UserLoginInfo = new UserLoginInfo
+            {
+                DisplayName = Environment.UserName
+            }
+        };
         lock (_sdkLock) _connect.Login(ref opts, null, OnLoginComplete);
 #endif
     }
@@ -120,9 +153,23 @@ public sealed class EosClient : IDisposable
     private void OnLoginComplete(ref LoginCallbackInfo info)
     {
 #if EOS_SDK
-        if (info.ResultCode == Result.Success) { _localUserId = info.LocalUserId; _deviceLoginStarted = false; return; }
-        if (info.ResultCode == Result.InvalidUser) { CreateDeviceId(); return; }
+        if (info.ResultCode == Result.Success)
+        {
+            _localUserId = info.LocalUserId;
+            _deviceLoginStarted = false;
+            _log.Info("EOS login success (deviceid)");
+            return;
+        }
+
+        if (info.ResultCode == Result.InvalidUser)
+        {
+            _log.Warn("EOS login returned InvalidUser; attempting CreateDeviceId...");
+            CreateDeviceId();
+            return;
+        }
+
         _deviceLoginStarted = false;
+        _log.Warn($"EOS login failed: {info.ResultCode}");
 #endif
     }
 
@@ -138,8 +185,15 @@ public sealed class EosClient : IDisposable
     private void OnCreateDeviceId(ref CreateDeviceIdCallbackInfo info)
     {
 #if EOS_SDK
-        if (info.ResultCode == Result.Success || info.ResultCode == Result.DuplicateNotAllowed) BeginDeviceIdLogin();
-        else _deviceLoginStarted = false;
+        _log.Info($"EOS CreateDeviceId result: {info.ResultCode}");
+        if (info.ResultCode == Result.Success || info.ResultCode == Result.DuplicateNotAllowed)
+        {
+            _log.Info("EOS CreateDeviceId completed; retrying deviceid login...");
+            _deviceLoginStarted = false;
+            BeginDeviceIdLogin();
+            return;
+        }
+        return;
 #endif
     }
 

@@ -147,7 +147,7 @@ public static class EosRemoteConfigBootstrap
                 return false;
             }
 
-            log.Info($"EOS config response body: {body.Substring(0, Math.Min(200, body.Length))}...");
+            log.Info($"EOS config response received: {body.Length} bytes");
 
             var parsed = JsonSerializer.Deserialize<EosConfigPayload>(body, JsonOptions);
             if (parsed == null || !parsed.IsValid())
@@ -155,6 +155,8 @@ public static class EosRemoteConfigBootstrap
                 log.Warn("EOS remote config request failed: payload missing required fields.");
                 return false;
             }
+
+            log.Info($"EOS config payload fields present: productId={!string.IsNullOrWhiteSpace(parsed.ProductId)}, sandboxId={!string.IsNullOrWhiteSpace(parsed.SandboxId)}, deploymentId={!string.IsNullOrWhiteSpace(parsed.DeploymentId)}, clientId={!string.IsNullOrWhiteSpace(parsed.ClientId)}, clientSecretLength={(parsed.ClientSecret ?? string.Empty).Length}, loginMode={(string.IsNullOrWhiteSpace(parsed.LoginMode) ? "(default)" : parsed.LoginMode)}");
 
             payload = parsed;
             return true;

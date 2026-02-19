@@ -102,15 +102,135 @@ Template:
 
 - `GateServer/render.example.env`
 
-## EOS Config Split
+## EOS Configuration
 
-The project supports split EOS config files:
+### EOS SDK Pathing and DLL Placement
 
-- `eos.public.json` (safe IDs only)
-- `eos.private.json` (secret material, never commit)
-- `eos.public.example.json` (tracked placeholder template)
+The project is already wired to EOS SDK paths in `LatticeVeilMonoGame/LatticeVeilMonoGame.csproj`:
 
-If EOS config is unavailable, EOS is disabled and LAN remains available.
+- EOS C# source path: `ThirdParty/EOS/SDK/Source/**`
+- Native DLL path: `ThirdParty/EOS/EOSSDK-Win64-Shipping.dll`
+
+At runtime/publish, `EOSSDK-Win64-Shipping.dll` must be present next to the built game executable.
+
+### Public vs Private Config Files
+
+- `eos/eos.public.json` is committed and safe (public IDs only).
+- `eos/eos.private.example.json` is committed as a template only.
+- `eos/eos.private.json` is local-only and ignored by git.
+
+`eos/eos.public.json` format (public values only):
+
+```json
+{
+  "ProductId": "REPLACE_WITH_PRODUCT_ID",
+  "SandboxId": "REPLACE_WITH_SANDBOX_ID",
+  "DeploymentId": "REPLACE_WITH_DEPLOYMENT_ID",
+  "ClientId": "REPLACE_WITH_CLIENT_ID",
+  "ProductName": "RedactedCraft",
+  "ProductVersion": "1.0"
+}
+```
+
+`eos/eos.private.example.json` template:
+
+```json
+{
+  "ClientSecret": "PUT_SECRET_HERE"
+}
+```
+
+### Runtime Load Order
+
+Public config (`eos.public.json`) load order:
+
+1. `<GameFolder>/eos.public.json`
+2. `<GameFolder>/eos/eos.public.json`
+
+Client secret load order (private):
+
+1. `EOS_CLIENT_SECRET` environment variable
+2. `<GameFolder>/eos.private.json`
+3. `%APPDATA%/RedactedCraft/eos.private.json`
+
+Important:
+
+- `ClientSecret` must never be committed to this repo.
+- Secrets must never be shipped in website builds.
+- If a secret is ever required for backend operations, handle it server-side only.
+
+### Supabase Public EOS Config Function
+
+This repo includes a Supabase Edge Function at:
+
+- `supabase/functions/eos-config/index.ts`
+
+It serves only public EOS fields:
+
+- `ProductId`
+- `SandboxId`
+- `DeploymentId`
+- `ClientId`
+- `ProductName`
+- `ProductVersion`
+
+Set function environment variables (public values only):
+
+- `EOS_PRODUCT_ID`
+- `EOS_SANDBOX_ID`
+- `EOS_DEPLOYMENT_ID`
+- `EOS_CLIENT_ID`
+- `EOS_PRODUCT_NAME`
+- `EOS_PRODUCT_VERSION`
+
+Do not put `EOS_CLIENT_SECRET` in this public config function. If you ever need secret-backed EOS operations, use a separate private server function.
+
+Example deployment flow:
+
+```powershell
+supabase functions deploy eos-config
+supabase secrets set EOS_PRODUCT_ID=... EOS_SANDBOX_ID=... EOS_DEPLOYMENT_ID=... EOS_CLIENT_ID=... EOS_PRODUCT_NAME=RedactedCraft EOS_PRODUCT_VERSION=1.0
+```
+
+## Veilnet Launcher Link
+
+Launcher login now uses a Veilnet link-code flow instead of embedding Google auth in the launcher.
+
+Flow:
+
+1. In the launcher, click `LOGIN WITH VEILNET`.
+2. Your browser opens `https://latticeveil.github.io/veilnet/launcher/`.
+3. Sign in on Veilnet, ensure your username is set, then generate a one-time code.
+4. Paste the code into the launcher prompt.
+5. Launcher exchanges the code for a Veilnet launcher token and current username.
+
+Token storage:
+
+- `%APPDATA%/RedactedCraft/veilnet_launcher_token.json` (DPAPI-protected local file)
+
+Startup behavior:
+
+- On each launcher start, if a token exists, launcher calls Supabase Edge Function `launcher-me`.
+- The launcher refreshes the current website username and uses it for online identity (`LV_VEILNET_USERNAME`).
+- If token validation fails, launcher clears the local token and requires relink.
+
+Official build verification (online only):
+
+- Before online launch, launcher fetches official hashes from `game-hashes-get`.
+- Debug/dev launcher builds validate against `dev`; release builds validate against `release`.
+- Local SHA256 is computed from the configured file path (`OfficialBuildHashFilePath` in settings) or fallback executable path.
+- If hash mismatches, online launch is blocked with an official-build warning.
+- Offline launch remains available.
+
+Optional overrides:
+
+- `LV_GAME_HASHES_GET_URL` to override the hash endpoint.
+- `OfficialBuildHashFilePath` in `settings.json` to point to a specific file for hashing.
+
+Reset / unlink:
+
+- Click `LOGIN WITH VEILNET` while linked to unlink in the launcher UI.
+- Or delete `%APPDATA%/RedactedCraft/veilnet_launcher_token.json` manually.
 
 ## Runtime Hash Rotation (No Redeploy)
 

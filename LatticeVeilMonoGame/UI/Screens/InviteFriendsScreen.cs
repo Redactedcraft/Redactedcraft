@@ -472,7 +472,10 @@ public sealed class InviteFriendsScreen : IScreen
                 worldName: _worldName,
                 gameMode: "Survival", // Default or resolve from world
                 joinTarget: hostCode,
-                status: $"hosting {_worldName}");
+                status: $"hosting {_worldName}",
+                cheats: false, // TODO: derive from world/host settings
+                playerCount: 1, // TODO: derive from current player count
+                maxPlayers: 8); // TODO: derive from world/host settings
 
             try
             {

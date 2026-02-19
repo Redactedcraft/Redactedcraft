@@ -214,7 +214,7 @@ void MapPresence(RouteGroupBuilder group)
         var incoming = presenceProvider.GetInvitesFor(puid);
         var outgoing = presenceProvider.GetInvitesFrom(puid);
         return Results.Ok(new { ok = true, incoming, outgoing });
-    });
+    }).WithName("PresenceInvitesMe");
 
     group.MapPost("/invite/respond", async (HttpContext httpContext, WorldInviteResponseInput input, PresenceRegistryProvider presenceProvider) => {
         if (!TryAuthorizeGateTicket(httpContext, out var claims, out var failure)) return failure!;
@@ -224,6 +224,8 @@ void MapPresence(RouteGroupBuilder group)
     });
 }
 MapPresence(app.MapGroup("/presence"));
+// Check for potential duplicate - if this exists, it would cause the ambiguity
+// MapPresence(app.MapGroup("/identity/presence")); // This would cause the duplicate
 
 // Admin endpoints for Hash Tool
 app.MapGet("/admin/allowlist/runtime", (HttpContext httpContext, AllowlistProvider allowlistProvider) => {

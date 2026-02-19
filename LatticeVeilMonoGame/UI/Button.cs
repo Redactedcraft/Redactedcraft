@@ -11,6 +11,7 @@ public sealed class Button
     public Texture2D? Texture { get; set; }
     public string Label { get; set; }
     public bool Visible { get; set; } = true;
+    public Color? BackgroundColor { get; set; }
 
 	/// <summary>
 	/// When false, the button is drawn in a disabled style and will not fire clicks.
@@ -64,7 +65,7 @@ public sealed class Button
         }
 
 		var effectivelyEnabled = Enabled && !ForceDisabledStyle;
-		var bg = effectivelyEnabled ? new Color(30, 30, 30) : new Color(20, 20, 20);
+		var bg = BackgroundColor ?? (effectivelyEnabled ? new Color(30, 30, 30) : new Color(20, 20, 20));
 		var fg = effectivelyEnabled ? Color.White : new Color(160, 160, 160);
 		sb.Draw(pixel, Bounds, bg);
 		DrawBorder(sb, pixel, Bounds, fg);

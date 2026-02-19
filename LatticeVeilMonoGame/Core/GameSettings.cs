@@ -91,6 +91,7 @@ public sealed class GameSettings
     public string RendererBackend { get; set; } = "OpenGL"; // "OpenGL" or "Vulkan"
     public int LauncherRenderDistance { get; set; } = 16; // Launcher-specific setting
     public bool AdvancedMode { get; set; } = false; // Allow override of safe caps
+    public string OfficialBuildHashFilePath { get; set; } = ""; // Optional override for official hash verification target file
 
     // Audio
     public float MasterVolume { get; set; } = 1f;
@@ -175,6 +176,7 @@ public sealed class GameSettings
         s.SocialNotifications = NormalizeSocialNotifications(s.SocialNotifications);
         s.MouseSensitivity = ClampRange(s.MouseSensitivity, 0.0005f, 0.01f);
         s.QualityPreset = NormalizeQuality(s.QualityPreset);
+        s.OfficialBuildHashFilePath = (s.OfficialBuildHashFilePath ?? string.Empty).Trim();
         s.AudioInputDeviceId ??= "";
 
         s.AudioOutputDeviceId ??= "";

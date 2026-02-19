@@ -13,98 +13,68 @@ public sealed class EosConfig
         PropertyNameCaseInsensitive = true
     };
 
-    private static bool _disabledLogged;
-    private static bool _missingPublicLogged;
-    private static bool _missingSecretLogged;
-    private static bool _invalidEnvLogged;
-    private static bool _invalidPublicLogged;
-    private static bool _invalidSecretFileLogged;
-    private static bool _invalidLegacyLogged;
-    private static bool _missingPathWarningLogged;
+    private const string AppDataVendorFolder = "RedactedCraft";
+    private const string DefaultProductName = "RedactedCraft";
+    private const string DefaultProductVersion = "1.0";
+    private const string DefaultLoginMode = "deviceid";
 
-    public string ProductId { get; set; } = "";
-    public string SandboxId { get; set; } = "";
-    public string DeploymentId { get; set; } = "";
-    public string ClientId { get; set; } = "";
-    public string ClientSecret { get; set; } = "";
-    public string ProductName { get; set; } = "LatticeVeil";
-    public string ProductVersion { get; set; } = "1.0.0";
-    public string LoginMode { get; set; } = "deviceid";
+    public string ProductId { get; set; } = string.Empty;
+    public string SandboxId { get; set; } = string.Empty;
+    public string DeploymentId { get; set; } = string.Empty;
+    public string ClientId { get; set; } = string.Empty;
+    public string? ClientSecret { get; set; }
+    public string ProductName { get; set; } = DefaultProductName;
+    public string ProductVersion { get; set; } = DefaultProductVersion;
+    public string LoginMode { get; set; } = DefaultLoginMode;
+    public string PublicSource { get; set; } = "none";
+    public string SecretSource { get; set; } = "none";
 
-    private sealed class PublicEosConfig
-    {
-        public string ProductId { get; set; } = "";
-        public string SandboxId { get; set; } = "";
-        public string DeploymentId { get; set; } = "";
-        public string ClientId { get; set; } = "";
-        public string ProductName { get; set; } = "LatticeVeil";
-        public string ProductVersion { get; set; } = "1.0.0";
-        public string LoginMode { get; set; } = "deviceid";
-    }
-
-    private sealed class PrivateEosConfig
-    {
-        public string ClientSecret { get; set; } = "";
-    }
+    public bool HasClientSecret => !string.IsNullOrWhiteSpace(ClientSecret);
 
     public static EosConfig? Load(Logger log)
     {
-        // Try remote bootstrap first
-        log.Info("EOS config: Attempting remote bootstrap...");
-        
-        // Check if remote config was already applied by bootstrap
-        var productId = Environment.GetEnvironmentVariable("EOS_PRODUCT_ID") ?? "";
-        var sandboxId = Environment.GetEnvironmentVariable("EOS_SANDBOX_ID") ?? "";
-        var deploymentId = Environment.GetEnvironmentVariable("EOS_DEPLOYMENT_ID") ?? "";
-        var clientId = Environment.GetEnvironmentVariable("EOS_CLIENT_ID") ?? "";
-        var clientSecret = Environment.GetEnvironmentVariable("EOS_CLIENT_SECRET") ?? "";
-        
-        if (!string.IsNullOrWhiteSpace(productId) && !string.IsNullOrWhiteSpace(sandboxId) && 
-            !string.IsNullOrWhiteSpace(deploymentId) && !string.IsNullOrWhiteSpace(clientId))
+        try
         {
-            log.Info("EOS config: Using remote bootstrap configuration");
-            return new EosConfig
-            {
-                ProductId = productId,
-                SandboxId = sandboxId,
-                DeploymentId = deploymentId,
-                ClientId = clientId,
-                ClientSecret = clientSecret,
-                ProductName = Environment.GetEnvironmentVariable("EOS_PRODUCT_NAME") ?? "LatticeVeil",
-                ProductVersion = Environment.GetEnvironmentVariable("EOS_PRODUCT_VERSION") ?? "1.0.0",
-                LoginMode = Environment.GetEnvironmentVariable("EOS_LOGIN_MODE") ?? "deviceid"
-            };
+            var config = LoadOrThrow();
+            log.Info($"EOS config loaded. {config.GetSourceSummary()}");
+            return config;
         }
-        
-        log.Warn("EOS config: Remote bootstrap not available, EOS client will not work");
-        return null;
+        catch (FileNotFoundException ex)
+        {
+            log.Warn($"EOS config not found: {ex.Message}");
+            return null;
+        }
+    }
+
+    public static EosConfig LoadOrThrow()
+    {
+        var publicConfig = LoadPublicConfigOrThrow(out var publicSource);
+        var secret = ResolveClientSecret(out var secretSource);
+
+        var resolved = new EosConfig
+        {
+            ProductId = Normalize(publicConfig.ProductId),
+            SandboxId = Normalize(publicConfig.SandboxId),
+            DeploymentId = Normalize(publicConfig.DeploymentId),
+            ClientId = Normalize(publicConfig.ClientId),
+            ClientSecret = string.IsNullOrWhiteSpace(secret) ? null : secret,
+            ProductName = Normalize(publicConfig.ProductName, DefaultProductName),
+            ProductVersion = Normalize(publicConfig.ProductVersion, DefaultProductVersion),
+            LoginMode = Normalize(GetEnv("EOS_LOGIN_MODE"), DefaultLoginMode),
+            PublicSource = publicSource,
+            SecretSource = secretSource
+        };
+
+        ValidateRequiredPublicFields(resolved);
+        return resolved;
     }
 
     public bool IsValid(out string? error)
     {
-        if (string.IsNullOrWhiteSpace(ProductId))
+        var missing = GetMissingRequiredPublicFields(this);
+        if (missing.Count > 0)
         {
-            error = "ProductId missing.";
-            return false;
-        }
-        if (string.IsNullOrWhiteSpace(SandboxId))
-        {
-            error = "SandboxId missing.";
-            return false;
-        }
-        if (string.IsNullOrWhiteSpace(DeploymentId))
-        {
-            error = "DeploymentId missing.";
-            return false;
-        }
-        if (string.IsNullOrWhiteSpace(ClientId))
-        {
-            error = "ClientId missing.";
-            return false;
-        }
-        if (string.IsNullOrWhiteSpace(ClientSecret))
-        {
-            error = "ClientSecret missing.";
+            error = $"Missing required EOS public field(s): {string.Join(", ", missing)}.";
             return false;
         }
 
@@ -114,35 +84,34 @@ public sealed class EosConfig
 
     public static bool HasPublicConfigSource()
     {
-        if (TryLoadFullEnvironmentConfig(out var envConfig) && !string.IsNullOrWhiteSpace(envConfig.ProductId))
+        try
+        {
+            _ = LoadPublicConfigOrThrow(out _);
             return true;
-
-        if (TryLoadLegacyConfig(out var legacyConfig, out _, out _) && !string.IsNullOrWhiteSpace(legacyConfig.ProductId))
-            return true;
-
-        return TryLoadPublicConfig(out _, out _, out _);
+        }
+        catch
+        {
+            return false;
+        }
     }
 
     public static bool HasSecretSource()
     {
-        if (TryLoadLegacyConfig(out var legacyConfig, out _, out _) && !string.IsNullOrWhiteSpace(legacyConfig.ClientSecret))
-            return true;
-
-        return TryResolveClientSecret(out _, out _, out _);
+        var secret = ResolveClientSecret(out _);
+        return !string.IsNullOrWhiteSpace(secret);
     }
 
     public static string DescribePublicConfigSource()
     {
-        if (TryLoadFullEnvironmentConfig(out var envConfig) && !string.IsNullOrWhiteSpace(envConfig.ProductId))
-            return "environment";
-
-        if (TryLoadLegacyConfig(out var legacyConfig, out var legacySource, out _) && !string.IsNullOrWhiteSpace(legacyConfig.ProductId))
-            return legacySource;
-
-        if (TryLoadPublicConfig(out _, out var source, out _))
+        try
+        {
+            _ = LoadPublicConfigOrThrow(out var source);
             return source;
-
-        return "none";
+        }
+        catch
+        {
+            return "none";
+        }
     }
 
     public static bool TryGetPublicIdentifiers(out string sandboxId, out string deploymentId)
@@ -150,183 +119,101 @@ public sealed class EosConfig
         sandboxId = string.Empty;
         deploymentId = string.Empty;
 
-        if (TryLoadPublicConfig(out var publicConfig, out _, out _))
+        try
         {
-            sandboxId = publicConfig.SandboxId;
-            deploymentId = publicConfig.DeploymentId;
+            var publicConfig = LoadPublicConfigOrThrow(out _);
+            sandboxId = Normalize(publicConfig.SandboxId);
+            deploymentId = Normalize(publicConfig.DeploymentId);
             return !string.IsNullOrWhiteSpace(sandboxId) || !string.IsNullOrWhiteSpace(deploymentId);
         }
-
-        if (TryLoadLegacyConfig(out var legacyConfig, out _, out _))
+        catch
         {
-            sandboxId = legacyConfig.SandboxId;
-            deploymentId = legacyConfig.DeploymentId;
-            return !string.IsNullOrWhiteSpace(sandboxId) || !string.IsNullOrWhiteSpace(deploymentId);
+            return false;
         }
-
-        if (TryLoadFullEnvironmentConfig(out var envConfig))
-        {
-            sandboxId = envConfig.SandboxId;
-            deploymentId = envConfig.DeploymentId;
-            return !string.IsNullOrWhiteSpace(sandboxId) || !string.IsNullOrWhiteSpace(deploymentId);
-        }
-
-        return false;
     }
 
-    private static bool TryLoadLegacyConfig(out EosConfig config, out string source, out string? error)
+    public string GetSourceSummary()
     {
-        config = new EosConfig();
-        source = "none";
-        error = null;
-
-        foreach (var candidate in EnumerateLegacyConfigCandidates())
-        {
-            if (!candidate.Exists)
-                continue;
-
-            if (!TryReadJson(candidate.Path, out EosConfig? parsed, out var parseError) || parsed == null)
-            {
-                error = $"EOS legacy config parse failed at {candidate.DisplayPath}: {parseError}";
-                continue;
-            }
-
-            config = parsed;
-            source = candidate.DisplayPath;
-            return true;
-        }
-
-        return false;
+        return $"public={PublicSource}; secret={(HasClientSecret ? SecretSource : "none")}; hasClientSecret={HasClientSecret}";
     }
 
-    private static bool TryLoadFullEnvironmentConfig(out EosConfig config)
+    public override string ToString()
     {
-        config = new EosConfig
-        {
-            ProductId = GetEnv("EOS_PRODUCT_ID") ?? "",
-            SandboxId = GetEnv("EOS_SANDBOX_ID") ?? "",
-            DeploymentId = GetEnv("EOS_DEPLOYMENT_ID") ?? "",
-            ClientId = GetEnv("EOS_CLIENT_ID") ?? "",
-            ClientSecret = GetEnv("EOS_CLIENT_SECRET") ?? "",
-            ProductName = GetEnv("EOS_PRODUCT_NAME") ?? "LatticeVeil",
-            ProductVersion = GetEnv("EOS_PRODUCT_VERSION") ?? "1.0.0",
-            LoginMode = GetEnv("EOS_LOGIN_MODE") ?? "deviceid"
-        };
-
-        return !string.IsNullOrWhiteSpace(config.ProductId)
-            || !string.IsNullOrWhiteSpace(config.SandboxId)
-            || !string.IsNullOrWhiteSpace(config.DeploymentId)
-            || !string.IsNullOrWhiteSpace(config.ClientId)
-            || !string.IsNullOrWhiteSpace(config.ClientSecret);
+        return $"EosConfig(ProductId={Mask(ProductId)}, SandboxId={Mask(SandboxId)}, DeploymentId={Mask(DeploymentId)}, ClientId={Mask(ClientId)}, HasClientSecret={HasClientSecret}, ProductName={ProductName}, ProductVersion={ProductVersion}, PublicSource={PublicSource}, SecretSource={(HasClientSecret ? SecretSource : "none")})";
     }
 
-    private static bool TryLoadPublicConfig(out PublicEosConfig config, out string source, out string? error)
+    private static PublicEosConfigFile LoadPublicConfigOrThrow(out string source)
     {
-        config = new PublicEosConfig();
-        source = "none";
-        error = null;
+        var searched = new List<string>();
 
         foreach (var candidate in EnumeratePublicConfigCandidates())
         {
-            if (!candidate.Exists)
+            searched.Add(candidate.DisplayPath);
+            if (!File.Exists(candidate.Path))
                 continue;
 
-            if (candidate.IsExampleFile)
-            {
-                // Example files are hints only, never runtime config.
-                continue;
-            }
+            if (!TryReadJson(candidate.Path, out PublicEosConfigFile? parsed, out var parseError) || parsed == null)
+                throw new InvalidDataException($"Invalid EOS public config at {candidate.DisplayPath}: {parseError}");
 
-            if (!TryReadJson(candidate.Path, out PublicEosConfig? parsed, out var parseError) || parsed == null)
-            {
-                error = $"EOS public config parse failed at {candidate.DisplayPath}: {parseError}";
-                continue;
-            }
-
-            if (!ValidatePublicConfig(parsed, out var validationError))
-            {
-                error = $"EOS public config invalid at {candidate.DisplayPath}: {validationError}";
-                continue;
-            }
-
-            config = parsed;
             source = candidate.DisplayPath;
-            return true;
+            return parsed;
         }
 
-        return false;
+        throw new FileNotFoundException($"Could not find eos.public.json. Searched: {string.Join(", ", searched)}");
     }
 
-    private static bool TryResolveClientSecret(out string secret, out string source, out string? error)
+    private static string? ResolveClientSecret(out string source)
     {
-        secret = string.Empty;
-        source = "none";
-        error = null;
-
         var envSecret = GetEnv("EOS_CLIENT_SECRET");
         if (!string.IsNullOrWhiteSpace(envSecret))
         {
-            secret = envSecret.Trim();
-            source = "environment";
-            return true;
+            source = "environment variable EOS_CLIENT_SECRET";
+            return envSecret;
         }
 
         foreach (var candidate in EnumeratePrivateConfigCandidates())
         {
-            if (!candidate.Exists)
+            if (!File.Exists(candidate.Path))
                 continue;
 
-            if (!TryReadJson(candidate.Path, out PrivateEosConfig? parsed, out var parseError) || parsed == null)
-            {
-                error = $"EOS private config parse failed at {candidate.DisplayPath}: {parseError}";
+            if (!TryReadJson(candidate.Path, out PrivateEosConfigFile? parsed, out _) || parsed == null)
                 continue;
-            }
 
             if (string.IsNullOrWhiteSpace(parsed.ClientSecret))
-            {
-                error = $"EOS private config missing ClientSecret at {candidate.DisplayPath}.";
                 continue;
-            }
 
-            secret = parsed.ClientSecret.Trim();
             source = candidate.DisplayPath;
-            return true;
+            return parsed.ClientSecret.Trim();
         }
 
-        return false;
+        source = "none";
+        return null;
     }
 
-    private static bool ValidatePublicConfig(PublicEosConfig config, out string? error)
+    private static void ValidateRequiredPublicFields(EosConfig config)
     {
-        if (string.IsNullOrWhiteSpace(config.ProductId))
-        {
-            error = "ProductId missing.";
-            return false;
-        }
-        if (string.IsNullOrWhiteSpace(config.SandboxId))
-        {
-            error = "SandboxId missing.";
-            return false;
-        }
-        if (string.IsNullOrWhiteSpace(config.DeploymentId))
-        {
-            error = "DeploymentId missing.";
-            return false;
-        }
-        if (string.IsNullOrWhiteSpace(config.ClientId))
-        {
-            error = "ClientId missing.";
-            return false;
-        }
+        var missing = GetMissingRequiredPublicFields(config);
+        if (missing.Count == 0)
+            return;
 
-        error = null;
-        return true;
+        throw new InvalidDataException($"Invalid EOS public config ({config.PublicSource}). Missing required field(s): {string.Join(", ", missing)}.");
+    }
+
+    private static List<string> GetMissingRequiredPublicFields(EosConfig config)
+    {
+        var missing = new List<string>();
+        if (string.IsNullOrWhiteSpace(config.ProductId)) missing.Add("ProductId");
+        if (string.IsNullOrWhiteSpace(config.SandboxId)) missing.Add("SandboxId");
+        if (string.IsNullOrWhiteSpace(config.DeploymentId)) missing.Add("DeploymentId");
+        if (string.IsNullOrWhiteSpace(config.ClientId)) missing.Add("ClientId");
+        return missing;
     }
 
     private static bool TryReadJson<T>(string path, out T? value, out string? error) where T : class
     {
         value = null;
         error = null;
+
         try
         {
             var json = File.ReadAllText(path);
@@ -336,6 +223,7 @@ public sealed class EosConfig
                 error = "deserialized null";
                 return false;
             }
+
             return true;
         }
         catch (Exception ex)
@@ -349,147 +237,97 @@ public sealed class EosConfig
     {
         var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 
-        var envPath = GetEnv("EOS_PUBLIC_CONFIG_PATH");
-        if (!string.IsNullOrWhiteSpace(envPath))
+        foreach (var candidate in BuildPublicConfigCandidates())
         {
-            var candidate = BuildCandidate(envPath, "EOS_PUBLIC_CONFIG_PATH");
             if (seen.Add(candidate.Path))
                 yield return candidate;
+        }
+    }
+
+    private static IEnumerable<ConfigCandidate> BuildPublicConfigCandidates()
+    {
+        yield return BuildCandidate(Path.Combine(AppContext.BaseDirectory, "eos.public.json"), "AppBase/eos.public.json");
+        yield return BuildCandidate(Path.Combine(AppContext.BaseDirectory, "eos", "eos.public.json"), "AppBase/eos/eos.public.json");
+
+        var currentDir = SafeGetCurrentDirectory();
+        if (!string.IsNullOrWhiteSpace(currentDir))
+        {
+            yield return BuildCandidate(Path.Combine(currentDir, "eos.public.json"), "CWD/eos.public.json");
+            yield return BuildCandidate(Path.Combine(currentDir, "eos", "eos.public.json"), "CWD/eos/eos.public.json");
         }
 
         var projectRoot = ResolveProjectRoot();
         if (!string.IsNullOrWhiteSpace(projectRoot))
         {
-            var projectPublic = BuildCandidate(Path.Combine(projectRoot, "eos.public.json"), "project/eos.public.json");
-            if (seen.Add(projectPublic.Path))
-                yield return projectPublic;
-
-            var projectExample = BuildCandidate(Path.Combine(projectRoot, "eos.public.example.json"), "project/eos.public.example.json", isExampleFile: true);
-            if (seen.Add(projectExample.Path))
-                yield return projectExample;
+            yield return BuildCandidate(Path.Combine(projectRoot, "eos", "eos.public.json"), "ProjectRoot/eos/eos.public.json");
+            yield return BuildCandidate(Path.Combine(projectRoot, "eos.public.json"), "ProjectRoot/eos.public.json");
         }
-
-        var rootCandidate = BuildCandidate(Path.Combine(Paths.RootDir, "eos.public.json"), "Root/eos.public.json");
-        if (seen.Add(rootCandidate.Path))
-            yield return rootCandidate;
-
-        var configCandidate = BuildCandidate(Path.Combine(Paths.ConfigDir, "eos.public.json"), "Config/eos.public.json");
-        if (seen.Add(configCandidate.Path))
-            yield return configCandidate;
-
-        var appBaseCandidate = BuildCandidate(Path.Combine(AppContext.BaseDirectory, "eos.public.json"), "AppBase/eos.public.json");
-        if (seen.Add(appBaseCandidate.Path))
-            yield return appBaseCandidate;
-
-        foreach (var candidate in EnumerateAncestorFileCandidates("eos.public.json", "Ancestor", seen))
-            yield return candidate;
     }
 
     private static IEnumerable<ConfigCandidate> EnumeratePrivateConfigCandidates()
     {
-        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        yield return BuildCandidate(Path.Combine(AppContext.BaseDirectory, "eos.private.json"), "AppBase/eos.private.json");
 
-        var envPath = GetEnv("EOS_PRIVATE_CONFIG_PATH");
-        if (!string.IsNullOrWhiteSpace(envPath))
-        {
-            var envCandidate = BuildCandidate(envPath, "EOS_PRIVATE_CONFIG_PATH");
-            if (seen.Add(envCandidate.Path))
-                yield return envCandidate;
-        }
-
-        var projectRoot = ResolveProjectRoot();
-        if (!string.IsNullOrWhiteSpace(projectRoot))
-        {
-            var projectPrivate = BuildCandidate(Path.Combine(projectRoot, "eos.private.json"), "project/eos.private.json");
-            if (seen.Add(projectPrivate.Path))
-                yield return projectPrivate;
-        }
-
-        var rootCandidate = BuildCandidate(Path.Combine(Paths.RootDir, "eos.private.json"), "Root/eos.private.json");
-        if (seen.Add(rootCandidate.Path))
-            yield return rootCandidate;
-
-        var configCandidate = BuildCandidate(Path.Combine(Paths.ConfigDir, "eos.private.json"), "Config/eos.private.json");
-        if (seen.Add(configCandidate.Path))
-            yield return configCandidate;
-
-        if (IsOfficialRuntime())
-        {
-            var appBaseCandidate = BuildCandidate(Path.Combine(AppContext.BaseDirectory, "eos.private.json"), "AppBase/eos.private.json");
-            if (seen.Add(appBaseCandidate.Path))
-                yield return appBaseCandidate;
-        }
-
-        foreach (var candidate in EnumerateAncestorFileCandidates("eos.private.json", "Ancestor", seen))
-            yield return candidate;
+        var appDataPath = GetAppDataPrivateConfigPath();
+        if (!string.IsNullOrWhiteSpace(appDataPath))
+            yield return BuildCandidate(appDataPath, "%APPDATA%/RedactedCraft/eos.private.json");
     }
 
-    private static IEnumerable<ConfigCandidate> EnumerateLegacyConfigCandidates()
-    {
-        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-
-        var projectRoot = ResolveProjectRoot();
-        if (!string.IsNullOrWhiteSpace(projectRoot))
-        {
-            var projectLegacy = BuildCandidate(Path.Combine(projectRoot, "eos.config.json"), "project/eos.config.json");
-            if (seen.Add(projectLegacy.Path))
-                yield return projectLegacy;
-        }
-
-        var rootLegacy = BuildCandidate(Path.Combine(Paths.RootDir, "eos.config.json"), "Root/eos.config.json");
-        if (seen.Add(rootLegacy.Path))
-            yield return rootLegacy;
-
-        var configLegacy = BuildCandidate(Path.Combine(Paths.ConfigDir, "eos.config.json"), "Config/eos.config.json");
-        if (seen.Add(configLegacy.Path))
-            yield return configLegacy;
-
-        var appBaseLegacy = BuildCandidate(Path.Combine(AppContext.BaseDirectory, "eos.config.json"), "AppBase/eos.config.json");
-        if (seen.Add(appBaseLegacy.Path))
-            yield return appBaseLegacy;
-
-        foreach (var candidate in EnumerateAncestorFileCandidates("eos.config.json", "Ancestor", seen))
-            yield return candidate;
-    }
-
-    private static IEnumerable<ConfigCandidate> EnumerateAncestorFileCandidates(string fileName, string sourcePrefix, HashSet<string> seen)
-    {
-        var starts = new List<(string Path, string Label)>
-        {
-            (AppContext.BaseDirectory, "appbase"),
-            (SafeGetCurrentDirectory(), "cwd")
-        };
-
-        for (var i = 0; i < starts.Count; i++)
-        {
-            if (string.IsNullOrWhiteSpace(starts[i].Path))
-                continue;
-
-            var dir = SafeCreateDirectoryInfo(starts[i].Path);
-            for (var depth = 0; depth < 10 && dir != null; depth++)
-            {
-                var candidatePath = Path.Combine(dir.FullName, fileName);
-                var candidate = BuildCandidate(candidatePath, $"{sourcePrefix}/{starts[i].Label}/{depth}/{fileName}");
-                if (seen.Add(candidate.Path))
-                    yield return candidate;
-
-                dir = dir.Parent;
-            }
-        }
-    }
-
-    private static DirectoryInfo? SafeCreateDirectoryInfo(string path)
+    private static string? GetAppDataPrivateConfigPath()
     {
         try
         {
-            if (string.IsNullOrWhiteSpace(path))
+            var appData = Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData);
+            if (string.IsNullOrWhiteSpace(appData))
                 return null;
-            return new DirectoryInfo(path);
+
+            return Path.Combine(appData, AppDataVendorFolder, "eos.private.json");
         }
         catch
         {
             return null;
         }
+    }
+
+    private static ConfigCandidate BuildCandidate(string path, string displayPath)
+    {
+        return new ConfigCandidate(path.Trim(), displayPath);
+    }
+
+    private static string? ResolveProjectRoot()
+    {
+        foreach (var start in new[] { SafeGetCurrentDirectory(), AppContext.BaseDirectory })
+        {
+            if (string.IsNullOrWhiteSpace(start))
+                continue;
+
+            var root = FindProjectRoot(start);
+            if (!string.IsNullOrWhiteSpace(root))
+                return root;
+        }
+
+        return null;
+    }
+
+    private static string? FindProjectRoot(string startPath)
+    {
+        try
+        {
+            var dir = new DirectoryInfo(startPath);
+            for (var depth = 0; depth < 8 && dir != null; depth++)
+            {
+                if (File.Exists(Path.Combine(dir.FullName, "LatticeVeil.sln")))
+                    return dir.FullName;
+
+                dir = dir.Parent;
+            }
+        }
+        catch
+        {
+            // Best-effort only.
+        }
+
+        return null;
     }
 
     private static string SafeGetCurrentDirectory()
@@ -504,86 +342,15 @@ public sealed class EosConfig
         }
     }
 
-    private static ConfigCandidate BuildCandidate(string path, string displayPath, bool isExampleFile = false)
+    private static string Normalize(string? value)
     {
-        var normalized = path.Trim();
-        var exists = false;
-        try
-        {
-            exists = File.Exists(normalized);
-        }
-        catch
-        {
-            exists = false;
-        }
-
-        if (!exists && (displayPath == "EOS_PUBLIC_CONFIG_PATH" || displayPath == "EOS_PRIVATE_CONFIG_PATH") && !_missingPathWarningLogged)
-        {
-            _missingPathWarningLogged = true;
-        }
-
-        return new ConfigCandidate(normalized, displayPath, exists, isExampleFile);
+        return string.IsNullOrWhiteSpace(value) ? string.Empty : value.Trim();
     }
 
-    private static bool IsOfficialRuntime()
+    private static string Normalize(string? value, string fallback)
     {
-        var flavor = GetEnv("LV_BUILD_FLAVOR");
-        if (!string.IsNullOrWhiteSpace(flavor) && flavor.Equals("official", StringComparison.OrdinalIgnoreCase))
-            return true;
-
-        var proofPath = Path.Combine(AppContext.BaseDirectory, "official_build.sig");
-        return File.Exists(proofPath);
-    }
-
-    private static string? ResolveProjectRoot()
-    {
-        var candidates = new List<string>();
-        try { candidates.Add(Directory.GetCurrentDirectory()); } catch { }
-        candidates.Add(AppContext.BaseDirectory);
-
-        for (var i = 0; i < candidates.Count; i++)
-        {
-            var root = FindProjectRoot(candidates[i]);
-            if (!string.IsNullOrWhiteSpace(root))
-                return root;
-        }
-
-        return null;
-    }
-
-    private static string? FindProjectRoot(string startPath)
-    {
-        if (string.IsNullOrWhiteSpace(startPath))
-            return null;
-
-        try
-        {
-            var dir = new DirectoryInfo(startPath);
-            for (var i = 0; i < 10 && dir != null; i++)
-            {
-                if (File.Exists(Path.Combine(dir.FullName, "LatticeVeil.sln")))
-                    return dir.FullName;
-                dir = dir.Parent;
-            }
-        }
-        catch
-        {
-            // Best-effort only.
-        }
-
-        return null;
-    }
-
-    private static bool IsDisabled()
-    {
-        var disabled = GetEnv("EOS_DISABLED") ?? GetEnv("EOS_DISABLE");
-        if (string.IsNullOrWhiteSpace(disabled))
-            return false;
-
-        disabled = disabled.Trim();
-        return disabled == "1"
-            || disabled.Equals("true", StringComparison.OrdinalIgnoreCase)
-            || disabled.Equals("yes", StringComparison.OrdinalIgnoreCase);
+        var normalized = Normalize(value);
+        return string.IsNullOrWhiteSpace(normalized) ? fallback : normalized;
     }
 
     private static string? GetEnv(string name)
@@ -592,19 +359,42 @@ public sealed class EosConfig
         return string.IsNullOrWhiteSpace(value) ? null : value.Trim();
     }
 
+    private static string Mask(string value)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+            return "(empty)";
+
+        var trimmed = value.Trim();
+        if (trimmed.Length <= 6)
+            return "***";
+
+        return trimmed.Substring(0, 3) + "***" + trimmed.Substring(trimmed.Length - 2);
+    }
+
+    private sealed class PublicEosConfigFile
+    {
+        public string? ProductId { get; set; }
+        public string? SandboxId { get; set; }
+        public string? DeploymentId { get; set; }
+        public string? ClientId { get; set; }
+        public string? ProductName { get; set; }
+        public string? ProductVersion { get; set; }
+    }
+
+    private sealed class PrivateEosConfigFile
+    {
+        public string? ClientSecret { get; set; }
+    }
+
     private readonly struct ConfigCandidate
     {
-        public ConfigCandidate(string path, string displayPath, bool exists, bool isExampleFile)
+        public ConfigCandidate(string path, string displayPath)
         {
             Path = path;
             DisplayPath = displayPath;
-            Exists = exists;
-            IsExampleFile = isExampleFile;
         }
 
         public string Path { get; }
         public string DisplayPath { get; }
-        public bool Exists { get; }
-        public bool IsExampleFile { get; }
     }
 }

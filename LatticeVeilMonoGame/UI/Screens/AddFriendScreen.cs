@@ -39,6 +39,7 @@ public sealed class AddFriendScreen : IScreen
     private bool _busy;
     private string _query = string.Empty;
     private string _status = string.Empty;
+    private Color _statusColor = Color.White;
     private double _now;
     private double _statusUntil;
 
@@ -164,7 +165,7 @@ public sealed class AddFriendScreen : IScreen
         _font.DrawString(sb, title, tPos, Color.White);
 
         var labelPos = new Vector2(_inputRect.X, _inputRect.Y - _font.LineHeight - 6);
-        _font.DrawString(sb, "ENTER USERNAME OR FRIEND CODE", labelPos, Color.White);
+        _font.DrawString(sb, "ENTER USERNAME", labelPos, Color.White);
 
         sb.Draw(_pixel, _inputRect, _inputActive ? new Color(35, 35, 35, 230) : new Color(20, 20, 20, 230));
         DrawBorder(sb, _inputRect, Color.White);
@@ -175,7 +176,7 @@ public sealed class AddFriendScreen : IScreen
 
         sb.Draw(_pixel, _infoRect, new Color(20, 20, 20, 190));
         DrawBorder(sb, _infoRect, new Color(100, 100, 100));
-        var infoText = "Search for players by their reserved username\nor friend code (RC-XXXXXXXX).";
+        var infoText = "Search for players by their username.";
         _font.DrawString(sb, infoText, new Vector2(_infoRect.X + 8, _infoRect.Y + 8), new Color(180, 180, 180));
 
         _addBtn.Draw(sb, _pixel, _font);
@@ -184,7 +185,7 @@ public sealed class AddFriendScreen : IScreen
         if (!string.IsNullOrWhiteSpace(_status))
         {
             var pos = new Vector2(_panelRect.X + 96, _panelRect.Bottom - 96 - _font.LineHeight);
-            _font.DrawString(sb, _status, pos, Color.White);
+            _font.DrawString(sb, _status, pos, _statusColor);
         }
 
         sb.End();
@@ -203,16 +204,34 @@ public sealed class AddFriendScreen : IScreen
         }
 
         _busy = true;
-        SetStatus("Sending request...");
+        SetStatus("Checking username...");
 
         try
         {
-            var result = await gate.AddFriendAsync(_query.Trim());
-            SetStatus(result.Message ?? (result.Ok ? "Request sent!" : "Failed to send request."));
+            var username = _query.Trim();
+            var (ok, exists, msg) = await gate.VeilnetUserExistsAsync(username).ConfigureAwait(false);
+            if (!ok)
+            {
+                SetStatus(string.IsNullOrWhiteSpace(msg) ? "Could not check username." : msg);
+                return;
+            }
+
+            if (!exists)
+            {
+                SetStatus("USER DOES NOT EXIST", seconds: 5.0, color: new Color(220, 60, 60));
+                return;
+            }
+
+            SetStatus("Sending request...");
+            var result = await gate.AddFriendAsync(username).ConfigureAwait(false);
             if (result.Ok)
             {
+                SetStatus("REQUEST SENT", seconds: 5.0, color: new Color(80, 220, 120));
                 _query = string.Empty;
+                return;
             }
+
+            SetStatus(string.IsNullOrWhiteSpace(result.Message) ? "Failed to send request." : result.Message);
         }
         catch (Exception ex)
         {
@@ -225,9 +244,10 @@ public sealed class AddFriendScreen : IScreen
         }
     }
 
-    private void SetStatus(string msg, double seconds = 4.0)
+    private void SetStatus(string msg, double seconds = 4.0, Color? color = null)
     {
         _status = msg;
+        _statusColor = color ?? Color.White;
         _statusUntil = _now + seconds;
     }
 

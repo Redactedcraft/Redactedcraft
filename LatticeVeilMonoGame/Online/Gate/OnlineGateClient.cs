@@ -24,6 +24,7 @@ public class OnlineGateClient
     private static readonly HttpClient Http = CreateHttpClient();
     private static OnlineGateClient? _instance;
     private const string DefaultGateUrl = "https://eos-service.onrender.com";
+    private const string DefaultVeilnetUrl = "https://veilnet.onrender.com";
     private static readonly TimeSpan DefaultTicketTimeout = TimeSpan.FromSeconds(20);
 
     /// <summary>
@@ -225,10 +226,10 @@ public class OnlineGateClient
         return new GatePresenceQueryResult { Ok = ok && res?.Ok == true, Entries = res?.Entries ?? new List<GatePresenceEntry>() };
     }
 
-    public async Task<bool> UpsertPresenceAsync(string? productUserId, string? displayName, bool isHosting, string? worldName, string? gameMode, string? joinTarget, string? status)
+    public async Task<bool> UpsertPresenceAsync(string? productUserId, string? displayName, bool isHosting, string? worldName, string? gameMode, string? joinTarget, string? status, bool cheats = false, int playerCount = 0, int maxPlayers = 0)
     {
         var endpoint = $"{_gateUrl}/presence/upsert";
-        var request = new GatePresenceUpsertRequest { ProductUserId = productUserId, DisplayName = displayName, IsHosting = isHosting, WorldName = worldName, GameMode = gameMode, JoinTarget = joinTarget, Status = status };
+        var request = new GatePresenceUpsertRequest { ProductUserId = productUserId, DisplayName = displayName, IsHosting = isHosting, WorldName = worldName, GameMode = gameMode, JoinTarget = joinTarget, Status = status, Cheats = cheats, PlayerCount = playerCount, MaxPlayers = maxPlayers };
         var (ok, res, _) = await PostAuthorizedAsync<GatePresenceUpsertRequest, GatePresenceUpsertResponse>(endpoint, request, default).ConfigureAwait(false);
         return ok;
     }
@@ -336,31 +337,16 @@ public class OnlineGateClient
 
             log.Info($"Local EXE hash: {currentHash}");
 
-            // Try to get server hash (new public endpoint doesn't require authentication)
-            var serverHashResult = await GetCurrentHashAsync(target);
-            log.Info($"Server response: Ok={serverHashResult.Ok}, Hash={serverHashResult.Hash}, Message={serverHashResult.Message}");
-            log.Info($"Hash comparison: Local={currentHash}, Server={serverHashResult.Hash}, Match={string.Equals(currentHash, serverHashResult.Hash, StringComparison.OrdinalIgnoreCase)}");
-            
-            if (!serverHashResult.Ok)
+            // Client validation must not call admin endpoints. Ask the gate for a ticket with our EXE hash.
+            // If the gate approves, the hash is valid.
+            if (EnsureTicket(log, null, target))
             {
-                log.Error($"Failed to get server hash: {serverHashResult.Message}");
-                return false;
-            }
-
-            if (string.IsNullOrWhiteSpace(serverHashResult.Hash))
-            {
-                log.Warn("No hash configured on server - allowing verification");
+                log.Info("Hash verification successful (ticket approved)");
                 return true;
             }
 
-            if (!string.IsNullOrWhiteSpace(serverHashResult.Hash) && !serverHashResult.Hash.Split(',').Any(h => string.Equals(h, currentHash, StringComparison.OrdinalIgnoreCase)))
-            {
-                log.Warn($"Hash mismatch: local={currentHash}, server={serverHashResult.Hash}");
-                return false;
-            }
-
-            log.Info("Hash verification successful");
-            return true;
+            log.Warn($"Hash verification failed (ticket denied): {_denialReason}");
+            return false;
         }
         catch (Exception ex)
         {
@@ -386,6 +372,11 @@ public class OnlineGateClient
 
     public async Task<GateFriendsResult> GetFriendsAsync()
     {
+        if (!HasUsableTicketForCurrentIdentity())
+        {
+            if (!EnsureTicket(new Logger("Gate")))
+                return new GateFriendsResult { Ok = false, Message = string.IsNullOrWhiteSpace(_denialReason) ? "Unauthorized" : _denialReason };
+        }
         var endpoint = $"{_gateUrl}/friends/me";
         var (ok, res, err) = await GetAuthorizedAsync<GateFriendsResponse>(endpoint, default).ConfigureAwait(false);
         return new GateFriendsResult { Ok = ok, Message = res?.Message ?? err ?? "", Friends = res?.Friends ?? new List<GateIdentityUser>(), IncomingRequests = res?.IncomingRequests ?? new List<GateFriendRequest>(), OutgoingRequests = res?.OutgoingRequests ?? new List<GateFriendRequest>(), BlockedUsers = res?.BlockedUsers ?? new List<GateIdentityUser>() };
@@ -393,13 +384,56 @@ public class OnlineGateClient
 
     public async Task<GateFriendMutationResult> AddFriendAsync(string query)
     {
+        if (!HasUsableTicketForCurrentIdentity())
+        {
+            if (!EnsureTicket(new Logger("Gate")))
+                return new GateFriendMutationResult { Ok = false, Message = string.IsNullOrWhiteSpace(_denialReason) ? "Unauthorized" : _denialReason };
+        }
         var endpoint = $"{_gateUrl}/friends/add";
         var (ok, res, _) = await PostAuthorizedAsync<GateFriendAddRequest, GateFriendMutationResponse>(endpoint, new GateFriendAddRequest { Query = query }, default).ConfigureAwait(false);
         return new GateFriendMutationResult { Ok = ok && res?.Ok == true, Message = res?.Message ?? "" };
     }
 
+    public async Task<(bool Ok, bool Exists, string Message)> VeilnetUserExistsAsync(string username, CancellationToken ct = default)
+    {
+        username = (username ?? string.Empty).Trim();
+        if (string.IsNullOrWhiteSpace(username))
+            return (false, false, "Empty username");
+
+        var veilnetBase = (Environment.GetEnvironmentVariable("LV_VEILNET_URL") ?? string.Empty).Trim();
+        if (string.IsNullOrWhiteSpace(veilnetBase))
+            veilnetBase = DefaultVeilnetUrl;
+        veilnetBase = veilnetBase.TrimEnd('/');
+
+        var url = $"{veilnetBase}/api/users/exists?username={Uri.EscapeDataString(username)}";
+        try
+        {
+            using var req = new HttpRequestMessage(HttpMethod.Get, url);
+            using var res = await Http.SendAsync(req, ct).ConfigureAwait(false);
+
+            if (res.StatusCode == HttpStatusCode.NotFound)
+                return (true, false, "not_found");
+
+            if (res.IsSuccessStatusCode)
+                return (true, true, "ok");
+
+            var body = await res.Content.ReadAsStringAsync(ct).ConfigureAwait(false);
+            var msg = string.IsNullOrWhiteSpace(body) ? (res.ReasonPhrase ?? "HTTP error") : body;
+            return (false, false, msg);
+        }
+        catch (Exception ex)
+        {
+            return (false, false, ex.Message);
+        }
+    }
+
     public async Task<GateFriendMutationResult> RemoveFriendAsync(string targetProductUserId)
     {
+        if (!HasUsableTicketForCurrentIdentity())
+        {
+            if (!EnsureTicket(new Logger("Gate")))
+                return new GateFriendMutationResult { Ok = false, Message = string.IsNullOrWhiteSpace(_denialReason) ? "Unauthorized" : _denialReason };
+        }
         var endpoint = $"{_gateUrl}/friends/remove";
         var (ok, res, _) = await PostAuthorizedAsync<GateFriendRemoveRequest, GateFriendMutationResponse>(endpoint, new GateFriendRemoveRequest { ProductUserId = targetProductUserId }, default).ConfigureAwait(false);
         return new GateFriendMutationResult { Ok = ok && res?.Ok == true, Message = res?.Message ?? "" };
@@ -407,6 +441,11 @@ public class OnlineGateClient
 
     public async Task<GateFriendMutationResult> RespondToFriendRequestAsync(string requesterProductUserId, bool accept, bool block = false)
     {
+        if (!HasUsableTicketForCurrentIdentity())
+        {
+            if (!EnsureTicket(new Logger("Gate")))
+                return new GateFriendMutationResult { Ok = false, Message = string.IsNullOrWhiteSpace(_denialReason) ? "Unauthorized" : _denialReason };
+        }
         var endpoint = $"{_gateUrl}/friends/respond";
         var (ok, res, _) = await PostAuthorizedAsync<GateFriendRespondRequest, GateFriendMutationResponse>(endpoint, new GateFriendRespondRequest { RequesterProductUserId = requesterProductUserId, Accept = accept, Block = block }, default).ConfigureAwait(false);
         return new GateFriendMutationResult { Ok = ok && res?.Ok == true, Message = res?.Message ?? "" };
@@ -414,6 +453,11 @@ public class OnlineGateClient
 
     public async Task<GateFriendMutationResult> BlockUserAsync(string query)
     {
+        if (!HasUsableTicketForCurrentIdentity())
+        {
+            if (!EnsureTicket(new Logger("Gate")))
+                return new GateFriendMutationResult { Ok = false, Message = string.IsNullOrWhiteSpace(_denialReason) ? "Unauthorized" : _denialReason };
+        }
         var endpoint = $"{_gateUrl}/friends/block";
         var (ok, res, _) = await PostAuthorizedAsync<GateFriendBlockRequest, GateFriendMutationResponse>(endpoint, new GateFriendBlockRequest { Query = query }, default).ConfigureAwait(false);
         return new GateFriendMutationResult { Ok = ok && res?.Ok == true, Message = res?.Message ?? "" };
@@ -421,6 +465,11 @@ public class OnlineGateClient
 
     public async Task<GateFriendMutationResult> UnblockUserAsync(string targetProductUserId)
     {
+        if (!HasUsableTicketForCurrentIdentity())
+        {
+            if (!EnsureTicket(new Logger("Gate")))
+                return new GateFriendMutationResult { Ok = false, Message = string.IsNullOrWhiteSpace(_denialReason) ? "Unauthorized" : _denialReason };
+        }
         var endpoint = $"{_gateUrl}/friends/unblock";
         var (ok, res, _) = await PostAuthorizedAsync<GateFriendUnblockRequest, GateFriendMutationResponse>(endpoint, new GateFriendUnblockRequest { ProductUserId = targetProductUserId }, default).ConfigureAwait(false);
         return new GateFriendMutationResult { Ok = ok && res?.Ok == true, Message = res?.Message ?? "" };
@@ -465,13 +514,7 @@ public class OnlineGateClient
     private static string? TryComputeExecutableHash(string? target, bool strict) 
     { 
         var p = target ?? Environment.ProcessPath ?? "";
-        
-        // If we're in launcher, try to find the game executable
-        if (string.IsNullOrEmpty(p) || p.Contains("Launcher"))
-        {
-            var baseDir = AppContext.BaseDirectory;
-            p = Path.Combine(baseDir, "LatticeVeilMonoGame.exe");
-        }
+        if (string.IsNullOrWhiteSpace(p)) return null;
         
         if (!File.Exists(p)) return null; 
         try 
@@ -490,7 +533,7 @@ public class OnlineGateClient
     private class GateTicketResponse { public bool Ok { get; set; } public string? Ticket { get; set; } public string? ExpiresUtc { get; set; } public string? Reason { get; set; } }
     private class GatePresenceQueryRequest { public List<string> ProductUserIds { get; set; } = new(); }
     private class GatePresenceQueryResponse { public bool Ok { get; set; } public List<GatePresenceEntry>? Entries { get; set; } }
-    private class GatePresenceUpsertRequest { public string? ProductUserId { get; set; } public string? DisplayName { get; set; } public bool IsHosting { get; set; } public string? WorldName { get; set; } public string? GameMode { get; set; } public string? JoinTarget { get; set; } public string? Status { get; set; } }
+    private class GatePresenceUpsertRequest { public string? ProductUserId { get; set; } public string? DisplayName { get; set; } public bool IsHosting { get; set; } public string? WorldName { get; set; } public string? GameMode { get; set; } public string? JoinTarget { get; set; } public string? Status { get; set; } public bool Cheats { get; set; } public int PlayerCount { get; set; } public int MaxPlayers { get; set; } }
     private class GatePresenceUpsertResponse { public bool Ok { get; set; } }
     private class GateWorldInviteSendRequest { public string? TargetProductUserId { get; set; } public string? WorldName { get; set; } }
     private class GateWorldInviteSendResponse { public bool Ok { get; set; } }
@@ -517,7 +560,7 @@ public class OnlineGateClient
 }
 
 public class GateIdentityUser { public string ProductUserId { get; set; } = ""; public string Username { get; set; } = ""; public string DisplayName { get; set; } = ""; public string FriendCode { get; set; } = ""; }
-public class GatePresenceEntry { public string ProductUserId { get; set; } = ""; public string DisplayName { get; set; } = ""; public string Status { get; set; } = ""; public bool IsHosting { get; set; } public string WorldName { get; set; } = ""; public string GameMode { get; set; } = ""; public string JoinTarget { get; set; } = ""; public string FriendCode { get; set; } = ""; }
+public class GatePresenceEntry { public string ProductUserId { get; set; } = ""; public string DisplayName { get; set; } = ""; public string Status { get; set; } = ""; public bool IsHosting { get; set; } public string WorldName { get; set; } = ""; public string GameMode { get; set; } = ""; public string JoinTarget { get; set; } = ""; public bool Cheats { get; set; } public int PlayerCount { get; set; } public int MaxPlayers { get; set; } public string FriendCode { get; set; } = ""; }
 public class GateFriendRequest { public string ProductUserId { get; set; } = ""; public DateTime RequestedUtc { get; set; } public GateIdentityUser User { get; set; } = new(); }
 public class GatePresenceQueryResult { public bool Ok { get; set; } public List<GatePresenceEntry> Entries { get; set; } = new(); }
 public class GateWorldInviteEntry { public string SenderProductUserId { get; set; } = ""; public string TargetProductUserId { get; set; } = ""; public string SenderDisplayName { get; set; } = ""; public string WorldName { get; set; } = ""; public string Status { get; set; } = ""; public DateTime CreatedUtc { get; set; } }

@@ -246,8 +246,8 @@ public sealed class GameWorldScreen : IScreen, IMouseCaptureScreen
     private readonly Button _pauseHostBack;
     private readonly Button _pauseInvite;
     private readonly Button _pauseSettings;
-    private readonly Button _pauseProfile;
     private readonly Button _pauseSaveExit;
+    private readonly Button _pauseProfileIcon;
     private readonly OnlineGateClient _onlineGate;
     private EosClient? _eosClient;
     private bool _debugFaceOverlay;
@@ -491,8 +491,8 @@ public sealed class GameWorldScreen : IScreen, IMouseCaptureScreen
         _pauseHostBack = new Button("BACK", CloseHostMenuFromPause);
         _pauseInvite = new Button("SHARE CODE", OpenShareCode);
         _pauseSettings = new Button("SETTINGS", OpenSettings);
-        _pauseProfile = new Button("PROFILE", OpenProfileFromPause);
         _pauseSaveExit = new Button("SAVE & EXIT", SaveAndExit);
+        _pauseProfileIcon = new Button("", OpenProfileFromPause) { BoldText = true };
         _inventoryClose = new Button("CLOSE", CloseInventory);
         _homeGuiSetHereBtn = new Button("SET HERE", SetHomeAtCurrentPositionFromGui);
         _homeGuiRenameBtn = new Button("RENAME", RenameSelectedHomeFromGui);
@@ -510,6 +510,7 @@ public sealed class GameWorldScreen : IScreen, IMouseCaptureScreen
         try
         {
             _pausePanel = _assets.LoadTexture("textures/menu/GUIS/Pause_GUI.png");
+            _pauseProfileIcon.Texture = _assets.LoadTexture("textures/menu/buttons/Profile.png");
         }
         catch (Exception ex)
         {
@@ -4263,7 +4264,7 @@ public sealed class GameWorldScreen : IScreen, IMouseCaptureScreen
             _pauseHost.Visible = false;
             _pauseInvite.Visible = false;
             _pauseSettings.Visible = false;
-            _pauseProfile.Visible = false;
+            _pauseProfileIcon.Visible = false;
             _pauseSaveExit.Visible = false;
             _pauseOpenLan.Visible = true;
             _pauseHostOnline.Visible = true;
@@ -4283,7 +4284,7 @@ public sealed class GameWorldScreen : IScreen, IMouseCaptureScreen
         _pauseHost.Visible = true;
         _pauseInvite.Visible = showInvite;
         _pauseSettings.Visible = true;
-        _pauseProfile.Visible = true;
+        _pauseProfileIcon.Visible = true;
         _pauseSaveExit.Visible = true;
         _pauseOpenLan.Visible = false;
         _pauseHostOnline.Visible = false;
@@ -4296,10 +4297,11 @@ public sealed class GameWorldScreen : IScreen, IMouseCaptureScreen
         var mainRow = 0;
         _pauseResume.Bounds = new Rectangle(centerX, startY + (buttonH + gap) * mainRow++, buttonW, buttonH);
         _pauseHost.Bounds = new Rectangle(centerX, startY + (buttonH + gap) * mainRow++, buttonW, buttonH);
+        var iconSize = Math.Min(buttonH, 60);
+        _pauseProfileIcon.Bounds = new Rectangle(_pauseHost.Bounds.Right + 8, _pauseHost.Bounds.Y + (_pauseHost.Bounds.Height - iconSize) / 2, iconSize, iconSize);
         if (showInvite)
             _pauseInvite.Bounds = new Rectangle(centerX, startY + (buttonH + gap) * mainRow++, buttonW, buttonH);
         _pauseSettings.Bounds = new Rectangle(centerX, startY + (buttonH + gap) * mainRow++, buttonW, buttonH);
-        _pauseProfile.Bounds = new Rectangle(centerX, startY + (buttonH + gap) * mainRow++, buttonW, buttonH);
         _pauseSaveExit.Bounds = new Rectangle(centerX, startY + (buttonH + gap) * mainRow, buttonW, buttonH);
     }
 
@@ -4340,7 +4342,7 @@ public sealed class GameWorldScreen : IScreen, IMouseCaptureScreen
         _pauseHostBack.Draw(sb, _pixel, _font);
         _pauseInvite.Draw(sb, _pixel, _font);
         _pauseSettings.Draw(sb, _pixel, _font);
-        _pauseProfile.Draw(sb, _pixel, _font);
+        _pauseProfileIcon.Draw(sb, _pixel, _font);
         _pauseSaveExit.Draw(sb, _pixel, _font);
 
         sb.End();
@@ -4430,9 +4432,9 @@ public sealed class GameWorldScreen : IScreen, IMouseCaptureScreen
 
         if (_pauseResume.TryClick(p)) return;
         if (_pauseHost.TryClick(p)) return;
+        if (_pauseProfileIcon.TryClick(p)) return;
         if (_pauseInvite.TryClick(p)) return;
         if (_pauseSettings.TryClick(p)) return;
-        if (_pauseProfile.TryClick(p)) return;
         _pauseSaveExit.TryClick(p);
     }
 
@@ -8055,6 +8057,30 @@ public sealed class GameWorldScreen : IScreen, IMouseCaptureScreen
     private void AppendFriendNameTokens(List<string> output)
     {
         var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        // Prefer remote friends list (authoritative) if available
+        try
+        {
+            var friendsResult = _onlineGate.GetFriendsAsync().GetAwaiter().GetResult();
+            if (friendsResult.Ok)
+            {
+                foreach (var f in friendsResult.Friends)
+                {
+                    if (!string.IsNullOrWhiteSpace(f.DisplayName) && seen.Add(f.DisplayName))
+                        output.Add(f.DisplayName);
+                    if (!string.IsNullOrWhiteSpace(f.Username) && seen.Add(f.Username))
+                        output.Add(f.Username);
+                    if (!string.IsNullOrWhiteSpace(f.ProductUserId) && seen.Add(f.ProductUserId))
+                        output.Add(f.ProductUserId);
+                }
+                return;
+            }
+        }
+        catch
+        {
+            // Fallback to local friends if remote fetch fails
+        }
+
+        // Fallback to local _profile.Friends
         foreach (var f in _profile.Friends)
         {
             if (!string.IsNullOrWhiteSpace(f.Label) && seen.Add(f.Label))

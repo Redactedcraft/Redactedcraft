@@ -85,7 +85,7 @@ public static class EosRuntimeStatus
     {
         if (IsDisabledByEnvironment())
             return false;
-        return EosConfig.HasPublicConfigSource() && EosConfig.HasSecretSource();
+        return EosConfig.HasPublicConfigSource();
     }
 
     private static EosRuntimeReason ResolveReason(bool sdkCompiled, bool disabled, bool hasConfig, bool hasClient, bool loggedIn)

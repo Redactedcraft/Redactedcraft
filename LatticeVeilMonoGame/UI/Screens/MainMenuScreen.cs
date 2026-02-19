@@ -24,7 +24,8 @@ public sealed class MainMenuScreen : IScreen
     private readonly bool _isOffline;
     private readonly GameSettings _settings;
     private readonly OnlineSocialStateService _socialState;
-    private readonly global::Microsoft.Xna.Framework.GraphicsDeviceManager _graphics;
+    private readonly GraphicsDeviceManager _graphics;
+    private readonly GameWindow _window;
 
     private Texture2D? _bg;
     private Button _singleBtn;
@@ -54,7 +55,7 @@ public sealed class MainMenuScreen : IScreen
         "textures/menu/buttons/Profile.png"
     };
 
-    public MainMenuScreen(MenuStack menus, AssetLoader assets, PixelFont font, Texture2D pixel, Logger log, PlayerProfile profile, global::Microsoft.Xna.Framework.GraphicsDeviceManager graphics, EosClient? eosClient, bool isOffline = false)
+    public MainMenuScreen(MenuStack menus, AssetLoader assets, PixelFont font, Texture2D pixel, Logger log, PlayerProfile profile, GraphicsDeviceManager graphics, GameWindow window, EosClient? eosClient, bool isOffline = false)
     {
         _menus = menus;
         _assets = assets;
@@ -67,6 +68,11 @@ public sealed class MainMenuScreen : IScreen
         _settings = GameSettings.LoadOrCreate(_log);
         _socialState = OnlineSocialStateService.GetOrCreate(_log);
         _graphics = graphics;
+        _window = window;
+
+        var veilnetName = (Environment.GetEnvironmentVariable("LV_VEILNET_USERNAME") ?? string.Empty).Trim();
+        if (!string.IsNullOrWhiteSpace(veilnetName))
+            _profile.Username = veilnetName;
 
         // Initialize UI manager for precise positioning
         _uiManager = new UIManager(_viewport);
@@ -83,7 +89,7 @@ public sealed class MainMenuScreen : IScreen
         _optionsBtn = new Button("OPTIONS", () => _menus.Push(new OptionsScreen(_menus, _assets, _font, _pixel, _log, _graphics), _viewport));
         _optionsBtn.Bounds = _uiManager.GetButtonBounds("options");
 
-        _quitBtn = new Button("QUIT", () => _menus.Pop());
+        _quitBtn = new Button("QUIT", RequestQuit);
         _quitBtn.Bounds = _uiManager.GetButtonBounds("quit");
 
         _profileBtn = new Button("PROFILE", () => _menus.Push(new ProfileScreen(_menus, _assets, _font, _pixel, _log, _profile, _graphics, _eosClient), _viewport));
@@ -109,6 +115,20 @@ public sealed class MainMenuScreen : IScreen
 
         RefreshMultiplayerAvailability(forceLog: true);
         UpdateAssetStatus(0);
+    }
+
+    private void RequestQuit()
+    {
+        try
+        {
+            _log.Info("Main menu: Quit requested.");
+            File.WriteAllText(Path.Combine(Paths.RootDir, "exit.request"), DateTime.UtcNow.ToString("O"));
+        }
+        catch (Exception ex)
+        {
+            _log.Warn($"Quit failed: {ex.Message}");
+            _menus.Pop();
+        }
     }
 
     public void OnResize(Rectangle viewport)
@@ -146,7 +166,7 @@ public sealed class MainMenuScreen : IScreen
         if (input.IsNewKeyPress(Keys.Escape))
         {
             // go back to launcher if keep-open is enabled, else exit
-            _menus.Pop();
+            RequestQuit();
             return;
         }
 
@@ -236,8 +256,15 @@ public sealed class MainMenuScreen : IScreen
 
     private void OpenMultiplayer()
     {
-        if (!_multiplayerAvailable)
-            return;
+        // Allow the button to be clickable while EOS is still connecting.
+        _eosClient ??= EosClientProvider.Current;
+        if (_eosClient == null)
+            _eosClient = EosClientProvider.GetOrCreate(_log, "deviceid", allowRetry: true);
+
+        _eosClient?.Tick();
+        var snapshot = EosRuntimeStatus.Evaluate(_eosClient);
+        if (snapshot.Reason != EosRuntimeReason.Ready)
+            RefreshMultiplayerAvailability(forceLog: false);
 
         _menus.Push(new MultiplayerScreen(_menus, _assets, _font, _pixel, _log, _profile, _graphics, _eosClient), _viewport);
     }
@@ -265,8 +292,8 @@ public sealed class MainMenuScreen : IScreen
     {
         if (_isOffline)
         {
-            reason = "Offline mode: Multiplayer disabled";
-            return false;
+            reason = "Offline mode: LAN only";
+            return true;
         }
 
         _eosClient ??= EosClientProvider.Current;
@@ -278,6 +305,14 @@ public sealed class MainMenuScreen : IScreen
         if (snapshot.Reason == EosRuntimeReason.Ready)
         {
             reason = string.Empty;
+            return true;
+        }
+
+        // Option A UX: enable the multiplayer button once EOS exists, even if it's still connecting.
+        // MultiplayerScreen itself is only entered once EOS becomes Ready (see OpenMultiplayer).
+        if (_eosClient != null && snapshot.Reason == EosRuntimeReason.Connecting)
+        {
+            reason = "EOS loading: Multiplayer will unlock when login completes";
             return true;
         }
 

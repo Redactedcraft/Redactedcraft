@@ -35,10 +35,10 @@ public sealed class MultiplayerScreen : IScreen
     private readonly Button _hostBtn;
     private readonly Button _joinBtn;
 	private readonly Button _yourIdBtn;
-    private readonly Button _friendsBtn;
     private readonly Button _backBtn;
 
     private enum SessionType { Lan, Friend, Server }
+    
     private sealed class SessionEntry
     {
         public SessionType Type;
@@ -48,6 +48,18 @@ public sealed class MultiplayerScreen : IScreen
         public string JoinTarget = "";
         public string WorldName = "";
         public string GameMode = "";
+        public bool Cheats;
+        public int PlayerCount;
+        public int MaxPlayers;
+    }
+    
+    private sealed class IncomingJoinRequest
+    {
+        public string RequesterPuid = "";
+        public string RequesterName = "";
+        public string WorldName = "";
+        public DateTime RequestTime = DateTime.UtcNow;
+        public bool Handled = false;
     }
 
     private List<SessionEntry> _sessions = new();
@@ -57,6 +69,10 @@ public sealed class MultiplayerScreen : IScreen
     private Dictionary<string, string> _pendingInvitesByHostPuid = new(StringComparer.OrdinalIgnoreCase);
     private DateTime _nextInvitePollUtc = DateTime.MinValue;
     private DateTime _nextSessionRefreshUtc = DateTime.MinValue;
+    private bool _isRefreshing = false;
+    private float _refreshIconRotation = 0f;
+    private bool _justReturnedFromHosting = false;
+    private List<IncomingJoinRequest> _incomingJoinRequests = new();
 
     private bool _joining;
     private string _status = "";
@@ -114,7 +130,6 @@ public sealed class MultiplayerScreen : IScreen
         _hostBtn = new Button("HOST", OpenHostWorlds) { BoldText = true };
         _joinBtn = new Button("JOIN", OnJoinClicked) { BoldText = true };
 		_yourIdBtn = new Button("SHARE ID", OnYourIdClicked) { BoldText = true };
-        _friendsBtn = new Button("PROFILE", OnFriendsClicked) { BoldText = true };
         _backBtn = new Button("BACK", () => { Cleanup(); _menus.Pop(); }) { BoldText = true };
 
         try
@@ -158,8 +173,8 @@ public sealed class MultiplayerScreen : IScreen
         _infoRect = new Rectangle(uiOffsetX + pad, uiOffsetY + pad, (int)((scaledUIWidth - pad * 2) * UIScale), headerH);
 
         var buttonRowH = (int)Math.Max(60, (_font.LineHeight * 2 + 18) * UIScale);
-        _buttonRowRect = new Rectangle(uiOffsetX + pad, uiOffsetY + scaledUIHeight - pad - buttonRowH, (int)((scaledUIWidth - pad * 2) * UIScale), buttonRowH);
-        _listRect = new Rectangle(uiOffsetX + pad, _infoRect.Bottom + (int)(15 * UIScale), (int)((scaledUIWidth - pad * 2) * UIScale), _buttonRowRect.Top - _infoRect.Bottom - (int)(25 * UIScale));
+        _buttonRowRect = new Rectangle(uiOffsetX + pad, uiOffsetY + scaledUIHeight - pad/2 - buttonRowH, (int)((scaledUIWidth - pad * 2) * UIScale), buttonRowH);
+        _listRect = new Rectangle(uiOffsetX + pad, _infoRect.Bottom + (int)(15 * UIScale), (int)((scaledUIWidth - pad * 2) * UIScale) + (int)(240 * UIScale), _buttonRowRect.Top - _infoRect.Bottom - (int)(4 * UIScale));
 
         var listHeaderH = (int)((_font.LineHeight + 20) * UIScale);
         _listBodyRect = new Rectangle(_listRect.X + (int)(8 * UIScale), _listRect.Y + listHeaderH, (int)((_listRect.Width - 16) * UIScale), Math.Max(0, _listRect.Height - listHeaderH - (int)(8 * UIScale)));
@@ -186,7 +201,6 @@ public sealed class MultiplayerScreen : IScreen
 
         if (input.IsNewKeyPress(Keys.Escape))
         {
-            Cleanup();
             _menus.Pop();
             return;
         }
@@ -197,22 +211,33 @@ public sealed class MultiplayerScreen : IScreen
         _addBtn.Update(input);
         _hostBtn.Update(input);
         _joinBtn.Update(input);
-        _friendsBtn.Update(input);
         _backBtn.Update(input);
 
         // Update mouse position for hover effects
         _lastMousePos = new Vector2(input.MousePosition.X, input.MousePosition.Y);
 
-        if (DateTime.UtcNow >= _nextInvitePollUtc)
+        // Update refresh icon rotation
+        if (_isRefreshing)
         {
-            _nextInvitePollUtc = DateTime.UtcNow.AddSeconds(3);
-            _ = PollInvitesAsync();
+            _refreshIconRotation += 5f; // Rotate when refreshing
+            if (_refreshIconRotation >= 360f)
+                _refreshIconRotation -= 360f;
         }
 
-        if (DateTime.UtcNow >= _nextSessionRefreshUtc)
+        if (DateTime.UtcNow >= _nextInvitePollUtc)
         {
-            _nextSessionRefreshUtc = DateTime.UtcNow.AddSeconds(2);
+            _nextInvitePollUtc = DateTime.UtcNow.AddSeconds(1); // Poll every 1 second instead of 3
+            _ = PollInvitesAsync();
+            _ = PollIncomingJoinRequestsAsync(); // Also poll for incoming requests
+        }
+
+        // Auto-refresh every 10 seconds, but also refresh immediately after returning from host screen
+        if (_justReturnedFromHosting || DateTime.UtcNow >= _nextSessionRefreshUtc)
+        {
+            _nextSessionRefreshUtc = DateTime.UtcNow.AddSeconds(10);
+            _isRefreshing = true;
             RefreshSessions();
+            _justReturnedFromHosting = false; // Reset flag
         }
 
         _social.Tick();
@@ -236,7 +261,6 @@ public sealed class MultiplayerScreen : IScreen
         _hostBtn.Enabled = true;
         _joinBtn.Enabled = true;
         _yourIdBtn.Enabled = onlineAvailable;
-        _friendsBtn.Enabled = onlineAvailable;
     }
 
     public void Draw(SpriteBatch sb, Rectangle viewport)
@@ -338,6 +362,52 @@ public sealed class MultiplayerScreen : IScreen
             return;
         }
 
+        // Draw headers only when there are sessions
+        const float UIScale = 0.80f;
+        var headerRect = new Rectangle(_listRect.X, _listRect.Y, _listRect.Width, (int)((_font.LineHeight + 20) * UIScale));
+        sb.Draw(_pixel, headerRect, new Color(40, 40, 40) * 0.8f);
+        DrawBorder(sb, headerRect, new Color(60, 60, 60));
+
+        var pad = 10;
+        var iconColW = (int)(40 * 0.80f);
+        var userColW = (int)(170 * 0.80f);
+        var worldColW = (int)(220 * 0.80f);
+        var cheatsColW = (int)(130 * 0.80f);
+        var modeColW = (int)(130 * 0.80f);
+        var playersColW = (int)(120 * 0.80f);
+        var colsTotal = iconColW + userColW + worldColW + cheatsColW + modeColW + playersColW + pad * 2;
+        // If columns exceed width, shrink world column
+        if (colsTotal > headerRect.Width)
+        {
+            var shrink = colsTotal - headerRect.Width;
+            worldColW = Math.Max(80, worldColW - shrink);
+        }
+
+        var colX = headerRect.X + pad + 8; // Shift headers right by 8px
+        _font.DrawString(sb, "", new Vector2(colX, headerRect.Y + 4), Color.White);
+        colX += iconColW;
+        _font.DrawString(sb, "USERNAME", new Vector2(colX + 8, headerRect.Y + 4), new Color(180, 180, 180)); // Shift USERNAME right
+        colX += userColW;
+        _font.DrawString(sb, "WORLD", new Vector2(colX + 8, headerRect.Y + 4), new Color(180, 180, 180)); // Shift WORLD right
+        colX += worldColW;
+        _font.DrawString(sb, "CHEATS", new Vector2(colX + 8, headerRect.Y + 4), new Color(180, 180, 180)); // Shift CHEATS right
+        colX += cheatsColW;
+        _font.DrawString(sb, "MODE", new Vector2(colX + 8, headerRect.Y + 4), new Color(180, 180, 180)); // Shift MODE right
+        colX += modeColW;
+        _font.DrawString(sb, "PLAYERS", new Vector2(colX + 25, headerRect.Y + 4), new Color(180, 180, 180)); // Shift PLAYERS further right
+
+        // Draw vertical lines between columns (shifted right)
+        var lineX = headerRect.X + pad + iconColW + 8;
+        sb.Draw(_pixel, new Rectangle(lineX, headerRect.Y, 2, headerRect.Height), new Color(60, 60, 60));
+        lineX += userColW;
+        sb.Draw(_pixel, new Rectangle(lineX, headerRect.Y, 2, headerRect.Height), new Color(60, 60, 60));
+        lineX += worldColW;
+        sb.Draw(_pixel, new Rectangle(lineX, headerRect.Y, 2, headerRect.Height), new Color(60, 60, 60));
+        lineX += cheatsColW;
+        sb.Draw(_pixel, new Rectangle(lineX, headerRect.Y, 2, headerRect.Height), new Color(60, 60, 60));
+        lineX += modeColW;
+        sb.Draw(_pixel, new Rectangle(lineX, headerRect.Y, 2, headerRect.Height), new Color(60, 60, 60));
+
         var rowH = (int)(64 * 0.80f);
         var rowY = _listBodyRect.Y + 2;
         for (var i = 0; i < _sessions.Count; i++)
@@ -369,34 +439,51 @@ public sealed class MultiplayerScreen : IScreen
             sb.Draw(_pixel, iconRect, iconColor * 0.5f);
             DrawBorder(sb, iconRect, iconColor);
 
-            var textX = iconRect.Right + 12;
-            var textY = rowRect.Y + 4;
+            var textX = _listBodyRect.X + pad + iconColW + 8; // Match header shift
+            var textY = rowRect.Y + (rowRect.Height - _font.LineHeight) / 2;
 
-            var title = s.Title;
-            if (s.Type == SessionType.Friend)
-            {
-                var gmDisplay = string.IsNullOrWhiteSpace(s.GameMode) ? "" : $" > {s.GameMode}";
-                var statusSuffix = "";
-                if (_pendingInvitesByHostPuid.TryGetValue(s.JoinTarget, out var inviteStatus))
-                {
-                    statusSuffix = inviteStatus switch
-                    {
-                        "accepted" => " [CAN JOIN]",
-                        "rejected" => " [REJECTED]",
-                        _ => " [PENDING]"
-                    };
-                }
-                title = $"{s.HostName} > {s.WorldName}{gmDisplay}{statusSuffix}";
-            }
-            else if (s.Type == SessionType.Lan)
-            {
-                var gmDisplay = string.IsNullOrWhiteSpace(s.GameMode) ? "" : $" > {s.GameMode}";
-                title = $"LAN: {s.Title}{gmDisplay}";
-            }
+            // Username column (shifted right)
+            var user = s.HostName;
+            _font.DrawString(sb, Trunc(user, userColW - 6), new Vector2(textX + 8, textY), Color.White); // Shift USERNAME text right
+            textX += userColW;
 
-            _font.DrawString(sb, title, new Vector2(textX, textY), Color.White);
-            textY += _font.LineHeight;
-            _font.DrawString(sb, $"Host: {s.HostName} | {s.Status}", new Vector2(textX, textY), Color.LightGray);
+            // World column (shifted right)
+            var world = s.WorldName;
+            _font.DrawString(sb, Trunc(world, worldColW - 6), new Vector2(textX + 8, textY), Color.White); // Shift WORLD text right
+            textX += worldColW;
+
+            // Cheats pill (shifted right)
+            var pillPad = 4;
+            var pillHeight = _font.LineHeight + pillPad * 2;
+            var cheatsPillColor = s.Cheats ? new Color(80, 220, 120) : new Color(220, 180, 80);
+            var cheatsText = s.Cheats ? "ON" : "OFF";
+            var cheatsSize = _font.MeasureString(cheatsText);
+            var cheatsPillRect = new Rectangle(textX + 8, rowRect.Y + (rowRect.Height - pillHeight) / 2, (int)cheatsSize.X + pillPad * 2, pillHeight); // Shift CHEATS right
+            sb.Draw(_pixel, cheatsPillRect, cheatsPillColor * 0.3f);
+            DrawBorder(sb, cheatsPillRect, cheatsPillColor);
+            _font.DrawString(sb, cheatsText, new Vector2(cheatsPillRect.X + pillPad, cheatsPillRect.Y + pillPad), cheatsPillColor);
+            textX += cheatsColW;
+
+            // Mode pill (shifted right)
+            var modePillColor = s.GameMode?.ToLowerInvariant() switch
+            {
+                "artificer" => new Color(220, 120, 220),
+                "veilwalker" => new Color(120, 180, 220),
+                "veilseer" => new Color(220, 220, 120),
+                _ => new Color(160, 160, 160)
+            };
+            var modeText = Trunc(s.GameMode ?? "", modeColW - 6);
+            var modeSize = _font.MeasureString(modeText);
+            var modePillRect = new Rectangle(textX + 8, rowRect.Y + (rowRect.Height - pillHeight) / 2, (int)modeSize.X + pillPad * 2, pillHeight); // Shift MODE right
+            sb.Draw(_pixel, modePillRect, modePillColor * 0.3f);
+            DrawBorder(sb, modePillRect, modePillColor);
+            _font.DrawString(sb, modeText, new Vector2(modePillRect.X + pillPad, modePillRect.Y + pillPad), modePillColor);
+            textX += modeColW;
+
+            // Players column (moved further right, include host in count)
+            var activePlayers = Math.Max(1, s.PlayerCount); // Always count at least 1 for host
+            var players = (s.MaxPlayers > 0) ? $"{activePlayers} active" : $"{activePlayers} active";
+            _font.DrawString(sb, players, new Vector2(textX + 35, textY), Color.White); // Moved further right to match header
 
             rowY += rowH + 4;
             if (rowY > _listBodyRect.Bottom - rowH)
@@ -419,27 +506,74 @@ public sealed class MultiplayerScreen : IScreen
         }
         _joinBtn.Label = joinText;
 
+        // Draw refresh icon (rotating circle arrow)
+        var refreshIconRect = new Rectangle(_refreshBtn.Bounds.X - 25, _refreshBtn.Bounds.Y + (_refreshBtn.Bounds.Height - 20) / 2, 20, 20);
+        DrawRefreshIcon(sb, refreshIconRect, _isRefreshing ? Color.Yellow : Color.White);
+
         _refreshBtn.Draw(sb, _pixel, _font);
         _addBtn.Draw(sb, _pixel, _font);
         _hostBtn.Draw(sb, _pixel, _font);
         _joinBtn.Draw(sb, _pixel, _font);
-        _friendsBtn.Draw(sb, _pixel, _font);
     }
 
     private void DrawStatus(SpriteBatch sb)
     {
-        if (string.IsNullOrWhiteSpace(_status))
-            return;
-
-        var pos = new Vector2(_panelRect.X + 14, _panelRect.Bottom - _font.LineHeight - 8);
-        _font.DrawString(sb, _status, pos, Color.White);
+        // Draw status text
+        if (!string.IsNullOrEmpty(_status))
+        {
+            var pos = new Vector2(_panelRect.X + 14, _panelRect.Bottom - _font.LineHeight - 8);
+            _font.DrawString(sb, _status, pos, Color.White);
+        }
+        
+        // Draw incoming join requests
+        if (_incomingJoinRequests.Count > 0)
+        {
+            var requestY = _panelRect.Y + _panelRect.Height - 100;
+            foreach (var request in _incomingJoinRequests.OrderByDescending(r => r.RequestTime))
+            {
+                var requestText = $"Join Request: {request.RequesterName} wants to join {request.WorldName}";
+                var textSize = _font.MeasureString(requestText);
+                var textRect = new Rectangle(_panelRect.X + 14, requestY, _panelRect.Width - 28, (int)textSize.Y + 4);
+                
+                // Draw background
+                sb.Draw(_pixel, textRect, new Color(50, 50, 50, 200));
+                DrawBorder(sb, textRect, Color.Orange);
+                
+                // Draw text
+                _font.DrawString(sb, requestText, new Vector2(textRect.X + 4, textRect.Y + 2), Color.White);
+                
+                // Draw accept/deny indicators
+                var denyRect = new Rectangle(textRect.X, textRect.Y, textRect.Width / 2, textRect.Height);
+                var acceptRect = new Rectangle(textRect.X + textRect.Width / 2, textRect.Y, textRect.Width / 2, textRect.Height);
+                
+                // Deny button (left half) - red
+                sb.Draw(_pixel, denyRect, new Color(150, 50, 50, 200));
+                DrawBorder(sb, denyRect, Color.Red);
+                var denyText = "DENY";
+                var denySize = _font.MeasureString(denyText);
+                var denyPos = new Vector2(denyRect.X + (denyRect.Width - denySize.X) / 2, denyRect.Y + (denyRect.Height - denySize.Y) / 2);
+                _font.DrawString(sb, denyText, denyPos, Color.White);
+                
+                // Accept button (right half) - green
+                sb.Draw(_pixel, acceptRect, new Color(50, 150, 50, 200));
+                DrawBorder(sb, acceptRect, Color.Green);
+                var acceptText = "ACCEPT";
+                var acceptSize = _font.MeasureString(acceptText);
+                var acceptPos = new Vector2(acceptRect.X + (acceptRect.Width - acceptSize.X) / 2, acceptRect.Y + (acceptRect.Height - acceptSize.Y) / 2);
+                _font.DrawString(sb, acceptText, acceptPos, Color.White);
+                
+                requestY += textRect.Height + 4;
+            }
+        }
     }
 
     private void OnRefreshClicked()
     {
+        _isRefreshing = true;
         _social.ForceRefresh();
         RefreshSessions();
         _status = "";
+        _nextSessionRefreshUtc = DateTime.UtcNow.AddSeconds(5); // Next auto-refresh in 5 seconds
     }
 
     private void OnAddClicked()
@@ -577,6 +711,7 @@ public sealed class MultiplayerScreen : IScreen
             return;
         }
 
+        _justReturnedFromHosting = true; // Set flag to refresh immediately on return
         _menus.Push(new MultiplayerHostScreen(_menus, _assets, _font, _pixel, _log, _profile, _graphics, _eosClient, hostOnline), _viewport);
     }
 
@@ -589,7 +724,6 @@ public sealed class MultiplayerScreen : IScreen
 
         _hostBtn.Visible = true;
         _joinBtn.Visible = true;
-        _friendsBtn.Visible = true;
         _refreshBtn.Visible = true;
         _addBtn.Visible = true;
         _yourIdBtn.Visible = false; // Hide YOUR ID button
@@ -598,17 +732,16 @@ public sealed class MultiplayerScreen : IScreen
         var snapshot = EosRuntimeStatus.Evaluate(eos);
         var onlineAvailable = snapshot.Reason == EosRuntimeReason.Ready;
 
-        _friendsBtn.Enabled = onlineAvailable;
-
-        // Layout 5 buttons in one row (without YOUR ID)
-        var buttonCount = 5;
+        // Layout 4 buttons in one row (without YOUR ID)
+        var buttonCount = 4;
         var minButtonW = (int)(100 * UIScale);
         var canFitOneRow = _buttonRowRect.Width >= (minButtonW * buttonCount + gap * (buttonCount - 1));
         
         if (canFitOneRow)
         {
             var buttonW = (int)((_buttonRowRect.Width - gap * (buttonCount - 1)) / buttonCount);
-            var x = _buttonRowRect.X;
+            var totalWidth = buttonW * buttonCount + gap * (buttonCount - 1);
+            var x = _listRect.X + (_listRect.Width - totalWidth) / 2; // Center relative to list box
             
             _refreshBtn.Bounds = new Rectangle(x, rowY, buttonW, rowH);
             x += buttonW + gap;
@@ -620,9 +753,6 @@ public sealed class MultiplayerScreen : IScreen
             x += buttonW + gap;
             
             _joinBtn.Bounds = new Rectangle(x, rowY, buttonW, rowH);
-            x += buttonW + gap;
-            
-            _friendsBtn.Bounds = new Rectangle(x, rowY, buttonW, rowH);
         }
         else
         {
@@ -630,18 +760,20 @@ public sealed class MultiplayerScreen : IScreen
             var twoRowH = (int)Math.Max(28, ((_buttonRowRect.Height - gap) / 2) * UIScale);
             var topY = _buttonRowRect.Y;
             var bottomY = topY + twoRowH + gap;
-            var leftX = _buttonRowRect.X;
+            
+            // Top row: REFRESH, ADD, HOST (centered relative to list box)
+            var topButtonCount = 3;
+            var topButtonW = (int)((_buttonRowRect.Width - gap * (topButtonCount - 1)) / topButtonCount);
+            var topTotalWidth = topButtonW * topButtonCount + gap * (topButtonCount - 1);
+            var topX = _listRect.X + (_listRect.Width - topTotalWidth) / 2;
+            _refreshBtn.Bounds = new Rectangle(topX, topY, topButtonW, twoRowH);
+            _addBtn.Bounds = new Rectangle(topX + topButtonW + gap, topY, topButtonW, twoRowH);
+            _hostBtn.Bounds = new Rectangle(topX + (topButtonW + gap) * 2, topY, topButtonW, twoRowH);
 
-            // Top row: REFRESH, ADD, HOST
-            var topButtonW = (int)((_buttonRowRect.Width - gap * 2) / 3);
-            _refreshBtn.Bounds = new Rectangle(leftX, topY, topButtonW, twoRowH);
-            _addBtn.Bounds = new Rectangle(leftX + topButtonW + gap, topY, topButtonW, twoRowH);
-            _hostBtn.Bounds = new Rectangle(leftX + (topButtonW + gap) * 2, topY, topButtonW, twoRowH);
-
-            // Bottom row: JOIN, FRIENDS
-            var bottomButtonW = (int)((_buttonRowRect.Width - gap) / 2);
-            _joinBtn.Bounds = new Rectangle(leftX, bottomY, bottomButtonW, twoRowH);
-            _friendsBtn.Bounds = new Rectangle(leftX + bottomButtonW + gap, bottomY, bottomButtonW, twoRowH);
+            // Bottom row: JOIN (centered relative to list box)
+            var bottomButtonW = _buttonRowRect.Width;
+            var bottomX = _listRect.X + (_listRect.Width - bottomButtonW) / 2;
+            _joinBtn.Bounds = new Rectangle(bottomX, bottomY, bottomButtonW, twoRowH);
         }
     }
 
@@ -669,20 +801,60 @@ public sealed class MultiplayerScreen : IScreen
             if (isDouble)
                 OnJoinClicked();
         }
+        
+        // Check for clicks on incoming join requests
+        if (_incomingJoinRequests.Count > 0)
+        {
+            var requestY = _panelRect.Y + _panelRect.Height - 100;
+            foreach (var request in _incomingJoinRequests.OrderByDescending(r => r.RequestTime))
+            {
+                var textSize = _font.MeasureString($"Join Request: {request.RequesterName} wants to join {request.WorldName}");
+                var textRect = new Rectangle(_panelRect.X + 14, requestY, _panelRect.Width - 28, (int)textSize.Y + 4);
+                
+                // Check for accept/deny clicks
+                if (textRect.Contains(p) && input.IsNewLeftClick())
+                {
+                    if (p.X < textRect.X + textRect.Width / 2) // Click on left side = deny
+                    {
+                        _log.Info($"Denied join request from {request.RequesterName}");
+                        _incomingJoinRequests.Remove(request);
+                        _ = RespondToJoinRequestAsync(request.RequesterPuid, "rejected");
+                    }
+                    else // Click on right side = accept
+                    {
+                        _log.Info($"Accepted join request from {request.RequesterName}");
+                        _incomingJoinRequests.Remove(request);
+                        _ = RespondToJoinRequestAsync(request.RequesterPuid, "accepted");
+                    }
+                    return;
+                }
+                
+                requestY += textRect.Height + 4;
+            }
+        }
     }
 
     private async Task SendInviteAsync(string targetPuid, string worldName)
     {
+        _log.Info($"Sending invite to {targetPuid} for world '{worldName}'");
         var ok = await _onlineGate.SendWorldInviteAsync(targetPuid, worldName);
         if (ok)
         {
             _status = "Invite sent! Waiting for response...";
             _pendingInvitesByHostPuid[targetPuid] = "pending";
+            _log.Info($"Invite sent successfully to {targetPuid}");
+            
+            // Trigger immediate refresh and polling
             RefreshSessions();
+            _ = PollInvitesAsync(); // Immediate poll to check response
+            
+            // Also trigger more frequent polling for the next few seconds
+            _nextInvitePollUtc = DateTime.UtcNow.AddMilliseconds(500);
         }
         else
         {
             _status = "Failed to send invite.";
+            _log.Warn($"Failed to send invite to {targetPuid}");
         }
         _joining = false;
     }
@@ -809,10 +981,12 @@ public sealed class MultiplayerScreen : IScreen
         var result = await _onlineGate.GetMyWorldInvitesAsync();
         if (result.Ok)
         {
+            _log.Info($"Polled {result.Outgoing.Count} outgoing invites");
             var serverInvites = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
             foreach (var invite in result.Outgoing)
             {
                 serverInvites[invite.TargetProductUserId] = invite.Status;
+                _log.Info($"Invite to {invite.TargetProductUserId}: {invite.Status}");
             }
 
             // Sync server state to local, but keep local "pending" if it's missing from server (just sent)
@@ -835,6 +1009,50 @@ public sealed class MultiplayerScreen : IScreen
 
             RefreshSessions();
         }
+        else
+        {
+            _log.Warn("Failed to poll invites");
+        }
+    }
+
+    private async Task PollIncomingJoinRequestsAsync()
+    {
+        // Check for incoming join requests (invites sent TO us)
+        var result = await _onlineGate.GetMyWorldInvitesAsync();
+        if (result.Ok && result.Incoming != null)
+        {
+            foreach (var incoming in result.Incoming)
+            {
+                if (!_incomingJoinRequests.Any(r => r.RequesterPuid == incoming.SenderProductUserId))
+                {
+                    _incomingJoinRequests.Add(new IncomingJoinRequest
+                    {
+                        RequesterPuid = incoming.SenderProductUserId,
+                        RequesterName = incoming.SenderDisplayName,
+                        WorldName = incoming.WorldName,
+                        RequestTime = incoming.CreatedUtc
+                    });
+                    
+                    _log.Info($"Received join request from {incoming.SenderDisplayName} to join {incoming.WorldName}");
+                }
+            }
+        }
+        
+        await Task.CompletedTask; // Fix async warning
+    }
+
+    private async Task RespondToJoinRequestAsync(string requesterPuid, string response)
+    {
+        _log.Info($"Responding to join request from {requesterPuid} with: {response}");
+        var ok = await _onlineGate.RespondToWorldInviteAsync(requesterPuid, response);
+        if (ok)
+        {
+            _log.Info($"Successfully responded to join request from {requesterPuid}");
+        }
+        else
+        {
+            _log.Warn($"Failed to respond to join request from {requesterPuid}");
+        }
     }
 
     private void RefreshSessions()
@@ -853,7 +1071,10 @@ public sealed class MultiplayerScreen : IScreen
                 Status = "Online",
                 JoinTarget = DescribeEndpoint(s),
                 WorldName = "LAN World",
-                GameMode = s.GameMode
+                GameMode = s.GameMode,
+                Cheats = false, // Default for LAN
+                PlayerCount = 0, // Unknown for LAN
+                MaxPlayers = 0 // Unknown for LAN
             });
         }
 
@@ -871,7 +1092,10 @@ public sealed class MultiplayerScreen : IScreen
                     Status = presence.Status,
                     JoinTarget = presence.JoinTarget,
                     WorldName = presence.WorldName,
-                    GameMode = presence.GameMode
+                    GameMode = presence.GameMode,
+                    Cheats = presence.Cheats,
+                    PlayerCount = presence.PlayerCount,
+                    MaxPlayers = presence.MaxPlayers
                 });
             }
         }
@@ -895,6 +1119,8 @@ public sealed class MultiplayerScreen : IScreen
             _selectedIndex = _sessions.Count - 1;
         if (_selectedIndex < 0 && _sessions.Count > 0)
             _selectedIndex = 0;
+        
+        _isRefreshing = false; // Stop refreshing after update completes
     }
 
     private void UpdateLanDiscovery(GameTime gameTime)
@@ -952,6 +1178,44 @@ public sealed class MultiplayerScreen : IScreen
         // Cheap bold effect (shadow)
         _font.DrawString(sb, text, pos + new Vector2(1, 1), Color.Black);
         _font.DrawString(sb, text, pos, color);
+    }
+
+    private static string Trunc(string s, int maxW)
+    {
+        if (string.IsNullOrEmpty(s)) return s;
+        // Simple truncation - you could make this smarter with font measurement
+        if (s.Length <= maxW / 8) return s; // Rough estimate
+        return s.Substring(0, Math.Max(1, maxW / 8)) + "...";
+    }
+
+    private void DrawRefreshIcon(SpriteBatch sb, Rectangle rect, Color color)
+    {
+        // Draw a simple circular arrow icon
+        var centerX = rect.X + rect.Width / 2;
+        var centerY = rect.Y + rect.Height / 2;
+        var radius = rect.Width / 2 - 2;
+        
+        // Draw circle
+        for (int angle = 0; angle < 360; angle += 10)
+        {
+            var rad = (angle + _refreshIconRotation) * Math.PI / 180;
+            var x = (int)(centerX + radius * Math.Cos(rad));
+            var y = (int)(centerY + radius * Math.Sin(rad));
+            sb.Draw(_pixel, new Rectangle(x, y, 2, 2), color);
+        }
+        
+        // Draw arrow head
+        var arrowRad = (_refreshIconRotation) * Math.PI / 180;
+        var arrowX = (int)(centerX + radius * Math.Cos(arrowRad));
+        var arrowY = (int)(centerY + radius * Math.Sin(arrowRad));
+        
+        // Arrow pointing clockwise
+        var arrowTipRad = (_refreshIconRotation + 90) * Math.PI / 180;
+        var arrowTipX = (int)(arrowX + 6 * Math.Cos(arrowTipRad));
+        var arrowTipY = (int)(arrowY + 6 * Math.Sin(arrowTipRad));
+        
+        sb.Draw(_pixel, new Rectangle(arrowX, arrowY, 2, 2), color);
+        sb.Draw(_pixel, new Rectangle(arrowTipX, arrowTipY, 3, 3), color);
     }
 
     private void DrawBorder(SpriteBatch sb, Rectangle r, Color color)

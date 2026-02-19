@@ -318,7 +318,8 @@ namespace LatticeVeilBuilder
 
                 // Build
                 Log("Building game...");
-                var buildProcess = new Process
+                int buildExit;
+                using (var buildProcess = new Process
                 {
                     StartInfo = new ProcessStartInfo
                     {
@@ -330,18 +331,28 @@ namespace LatticeVeilBuilder
                         RedirectStandardError = true,
                         CreateNoWindow = true
                     }
-                };
-
-                buildProcess.Start();
-                while (!buildProcess.StandardOutput.EndOfStream)
+                })
                 {
-                    Log(buildProcess.StandardOutput.ReadLine());
+                    buildProcess.Start();
+                    var stdout = buildProcess.StandardOutput.ReadToEnd();
+                    var stderr = buildProcess.StandardError.ReadToEnd();
+                    if (!string.IsNullOrWhiteSpace(stdout)) Log(stdout);
+                    if (!string.IsNullOrWhiteSpace(stderr)) Log(stderr);
+
+                    if (!buildProcess.WaitForExit(10 * 60 * 1000))
+                    {
+                        try { buildProcess.Kill(entireProcessTree: true); } catch { }
+                        Log("Build timed out.");
+                        SetButtonsEnabled(true);
+                        return;
+                    }
+
+                    buildExit = buildProcess.ExitCode;
                 }
-                buildProcess.WaitForExit();
 
-                if (buildProcess.ExitCode != 0)
+                if (buildExit != 0)
                 {
-                    Log($"Build failed with exit code: {buildProcess.ExitCode}");
+                    Log($"Build failed with exit code: {buildExit}");
                     SetButtonsEnabled(true);
                     return;
                 }
@@ -407,7 +418,8 @@ namespace LatticeVeilBuilder
 
                 // Build
                 Log("Building release...");
-                var buildProcess = new Process
+                int buildExit;
+                using (var buildProcess = new Process
                 {
                     StartInfo = new ProcessStartInfo
                     {
@@ -419,18 +431,28 @@ namespace LatticeVeilBuilder
                         RedirectStandardError = true,
                         CreateNoWindow = true
                     }
-                };
-
-                buildProcess.Start();
-                while (!buildProcess.StandardOutput.EndOfStream)
+                })
                 {
-                    Log(buildProcess.StandardOutput.ReadLine());
+                    buildProcess.Start();
+                    var stdout = buildProcess.StandardOutput.ReadToEnd();
+                    var stderr = buildProcess.StandardError.ReadToEnd();
+                    if (!string.IsNullOrWhiteSpace(stdout)) Log(stdout);
+                    if (!string.IsNullOrWhiteSpace(stderr)) Log(stderr);
+
+                    if (!buildProcess.WaitForExit(10 * 60 * 1000))
+                    {
+                        try { buildProcess.Kill(entireProcessTree: true); } catch { }
+                        Log("Build timed out.");
+                        SetButtonsEnabled(true);
+                        return;
+                    }
+
+                    buildExit = buildProcess.ExitCode;
                 }
-                buildProcess.WaitForExit();
 
-                if (buildProcess.ExitCode != 0)
+                if (buildExit != 0)
                 {
-                    Log($"Build failed with exit code: {buildProcess.ExitCode}");
+                    Log($"Build failed with exit code: {buildExit}");
                     SetButtonsEnabled(true);
                     return;
                 }
@@ -482,7 +504,8 @@ namespace LatticeVeilBuilder
             {
                 // Build launcher
                 Log("Building launcher...");
-                var launcherProcess = new Process
+                int launcherExit;
+                using (var launcherProcess = new Process
                 {
                     StartInfo = new ProcessStartInfo
                     {
@@ -494,25 +517,36 @@ namespace LatticeVeilBuilder
                         RedirectStandardError = true,
                         CreateNoWindow = true
                     }
-                };
-
-                launcherProcess.Start();
-                while (!launcherProcess.StandardOutput.EndOfStream)
+                })
                 {
-                    Log(launcherProcess.StandardOutput.ReadLine());
+                    launcherProcess.Start();
+                    var stdout = launcherProcess.StandardOutput.ReadToEnd();
+                    var stderr = launcherProcess.StandardError.ReadToEnd();
+                    if (!string.IsNullOrWhiteSpace(stdout)) Log(stdout);
+                    if (!string.IsNullOrWhiteSpace(stderr)) Log(stderr);
+
+                    if (!launcherProcess.WaitForExit(10 * 60 * 1000))
+                    {
+                        try { launcherProcess.Kill(entireProcessTree: true); } catch { }
+                        Log("Launcher publish timed out.");
+                        SetButtonsEnabled(true);
+                        return;
+                    }
+
+                    launcherExit = launcherProcess.ExitCode;
                 }
-                launcherProcess.WaitForExit();
 
-                if (launcherProcess.ExitCode != 0)
+                if (launcherExit != 0)
                 {
-                    Log($"Launcher publish failed with exit code: {launcherProcess.ExitCode}");
+                    Log($"Launcher publish failed with exit code: {launcherExit}");
                     SetButtonsEnabled(true);
                     return;
                 }
 
                 // Build game
                 Log("Building game...");
-                var gameProcess = new Process
+                int gameExit;
+                using (var gameProcess = new Process
                 {
                     StartInfo = new ProcessStartInfo
                     {
@@ -524,18 +558,28 @@ namespace LatticeVeilBuilder
                         RedirectStandardError = true,
                         CreateNoWindow = true
                     }
-                };
-
-                gameProcess.Start();
-                while (!gameProcess.StandardOutput.EndOfStream)
+                })
                 {
-                    Log(gameProcess.StandardOutput.ReadLine());
+                    gameProcess.Start();
+                    var stdout = gameProcess.StandardOutput.ReadToEnd();
+                    var stderr = gameProcess.StandardError.ReadToEnd();
+                    if (!string.IsNullOrWhiteSpace(stdout)) Log(stdout);
+                    if (!string.IsNullOrWhiteSpace(stderr)) Log(stderr);
+
+                    if (!gameProcess.WaitForExit(10 * 60 * 1000))
+                    {
+                        try { gameProcess.Kill(entireProcessTree: true); } catch { }
+                        Log("Game publish timed out.");
+                        SetButtonsEnabled(true);
+                        return;
+                    }
+
+                    gameExit = gameProcess.ExitCode;
                 }
-                gameProcess.WaitForExit();
 
-                if (gameProcess.ExitCode != 0)
+                if (gameExit != 0)
                 {
-                    Log($"Game publish failed with exit code: {gameProcess.ExitCode}");
+                    Log($"Game publish failed with exit code: {gameExit}");
                     SetButtonsEnabled(true);
                     return;
                 }

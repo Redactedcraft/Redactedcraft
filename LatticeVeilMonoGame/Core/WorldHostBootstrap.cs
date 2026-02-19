@@ -178,7 +178,10 @@ public static class WorldHostBootstrap
                 worldName: meta?.Name,
                 gameMode: meta?.CurrentWorldGameMode.ToString(),
                 joinTarget: puid, // For P2P, join target is the host's PUID
-                status: hosting ? $"Hosting {meta?.Name}" : "Online");
+                status: hosting ? $"Hosting {meta?.Name}" : "Online",
+                cheats: false, // TODO: derive from world/host settings
+                playerCount: 1, // TODO: derive from current player count
+                maxPlayers: 8); // TODO: derive from world/host settings
         }
         catch (Exception ex)
         {
