@@ -467,6 +467,21 @@ public sealed class LauncherForm : Form
                 }
                 else
                 {
+                    if (!HasValidVeilnetSessionForOnline())
+                    {
+                        var switchResult = MessageBox.Show(
+                            "You're not signed in. Online features are unavailable. Switch to Offline mode?",
+                            "Online Unavailable",
+                            MessageBoxButtons.YesNo,
+                            MessageBoxIcon.Warning);
+                        if (switchResult == DialogResult.Yes)
+                        {
+                            _launchModeBox.SelectedItem = "Offline";
+                            LaunchGameProcess("--offline", requireHashApproval: false);
+                        }
+                        return;
+                    }
+
                     if (!_onlineFunctional || !_releaseHashAllowed)
                     {
                         var reason = string.IsNullOrWhiteSpace(_onlineStatusDetail)
@@ -1087,6 +1102,25 @@ public sealed class LauncherForm : Form
     {
         var username = (usernameOverride ?? (Environment.GetEnvironmentVariable("LV_VEILNET_USERNAME") ?? string.Empty)).Trim();
         _hubGoogleBtn.Text = string.IsNullOrWhiteSpace(username) ? "LOGIN WITH VEILNET" : $"LINKED: {username}";
+    }
+
+    private static bool IsPlaceholderToken(string token)
+    {
+        return string.Equals(token, "null", StringComparison.OrdinalIgnoreCase)
+            || string.Equals(token, "undefined", StringComparison.OrdinalIgnoreCase)
+            || string.Equals(token, "none", StringComparison.OrdinalIgnoreCase)
+            || string.Equals(token, "placeholder", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static bool HasValidVeilnetSessionForOnline()
+    {
+        var username = (Environment.GetEnvironmentVariable("LV_VEILNET_USERNAME") ?? string.Empty).Trim();
+        var token = (Environment.GetEnvironmentVariable("LV_VEILNET_ACCESS_TOKEN") ?? string.Empty).Trim();
+
+        if (string.IsNullOrWhiteSpace(username) || string.IsNullOrWhiteSpace(token))
+            return false;
+
+        return !IsPlaceholderToken(token);
     }
 
     private void BuildTopBar()
