@@ -2,6 +2,7 @@ using System.Net;
 using System.Net.Http;
 using System.Text;
 using System.Text.Json;
+using System.Text.Json.Serialization;
 
 namespace LatticeVeilMonoGame.Launcher;
 
@@ -16,12 +17,34 @@ internal sealed class VeilnetClient
         public string Token { get; set; } = string.Empty;
         public string Username { get; set; } = string.Empty;
         public string UserId { get; set; } = string.Empty;
+
+        [JsonPropertyName("user_id")]
+        public string UserIdSnakeCase { get; set; } = string.Empty;
+
+        public void NormalizeUserId()
+        {
+            if (string.IsNullOrWhiteSpace(UserId))
+                UserId = (UserIdSnakeCase ?? string.Empty).Trim();
+            else
+                UserId = UserId.Trim();
+        }
     }
 
     internal sealed class MeResponse
     {
         public string Username { get; set; } = string.Empty;
         public string UserId { get; set; } = string.Empty;
+
+        [JsonPropertyName("user_id")]
+        public string UserIdSnakeCase { get; set; } = string.Empty;
+
+        public void NormalizeUserId()
+        {
+            if (string.IsNullOrWhiteSpace(UserId))
+                UserId = (UserIdSnakeCase ?? string.Empty).Trim();
+            else
+                UserId = UserId.Trim();
+        }
     }
 
     private sealed class ErrorResponse
@@ -58,6 +81,8 @@ internal sealed class VeilnetClient
             throw new Exception(MapExchangeError(response.StatusCode, ParseErrorKey(body)));
 
         var parsed = JsonSerializer.Deserialize<ExchangeResponse>(body, JsonOptions);
+        parsed?.NormalizeUserId();
+
         if (parsed == null
             || string.IsNullOrWhiteSpace(parsed.Token)
             || string.IsNullOrWhiteSpace(parsed.Username)
@@ -86,6 +111,8 @@ internal sealed class VeilnetClient
             throw new Exception(MapMeError(response.StatusCode, ParseErrorKey(body)));
 
         var parsed = JsonSerializer.Deserialize<MeResponse>(body, JsonOptions);
+        parsed?.NormalizeUserId();
+
         if (parsed == null || string.IsNullOrWhiteSpace(parsed.Username) || string.IsNullOrWhiteSpace(parsed.UserId))
             throw new Exception("Veilnet returned an invalid profile response.");
 
