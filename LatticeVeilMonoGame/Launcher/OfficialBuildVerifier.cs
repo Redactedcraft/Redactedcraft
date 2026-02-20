@@ -1,6 +1,6 @@
+using System.Net;
 using System.Net.Http;
 using System.Text.Json;
-using System.Text.Json.Serialization;
 using LatticeVeilMonoGame.Core;
 
 namespace LatticeVeilMonoGame.Launcher;
@@ -12,25 +12,21 @@ internal sealed class OfficialBuildVerifier
         Timeout = TimeSpan.FromSeconds(8)
     };
 
-    private static readonly JsonSerializerOptions JsonOptions = new()
-    {
-        PropertyNameCaseInsensitive = true
-    };
-
     private readonly Logger _log;
     private readonly string _endpoint;
     private readonly TimeSpan _cacheTtl = TimeSpan.FromMinutes(10);
     private readonly object _cacheSync = new();
     private DateTime _cacheExpiresUtc = DateTime.MinValue;
-    private OfficialHashesPayload? _cachePayload;
+    private OfficialHashesSnapshot? _cachePayload;
 
     internal enum VerifyFailure
     {
         None,
         MissingFile,
         InvalidChannel,
-        FetchFailed,
-        InvalidRemotePayload,
+        ServiceUnavailable,
+        Unauthorized,
+        BadResponse,
         HashMismatch,
         ComputeFailed
     }
@@ -45,31 +41,10 @@ internal sealed class OfficialBuildVerifier
         public string? ActualHash { get; init; }
     }
 
-    private sealed class OfficialHashEntry
+    private readonly struct OfficialHashesSnapshot
     {
-        [JsonPropertyName("hash_sha256")]
-        public string HashSha256 { get; set; } = string.Empty;
-
-        [JsonPropertyName("sha256")]
-        public string Sha256 { get; set; } = string.Empty;
-
-        [JsonPropertyName("hash")]
-        public string Hash { get; set; } = string.Empty;
-
-        [JsonPropertyName("version")]
-        public string? Version { get; set; }
-
-        [JsonPropertyName("updated_at")]
-        public string? UpdatedAt { get; set; }
-    }
-
-    private sealed class OfficialHashesPayload
-    {
-        [JsonPropertyName("dev")]
-        public OfficialHashEntry? Dev { get; set; }
-
-        [JsonPropertyName("release")]
-        public OfficialHashEntry? Release { get; set; }
+        public string DevHash { get; init; }
+        public string ReleaseHash { get; init; }
     }
 
     public OfficialBuildVerifier(Logger log, string endpoint)
@@ -103,31 +78,6 @@ internal sealed class OfficialBuildVerifier
             };
         }
 
-        var fetch = await FetchOfficialHashesAsync(ct).ConfigureAwait(false);
-        if (!fetch.Ok || fetch.Payload == null)
-        {
-            return new VerifyResult
-            {
-                Ok = false,
-                Failure = VerifyFailure.FetchFailed,
-                Channel = channel,
-                Message = fetch.Message
-            };
-        }
-
-        var remoteEntry = channel == "dev" ? fetch.Payload.Dev : fetch.Payload.Release;
-        var expectedHash = ResolveRemoteHash(remoteEntry);
-        if (!IsSha256(expectedHash))
-        {
-            return new VerifyResult
-            {
-                Ok = false,
-                Failure = VerifyFailure.InvalidRemotePayload,
-                Channel = channel,
-                Message = $"Official {channel} hash is missing or invalid."
-            };
-        }
-
         string localHash;
         try
         {
@@ -141,6 +91,61 @@ internal sealed class OfficialBuildVerifier
                 Failure = VerifyFailure.ComputeFailed,
                 Channel = channel,
                 Message = $"Failed to compute local SHA256: {ex.Message}"
+            };
+        }
+
+        return await VerifyHashAsync(channel, localHash, ct).ConfigureAwait(false);
+    }
+
+    public async Task<VerifyResult> VerifyHashAsync(string channel, string localHash, CancellationToken ct = default)
+    {
+        channel = NormalizeChannel(channel);
+        if (string.IsNullOrWhiteSpace(channel))
+        {
+            return new VerifyResult
+            {
+                Ok = false,
+                Failure = VerifyFailure.InvalidChannel,
+                Message = "Invalid hash channel. Expected 'dev' or 'release'."
+            };
+        }
+
+        localHash = NormalizeHash(localHash);
+        if (!IsSha256(localHash))
+        {
+            return new VerifyResult
+            {
+                Ok = false,
+                Failure = VerifyFailure.ComputeFailed,
+                Channel = channel,
+                Message = "Computed local SHA256 is invalid."
+            };
+        }
+
+        var fetch = await FetchOfficialHashesAsync(ct).ConfigureAwait(false);
+        if (!fetch.Ok || fetch.Payload == null)
+        {
+            return new VerifyResult
+            {
+                Ok = false,
+                Failure = fetch.Failure,
+                Channel = channel,
+                ActualHash = localHash,
+                Message = fetch.Message
+            };
+        }
+
+        var expectedHash = channel == "dev" ? fetch.Payload.Value.DevHash : fetch.Payload.Value.ReleaseHash;
+        expectedHash = NormalizeHash(expectedHash);
+        if (!IsSha256(expectedHash))
+        {
+            return new VerifyResult
+            {
+                Ok = false,
+                Failure = VerifyFailure.BadResponse,
+                Channel = channel,
+                ActualHash = localHash,
+                Message = $"Official {channel} hash is missing or invalid."
             };
         }
 
@@ -168,16 +173,16 @@ internal sealed class OfficialBuildVerifier
         };
     }
 
-    private async Task<(bool Ok, string Message, OfficialHashesPayload? Payload)> FetchOfficialHashesAsync(CancellationToken ct)
+    private async Task<(bool Ok, VerifyFailure Failure, string Message, OfficialHashesSnapshot? Payload)> FetchOfficialHashesAsync(CancellationToken ct)
     {
         if (string.IsNullOrWhiteSpace(_endpoint))
-            return (false, "Official hash endpoint is not configured.", null);
+            return (false, VerifyFailure.BadResponse, "Official hash endpoint is not configured.", null);
 
         var now = DateTime.UtcNow;
         lock (_cacheSync)
         {
-            if (_cachePayload != null && now < _cacheExpiresUtc)
-                return (true, "cache", _cachePayload);
+            if (_cachePayload.HasValue && now < _cacheExpiresUtc)
+                return (true, VerifyFailure.None, "cache", _cachePayload);
         }
 
         try
@@ -188,34 +193,173 @@ internal sealed class OfficialBuildVerifier
 
             if (!response.IsSuccessStatusCode)
             {
-                return (false, $"Official hash fetch failed (HTTP {(int)response.StatusCode}).", null);
+                var failure = response.StatusCode switch
+                {
+                    HttpStatusCode.Unauthorized or HttpStatusCode.Forbidden => VerifyFailure.Unauthorized,
+                    HttpStatusCode.RequestTimeout or HttpStatusCode.TooManyRequests => VerifyFailure.ServiceUnavailable,
+                    var code when (int)code >= 500 => VerifyFailure.ServiceUnavailable,
+                    _ => VerifyFailure.BadResponse
+                };
+                var message = $"Official hash fetch failed (HTTP {(int)response.StatusCode}).";
+                return (false, failure, message, null);
             }
 
-            var payload = JsonSerializer.Deserialize<OfficialHashesPayload>(body, JsonOptions);
-            if (payload?.Dev == null || payload.Release == null)
+            using var doc = JsonDocument.Parse(body);
+            var snapshot = ExtractSnapshot(doc.RootElement);
+            if (!IsSha256(snapshot.DevHash) && !IsSha256(snapshot.ReleaseHash))
             {
-                return (false, "Official hash payload is missing dev/release rows.", null);
+                return (false, VerifyFailure.BadResponse, "Official hash payload is missing dev/release hashes.", null);
             }
 
             lock (_cacheSync)
             {
-                _cachePayload = payload;
+                _cachePayload = snapshot;
                 _cacheExpiresUtc = DateTime.UtcNow.Add(_cacheTtl);
             }
 
-            return (true, "ok", payload);
+            return (true, VerifyFailure.None, "ok", snapshot);
+        }
+        catch (OperationCanceledException ex)
+        {
+            _log.Warn($"Official hash fetch canceled: {ex.Message}");
+            return (false, VerifyFailure.ServiceUnavailable, "Official hash fetch timed out.", null);
         }
         catch (Exception ex)
         {
             _log.Warn($"Official hash fetch error: {ex.Message}");
-            return (false, $"Official hash fetch error: {ex.Message}", null);
+            return (false, VerifyFailure.ServiceUnavailable, $"Official hash fetch error: {ex.Message}", null);
         }
+    }
+
+    private static OfficialHashesSnapshot ExtractSnapshot(JsonElement root)
+    {
+        var devHash = string.Empty;
+        var releaseHash = string.Empty;
+
+        if (root.ValueKind == JsonValueKind.Object)
+        {
+            devHash = ResolveHashFromNamedObject(root, "dev");
+            releaseHash = ResolveHashFromNamedObject(root, "release");
+
+            if (!IsSha256(devHash))
+                devHash = ResolveHashFromValue(root, "devHash", "dev_hash", "devSha256", "dev_sha256");
+            if (!IsSha256(releaseHash))
+                releaseHash = ResolveHashFromValue(root, "releaseHash", "release_hash", "releaseSha256", "release_sha256");
+
+            if ((!IsSha256(devHash) || !IsSha256(releaseHash))
+                && TryGetRowCollection(root, out var rows))
+            {
+                (devHash, releaseHash) = ResolveHashesFromRows(rows, devHash, releaseHash);
+            }
+        }
+        else if (root.ValueKind == JsonValueKind.Array)
+        {
+            (devHash, releaseHash) = ResolveHashesFromRows(root, devHash, releaseHash);
+        }
+
+        return new OfficialHashesSnapshot
+        {
+            DevHash = NormalizeHash(devHash),
+            ReleaseHash = NormalizeHash(releaseHash)
+        };
+    }
+
+    private static bool TryGetRowCollection(JsonElement root, out JsonElement rows)
+    {
+        if (root.TryGetProperty("rows", out rows) && rows.ValueKind == JsonValueKind.Array)
+            return true;
+        if (root.TryGetProperty("data", out rows) && rows.ValueKind == JsonValueKind.Array)
+            return true;
+        if (root.TryGetProperty("hashes", out rows) && rows.ValueKind == JsonValueKind.Array)
+            return true;
+
+        rows = default;
+        return false;
+    }
+
+    private static (string DevHash, string ReleaseHash) ResolveHashesFromRows(JsonElement rows, string existingDev, string existingRelease)
+    {
+        var devHash = existingDev;
+        var releaseHash = existingRelease;
+
+        foreach (var row in rows.EnumerateArray())
+        {
+            if (row.ValueKind != JsonValueKind.Object)
+                continue;
+
+            var target = ResolveString(row, "target", "channel", "name").ToLowerInvariant();
+            if (target is not ("dev" or "release"))
+                continue;
+
+            var rowHash = ResolveHashFromValue(row, "hash_sha256", "sha256", "hash");
+            if (!IsSha256(rowHash))
+                continue;
+
+            if (target == "dev")
+                devHash = rowHash;
+            else
+                releaseHash = rowHash;
+        }
+
+        return (devHash, releaseHash);
+    }
+
+    private static string ResolveHashFromNamedObject(JsonElement root, string propertyName)
+    {
+        if (!root.TryGetProperty(propertyName, out var value))
+            return string.Empty;
+
+        if (value.ValueKind == JsonValueKind.String)
+            return NormalizeHash(value.GetString());
+
+        if (value.ValueKind == JsonValueKind.Object)
+            return ResolveHashFromValue(value, "hash_sha256", "sha256", "hash");
+
+        return string.Empty;
+    }
+
+    private static string ResolveHashFromValue(JsonElement value, params string[] propertyNames)
+    {
+        for (var i = 0; i < propertyNames.Length; i++)
+        {
+            if (!value.TryGetProperty(propertyNames[i], out var prop))
+                continue;
+
+            if (prop.ValueKind != JsonValueKind.String)
+                continue;
+
+            var hash = NormalizeHash(prop.GetString());
+            if (IsSha256(hash))
+                return hash;
+        }
+
+        return string.Empty;
+    }
+
+    private static string ResolveString(JsonElement value, params string[] propertyNames)
+    {
+        for (var i = 0; i < propertyNames.Length; i++)
+        {
+            if (!value.TryGetProperty(propertyNames[i], out var prop))
+                continue;
+            if (prop.ValueKind != JsonValueKind.String)
+                continue;
+
+            return (prop.GetString() ?? string.Empty).Trim();
+        }
+
+        return string.Empty;
     }
 
     private static string NormalizeChannel(string channel)
     {
         var value = (channel ?? string.Empty).Trim().ToLowerInvariant();
         return value is "dev" or "release" ? value : string.Empty;
+    }
+
+    private static string NormalizeHash(string? value)
+    {
+        return (value ?? string.Empty).Trim().ToLowerInvariant();
     }
 
     private static bool IsSha256(string value)
@@ -227,28 +371,10 @@ internal sealed class OfficialBuildVerifier
         {
             var c = value[i];
             var isHex = (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f');
-            if (!isHex) return false;
+            if (!isHex)
+                return false;
         }
 
         return true;
-    }
-
-    private static string ResolveRemoteHash(OfficialHashEntry? entry)
-    {
-        var candidates = new[]
-        {
-            entry?.HashSha256,
-            entry?.Sha256,
-            entry?.Hash
-        };
-
-        for (var i = 0; i < candidates.Length; i++)
-        {
-            var c = (candidates[i] ?? string.Empty).Trim().ToLowerInvariant();
-            if (IsSha256(c))
-                return c;
-        }
-
-        return string.Empty;
     }
 }

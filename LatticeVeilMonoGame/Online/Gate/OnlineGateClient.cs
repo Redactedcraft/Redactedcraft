@@ -7,7 +7,6 @@ using System.Net;
 using System.Net.Http;
 using System.Net.Http.Headers;
 using System.Runtime.InteropServices;
-using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 using System.Threading;
@@ -165,6 +164,22 @@ public class OnlineGateClient
 
     private static readonly JsonSerializerOptions JsonOptions = new() { PropertyNameCaseInsensitive = true };
 
+    public enum TicketCheckStatus
+    {
+        Verified,
+        HashMismatch,
+        ServiceUnavailable,
+        Unauthorized,
+        BadResponse
+    }
+
+    public readonly struct TicketCheckResult
+    {
+        public bool Ok { get; init; }
+        public TicketCheckStatus Status { get; init; }
+        public string Message { get; init; }
+    }
+
     private OnlineGateClient()
     {
         _gateUrl = ResolveGateUrl();
@@ -197,7 +212,10 @@ public class OnlineGateClient
         _status = "VERIFIED";
     }
 
-    public string? ComputeCurrentHash(Logger log, string? target) => TryComputeExecutableHash(target, false);
+    public string? ComputeCurrentHash(Logger log, string? target)
+    {
+        return TryComputeExecutableHash(target, out _, out var hash) ? hash : null;
+    }
 
     public bool CanUseOfficialOnline(Logger log, out string denialMessage)
     {
@@ -210,12 +228,54 @@ public class OnlineGateClient
 
     public bool EnsureTicket(Logger log, TimeSpan? timeout = null, string? target = null)
     {
+        return EnsureTicketWithStatus(log, timeout, target).Ok;
+    }
+
+    public TicketCheckResult EnsureTicketWithStatus(Logger log, TimeSpan? timeout = null, string? target = null)
+    {
         lock (TicketSync)
         {
-            if (HasUsableTicketForCurrentIdentity()) return true;
+            if (HasUsableTicketForCurrentIdentity())
+            {
+                return new TicketCheckResult
+                {
+                    Ok = true,
+                    Status = TicketCheckStatus.Verified,
+                    Message = "Ticket already valid."
+                };
+            }
+
             using var cts = new CancellationTokenSource(timeout ?? DefaultTicketTimeout);
-            try { return Task.Run(() => EnsureTicketAsync(log, cts.Token, target)).GetAwaiter().GetResult(); }
-            catch { return false; }
+            try
+            {
+                var ok = Task.Run(() => EnsureTicketAsync(log, cts.Token, target)).GetAwaiter().GetResult();
+                if (ok)
+                {
+                    return new TicketCheckResult
+                    {
+                        Ok = true,
+                        Status = TicketCheckStatus.Verified,
+                        Message = "Ticket approved."
+                    };
+                }
+
+                return new TicketCheckResult
+                {
+                    Ok = false,
+                    Status = ClassifyTicketFailure(_denialReason),
+                    Message = string.IsNullOrWhiteSpace(_denialReason) ? "Ticket denied." : _denialReason
+                };
+            }
+            catch (Exception ex)
+            {
+                _denialReason = ex.Message;
+                return new TicketCheckResult
+                {
+                    Ok = false,
+                    Status = TicketCheckStatus.ServiceUnavailable,
+                    Message = ex.Message
+                };
+            }
         }
     }
 
@@ -328,24 +388,25 @@ public class OnlineGateClient
     {
         try
         {
-            var currentHash = TryComputeExecutableHash(target, false);
-            if (string.IsNullOrWhiteSpace(currentHash))
+            if (!TryComputeExecutableHash(target, out var exePath, out var currentHash))
             {
                 log.Error("Failed to compute current EXE hash");
                 return false;
             }
 
-            log.Info($"Local EXE hash: {currentHash}");
+            log.Info($"Executable path used for hash: {exePath}");
+            log.Info($"Computed EXE SHA256: {currentHash}");
 
             // Client validation must not call admin endpoints. Ask the gate for a ticket with our EXE hash.
             // If the gate approves, the hash is valid.
-            if (EnsureTicket(log, null, target))
+            var ticket = EnsureTicketWithStatus(log, null, target);
+            if (ticket.Ok)
             {
                 log.Info("Hash verification successful (ticket approved)");
                 return true;
             }
 
-            log.Warn($"Hash verification failed (ticket denied): {_denialReason}");
+            log.Warn($"Hash verification failed (ticket denied): {ticket.Message}");
             return false;
         }
         catch (Exception ex)
@@ -488,8 +549,15 @@ public class OnlineGateClient
 
     private async Task<bool> EnsureTicketAsync(Logger log, CancellationToken ct, string? target)
     {
-        var hash = TryComputeExecutableHash(target, false);
-        if (string.IsNullOrWhiteSpace(hash)) return false;
+        if (!TryComputeExecutableHash(target, out var executablePath, out var hash))
+        {
+            _denialReason = "Unable to compute executable hash.";
+            return false;
+        }
+
+        log.Info($"Executable path used for hash: {executablePath}");
+        log.Info($"Computed EXE SHA256: {hash}");
+
         var eos = EosClientProvider.Current;
         var request = new { ProductUserId = eos?.LocalProductUserId, DisplayName = "Player", BuildFlavor = _buildFlavor, ExeHash = hash };
         var (ok, res, err) = await PostAsync<object, GateTicketResponse>($"{_gateUrl}/ticket", request, ct).ConfigureAwait(false);
@@ -511,22 +579,54 @@ public class OnlineGateClient
     private static bool ParseBool(string? v) => v == "1" || string.Equals(v, "true", StringComparison.OrdinalIgnoreCase);
     private void InvalidateTicket() { _ticket = ""; _ticketExpiresUtc = DateTime.MinValue; }
     private bool HasUsableTicketForCurrentIdentity() => HasValidTicket && string.Equals(_ticketProductUserId, EosClientProvider.Current?.LocalProductUserId ?? "", StringComparison.Ordinal);
-    private static string? TryComputeExecutableHash(string? target, bool strict) 
-    { 
-        var p = target ?? Environment.ProcessPath ?? "";
-        if (string.IsNullOrWhiteSpace(p)) return null;
-        
-        if (!File.Exists(p)) return null; 
-        try 
-        { 
-            using var s = File.OpenRead(p); 
-            using var h = SHA256.Create(); 
-            return Convert.ToHexString(h.ComputeHash(s)).ToLowerInvariant(); 
-        } 
-        catch 
-        { 
-            return null; 
-        } 
+
+    private static TicketCheckStatus ClassifyTicketFailure(string? reason)
+    {
+        var value = (reason ?? string.Empty).Trim();
+        if (string.IsNullOrWhiteSpace(value))
+            return TicketCheckStatus.BadResponse;
+
+        if (ContainsAny(value, "service unavailable", "timeout", "timed out", "network", "connection", "temporarily unavailable", "http", "dns"))
+            return TicketCheckStatus.ServiceUnavailable;
+        if (ContainsAny(value, "unauthorized", "forbidden", "401", "403", "auth"))
+            return TicketCheckStatus.Unauthorized;
+        if (ContainsAny(value, "hash", "allowlist", "unofficial", "not allowed", "rejected", "denied"))
+            return TicketCheckStatus.HashMismatch;
+
+        return TicketCheckStatus.BadResponse;
+    }
+
+    private static bool ContainsAny(string source, params string[] tokens)
+    {
+        for (var i = 0; i < tokens.Length; i++)
+        {
+            if (source.Contains(tokens[i], StringComparison.OrdinalIgnoreCase))
+                return true;
+        }
+
+        return false;
+    }
+
+    private static bool TryComputeExecutableHash(string? target, out string executablePath, out string hash)
+    {
+        executablePath = (target ?? string.Empty).Trim();
+        hash = string.Empty;
+
+        if (string.IsNullOrWhiteSpace(executablePath))
+            executablePath = Hashing.ResolveCurrentProcessExecutablePath() ?? string.Empty;
+
+        if (string.IsNullOrWhiteSpace(executablePath) || !File.Exists(executablePath))
+            return false;
+
+        try
+        {
+            hash = Hashing.Sha256File(executablePath);
+            return !string.IsNullOrWhiteSpace(hash);
+        }
+        catch
+        {
+            return false;
+        }
     }
     private void TryRestorePreAuthorizedTicketFromEnvironment() { }
 

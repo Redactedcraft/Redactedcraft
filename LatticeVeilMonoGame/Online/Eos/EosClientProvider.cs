@@ -155,9 +155,21 @@ public static class EosClientProvider
 
     private static bool IsLauncherOnlineAuthorized()
     {
+        static bool IsTrue(string? value)
+        {
+            return string.Equals(value, "1", StringComparison.Ordinal)
+                || string.Equals(value, "true", StringComparison.OrdinalIgnoreCase);
+        }
+
         var authorized = Environment.GetEnvironmentVariable("LV_LAUNCHER_ONLINE_AUTH");
-        return string.Equals(authorized, "1", StringComparison.Ordinal)
-            || string.Equals(authorized, "true", StringComparison.OrdinalIgnoreCase);
+        var official = Environment.GetEnvironmentVariable("LV_OFFICIAL_BUILD_VERIFIED");
+        var servicesOk = Environment.GetEnvironmentVariable("LV_ONLINE_SERVICES_OK");
+
+        var hasDetailedFlags = !string.IsNullOrWhiteSpace(official) || !string.IsNullOrWhiteSpace(servicesOk);
+        if (hasDetailedFlags)
+            return IsTrue(authorized) && IsTrue(official) && IsTrue(servicesOk);
+
+        return IsTrue(authorized);
     }
 
     private static bool HasVeilnetLogin()

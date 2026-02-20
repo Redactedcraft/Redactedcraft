@@ -165,6 +165,8 @@ public sealed class LauncherForm : Form
     private static readonly string VeilnetAuthPath = Path.Combine(VeilnetAuthDir, "veilnet_launcher_token.json");
     private bool _onlineFunctional;
     private bool _releaseHashAllowed;
+    private bool _officialBuildVerified;
+    private bool _onlineServicesReachable;
     private string _onlineStatusDetail = "Checking online services...";
     private string? _authTicket; // Store authentication ticket for claiming
 
@@ -181,11 +183,14 @@ public sealed class LauncherForm : Form
         public DateTime SavedAtUtc { get; set; } = DateTime.UtcNow;
     }
 
-    private readonly struct OnlineStartupStatus
+    private enum OnlineStartupState
     {
-        public bool OnlineFunctional { get; init; }
-        public bool ReleaseHashAllowed { get; init; }
-        public string Detail { get; init; }
+        Verified,
+        HashMismatch,
+        ServiceUnavailable,
+        Unauthorized,
+        BadResponse,
+        ComputeFailed
     }
 
     public LauncherForm(Logger log, PlayerProfile profile)
@@ -697,41 +702,81 @@ public sealed class LauncherForm : Form
         return DefaultGameHashesGetUrl;
     }
 
-    private string ResolveOfficialHashTargetPath()
+    private string ResolveCurrentExecutablePathForHashing()
     {
-        var fromSettings = (_settings.OfficialBuildHashFilePath ?? string.Empty).Trim();
-        if (!string.IsNullOrWhiteSpace(fromSettings))
-            return fromSettings;
+        var fromRuntime = Hashing.ResolveCurrentProcessExecutablePath();
+        if (!string.IsNullOrWhiteSpace(fromRuntime))
+            return fromRuntime;
 
         var baseDir = AppContext.BaseDirectory;
-        var candidates = new[]
-        {
-            Path.Combine(baseDir, "LatticeVeilMonoGame.exe"),
-            Path.Combine(baseDir, "LatticeVeil.exe")
-        };
+        return Path.Combine(baseDir, "LatticeVeilMonoGame.exe");
+    }
 
-        for (var i = 0; i < candidates.Length; i++)
+    private bool TryComputeCurrentExecutableHash(out string executablePath, out string hash, out string errorMessage)
+    {
+        executablePath = ResolveCurrentExecutablePathForHashing();
+        hash = string.Empty;
+        errorMessage = string.Empty;
+
+        if (string.IsNullOrWhiteSpace(executablePath) || !File.Exists(executablePath))
         {
-            if (File.Exists(candidates[i]))
-                return candidates[i];
+            errorMessage = $"Build verification executable not found: {executablePath}";
+            return false;
         }
 
-        var processPath = (Environment.ProcessPath ?? string.Empty).Trim();
-        if (!string.IsNullOrWhiteSpace(processPath))
-            return processPath;
+        try
+        {
+            hash = Hashing.Sha256File(executablePath);
+        }
+        catch (Exception ex)
+        {
+            errorMessage = $"Failed to compute local SHA256: {ex.Message}";
+            return false;
+        }
 
-        return Path.Combine(baseDir, "LatticeVeilMonoGame.exe");
+        if (string.IsNullOrWhiteSpace(hash))
+        {
+            errorMessage = "Computed local SHA256 is empty.";
+            return false;
+        }
+
+        _log.Info($"Executable path used for hash: {executablePath}");
+        _log.Info($"Computed EXE SHA256: {hash}");
+        return true;
+    }
+
+    private static OnlineStartupState MapVerifierFailureToStartupState(OfficialBuildVerifier.VerifyFailure failure)
+    {
+        return failure switch
+        {
+            OfficialBuildVerifier.VerifyFailure.HashMismatch => OnlineStartupState.HashMismatch,
+            OfficialBuildVerifier.VerifyFailure.Unauthorized => OnlineStartupState.Unauthorized,
+            OfficialBuildVerifier.VerifyFailure.ServiceUnavailable => OnlineStartupState.ServiceUnavailable,
+            OfficialBuildVerifier.VerifyFailure.BadResponse => OnlineStartupState.BadResponse,
+            OfficialBuildVerifier.VerifyFailure.ComputeFailed => OnlineStartupState.ComputeFailed,
+            OfficialBuildVerifier.VerifyFailure.MissingFile => OnlineStartupState.ComputeFailed,
+            _ => OnlineStartupState.ServiceUnavailable
+        };
     }
 
     private bool VerifyOfficialBuildForOnline()
     {
         var channel = Paths.IsDevBuild ? "dev" : "release";
-        var hashTargetPath = ResolveOfficialHashTargetPath();
+        if (!TryComputeCurrentExecutableHash(out var executablePath, out var localHash, out var hashError))
+        {
+            _log.Warn(hashError);
+            MessageBox.Show(
+                "Online services unavailable (cannot verify official build). Try again later.\n\nLAN/offline still available.",
+                "Build Verification Failed",
+                MessageBoxButtons.OK,
+                MessageBoxIcon.Warning);
+            return false;
+        }
 
         OfficialBuildVerifier.VerifyResult verify;
         try
         {
-            verify = _officialBuildVerifier.VerifyAsync(channel, hashTargetPath).GetAwaiter().GetResult();
+            verify = _officialBuildVerifier.VerifyHashAsync(channel, localHash).GetAwaiter().GetResult();
         }
         catch (Exception ex)
         {
@@ -754,16 +799,18 @@ public sealed class LauncherForm : Form
         {
             OfficialBuildVerifier.VerifyFailure.HashMismatch =>
                 "Unofficial build - online disabled. LAN/offline still available.",
-            OfficialBuildVerifier.VerifyFailure.FetchFailed =>
-                "Online services unavailable. LAN/offline still available.",
-            OfficialBuildVerifier.VerifyFailure.InvalidRemotePayload =>
-                "Online services unavailable. LAN/offline still available.",
+            OfficialBuildVerifier.VerifyFailure.ServiceUnavailable =>
+                "Online services unavailable (cannot verify official build). Try again later.\n\nLAN/offline still available.",
+            OfficialBuildVerifier.VerifyFailure.Unauthorized =>
+                "Online services unavailable (verification unauthorized).\n\nLAN/offline still available.",
+            OfficialBuildVerifier.VerifyFailure.BadResponse =>
+                "Online services unavailable (invalid verification response).\n\nLAN/offline still available.",
             _ => string.IsNullOrWhiteSpace(verify.Message)
                 ? "Online launch blocked by build verification. LAN/offline still available."
                 : $"{verify.Message}\n\nLAN/offline still available."
         };
 
-        _log.Warn($"Official hash verification failed ({verify.Failure}) channel={channel}: {verify.Message}");
+        _log.Warn($"Official hash verification failed ({verify.Failure}) channel={channel} exe={executablePath}: {verify.Message}");
         MessageBox.Show(
             message,
             "Official Build Verification",
@@ -1430,101 +1477,149 @@ public sealed class LauncherForm : Form
     {
         await Task.Run(async () =>
         {
-            var getExecutableHash = () =>
-            {
-                // Hash the running executable (single-EXE model). Do not rely on a fixed filename.
-                var exePath = Environment.ProcessPath ?? "";
+            var channel = Paths.IsDevBuild ? "dev" : "release";
+            SetProgress(20, "Computing local build hash...");
 
-                if (string.IsNullOrWhiteSpace(exePath) || !File.Exists(exePath))
-                    return "";
-                
-                using var stream = File.OpenRead(exePath);
-                using var sha256 = System.Security.Cryptography.SHA256.Create();
-                return Convert.ToHexString(sha256.ComputeHash(stream)).ToLowerInvariant();
-            };
-            
-            SetProgress(30, "Submitting hash for approval...");
-            var ourHash = getExecutableHash();
-            _log.Info($"Our hash: {ourHash}");
-            
+            if (!TryComputeCurrentExecutableHash(out var executablePath, out var localHash, out var hashError))
+            {
+                SetProgress(100, "Online verification unavailable");
+                ApplyOnlineStartupState(
+                    OnlineStartupState.ComputeFailed,
+                    "Online services unavailable (cannot verify official build). Try again later. LAN/offline still available.",
+                    officialBuildVerified: false,
+                    onlineServicesReachable: false);
+                _log.Warn($"Startup hash compute failed: {hashError}");
+                return;
+            }
+
+            SetProgress(45, $"Verifying official {channel} build...");
+            OfficialBuildVerifier.VerifyResult verify;
+            try
+            {
+                verify = await _officialBuildVerifier.VerifyHashAsync(channel, localHash).ConfigureAwait(false);
+            }
+            catch (Exception ex)
+            {
+                _log.Warn($"Official hash verification exception: {ex.Message}");
+                SetProgress(100, "Online verification unavailable");
+                ApplyOnlineStartupState(
+                    OnlineStartupState.ServiceUnavailable,
+                    "Online services unavailable (cannot verify official build). Try again later. LAN/offline still available.",
+                    officialBuildVerified: false,
+                    onlineServicesReachable: false);
+                return;
+            }
+
+            if (!verify.Ok)
+            {
+                var startupState = MapVerifierFailureToStartupState(verify.Failure);
+                var detail = startupState switch
+                {
+                    OnlineStartupState.HashMismatch => "Unofficial build - online disabled. LAN/offline still available.",
+                    OnlineStartupState.Unauthorized => "Online services unavailable (verification unauthorized). LAN/offline still available.",
+                    OnlineStartupState.BadResponse => "Online services unavailable (invalid verification response). LAN/offline still available.",
+                    _ => "Online services unavailable (cannot verify official build). Try again later. LAN/offline still available."
+                };
+
+                SetProgress(100, startupState == OnlineStartupState.HashMismatch ? "Unofficial build" : "Online verification unavailable");
+                ApplyOnlineStartupState(
+                    startupState,
+                    detail,
+                    officialBuildVerified: false,
+                    onlineServicesReachable: false);
+                _log.Warn($"Official hash verification failed ({verify.Failure}) channel={channel} exe={executablePath}: {verify.Message}");
+                return;
+            }
+
+            _log.Info($"Official hash verified for {channel} channel.");
+            SetProgress(70, "Official build verified. Checking online services...");
+
             try
             {
                 var gate = OnlineGateClient.GetOrCreate();
-                
-                // Admin-only: auto-submit hash if we have an admin token; otherwise, just verify.
-                var adminToken = (Environment.GetEnvironmentVariable("GATE_ADMIN_TOKEN")
-                                  ?? Environment.GetEnvironmentVariable("LV_GATE_ADMIN_TOKEN")
-                                  ?? "").Trim();
 
-                dynamic submitResult;
-                if (!string.IsNullOrWhiteSpace(adminToken))
+                var gateResult = gate.EnsureTicketWithStatus(_log, TimeSpan.FromSeconds(20), executablePath);
+                if (!gateResult.Ok)
                 {
-                    submitResult = await gate.SubmitHashForApprovalAsync(ourHash).ConfigureAwait(false);
-                }
-                else
-                {
-                    var verified = await gate.VerifyExecutableHashAsync(_log, target: null).ConfigureAwait(false);
-                    submitResult = new { Ok = verified, Message = verified ? "Verified" : "Not verified" };
-                }
-
-                var ok = false;
-                string message = "";
-                try
-                {
-                    ok = submitResult?.Ok == true;
-                    message = submitResult?.Message ?? "";
-                }
-                catch
-                {
-                    // If the response shape is unexpected, treat it as failure.
-                    ok = false;
-                }
-
-                if (ok)
-                {
-                    _log.Info(string.IsNullOrWhiteSpace(message) ? "Hash approved by gate!" : $"Hash approved by gate: {message}");
-                    SetProgress(50, "Hash approved by gate!");
-
-                    SetProgress(60, "Fetching EOS config...");
-                    string? ticket = null;
-                    gate.TryGetValidTicketForChildProcess(out ticket, out _);
-                    if (!EosRemoteConfigBootstrap.TryBootstrap(_log, gate, allowRetry: false, ticket))
+                    var startupState = MapTicketStatusToState(gateResult.Status);
+                    var detail = startupState switch
                     {
-                        throw new Exception("Failed to fetch EOS config from gate");
-                    }
+                        OnlineStartupState.HashMismatch => "Official build verified, but gate rejected this hash. Online temporarily unavailable. LAN/offline still available.",
+                        OnlineStartupState.Unauthorized => "Official build verified, but online services rejected authorization. LAN/offline still available.",
+                        OnlineStartupState.BadResponse => "Official build verified, but online services returned an invalid response. LAN/offline still available.",
+                        _ => "Official build verified, but online services are unavailable right now. Try again later. LAN/offline still available."
+                    };
 
-                    SetProgress(100, "Ready");
-                    _onlineFunctional = true;
-                    _releaseHashAllowed = true;
-                    _onlineStatusDetail = "Online ready";
-                    _log.Info("Online status: Functional and hash allowed - marking as ONLINE");
-                    ApplyOnlineStatusVisuals();
-                    BeginInvoke(new Action(() => SetLaunchButtonState(GetGameState())));
+                    SetProgress(100, "Online services unavailable");
+                    ApplyOnlineStartupState(
+                        startupState,
+                        detail,
+                        officialBuildVerified: true,
+                        onlineServicesReachable: false);
+                    _log.Warn($"Gate ticket check failed ({gateResult.Status}): {gateResult.Message}");
+                    return;
                 }
-                else
+
+                SetProgress(85, "Fetching EOS config...");
+                string? ticket = null;
+                gate.TryGetValidTicketForChildProcess(out ticket, out _);
+                if (!EosRemoteConfigBootstrap.TryBootstrap(_log, gate, allowRetry: false, ticket))
                 {
-                    _log.Error($"Hash rejected: {message}");
-                    SetProgress(100, "Hash rejected");
-                    _onlineFunctional = false;
-                    _releaseHashAllowed = false;
-                    _onlineStatusDetail = string.IsNullOrWhiteSpace(message) ? "Hash rejected" : message;
-                    _log.Info("Online status: Not functional - hash rejected - marking as OFFLINE");
-                    ApplyOnlineStatusVisuals();
-                    BeginInvoke(new Action(() => SetLaunchButtonState(GetGameState())));
+                    SetProgress(100, "Online services unavailable");
+                    ApplyOnlineStartupState(
+                        OnlineStartupState.ServiceUnavailable,
+                        "Official build verified, but EOS config bootstrap failed. Online services are unavailable right now. LAN/offline still available.",
+                        officialBuildVerified: true,
+                        onlineServicesReachable: false);
+                    return;
                 }
+
+                SetProgress(100, "Official online ready");
+                ApplyOnlineStartupState(
+                    OnlineStartupState.Verified,
+                    "Official build verified. Online services ready.",
+                    officialBuildVerified: true,
+                    onlineServicesReachable: true);
             }
             catch (Exception ex)
             {
                 _log.Error($"Error during startup checks: {ex.Message}");
-                SetProgress(100, "Error during startup checks");
-                _onlineFunctional = false;
-                _releaseHashAllowed = false;
-                _onlineStatusDetail = ex.Message;
-                _log.Info("Online status: Not functional - exception during checks - marking as OFFLINE");
-                ApplyOnlineStatusVisuals();
-                BeginInvoke(new Action(() => SetLaunchButtonState(GetGameState())));
+                SetProgress(100, "Online services unavailable");
+                ApplyOnlineStartupState(
+                    OnlineStartupState.ServiceUnavailable,
+                    "Official build verified, but online services are unavailable right now. Try again later. LAN/offline still available.",
+                    officialBuildVerified: true,
+                    onlineServicesReachable: false);
             }
         });
+    }
+
+    private void ApplyOnlineStartupState(
+        OnlineStartupState state,
+        string detail,
+        bool officialBuildVerified,
+        bool onlineServicesReachable)
+    {
+        _officialBuildVerified = officialBuildVerified;
+        _onlineServicesReachable = onlineServicesReachable;
+        _releaseHashAllowed = officialBuildVerified;
+        _onlineFunctional = officialBuildVerified && onlineServicesReachable;
+        _onlineStatusDetail = detail;
+        _log.Info($"Online startup state={state}; official={_officialBuildVerified}; services={_onlineServicesReachable}; functional={_onlineFunctional}; detail={_onlineStatusDetail}");
+        ApplyOnlineStatusVisuals();
+        BeginInvoke(new Action(() => SetLaunchButtonState(GetGameState())));
+    }
+
+    private static OnlineStartupState MapTicketStatusToState(OnlineGateClient.TicketCheckStatus status)
+    {
+        return status switch
+        {
+            OnlineGateClient.TicketCheckStatus.HashMismatch => OnlineStartupState.HashMismatch,
+            OnlineGateClient.TicketCheckStatus.Unauthorized => OnlineStartupState.Unauthorized,
+            OnlineGateClient.TicketCheckStatus.BadResponse => OnlineStartupState.BadResponse,
+            OnlineGateClient.TicketCheckStatus.ServiceUnavailable => OnlineStartupState.ServiceUnavailable,
+            _ => OnlineStartupState.ServiceUnavailable
+        };
     }
 
     private static bool IsGameRunning()
@@ -2091,8 +2186,11 @@ public sealed class LauncherForm : Form
         // Verify hash was approved before allowing launch
         if (requireHashApproval && !_releaseHashAllowed)
         {
-            MessageBox.Show("Cannot launch game: Hash verification failed. Please ensure your build is approved.", "Hash Verification Failed", MessageBoxButtons.OK, MessageBoxIcon.Error);
-            _log.Warn("Launch blocked: Hash not approved");
+            var reason = string.IsNullOrWhiteSpace(_onlineStatusDetail)
+                ? "Online launch is unavailable. LAN/offline is still available."
+                : _onlineStatusDetail;
+            MessageBox.Show(reason, "Online Unavailable", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            _log.Warn($"Launch blocked: official build not verified. reason={reason}");
             return;
         }
         
@@ -2152,15 +2250,12 @@ public sealed class LauncherForm : Form
             
             // Set environment variables for EOS authorization
             startInfo.EnvironmentVariables["LV_PROCESS_KIND"] = "game";
-            if (_onlineFunctional && _releaseHashAllowed)
-            {
-                startInfo.EnvironmentVariables["LV_LAUNCHER_ONLINE_AUTH"] = "1";
-                _log.Info("Set EOS authorization environment variables for game process");
-            }
-            else
-            {
-                startInfo.EnvironmentVariables["LV_LAUNCHER_ONLINE_AUTH"] = "0";
-            }
+            var officialVerifiedForRun = !launchingOffline && _officialBuildVerified;
+            var servicesReachableForRun = !launchingOffline && _onlineServicesReachable;
+            startInfo.EnvironmentVariables["LV_OFFICIAL_BUILD_VERIFIED"] = officialVerifiedForRun ? "1" : "0";
+            startInfo.EnvironmentVariables["LV_ONLINE_SERVICES_OK"] = servicesReachableForRun ? "1" : "0";
+            startInfo.EnvironmentVariables["LV_LAUNCHER_ONLINE_AUTH"] =
+                (officialVerifiedForRun && servicesReachableForRun) ? "1" : "0";
 
             var veilnetUrl = (Environment.GetEnvironmentVariable("LV_VEILNET_URL") ?? string.Empty).Trim();
             if (string.IsNullOrWhiteSpace(veilnetUrl))
