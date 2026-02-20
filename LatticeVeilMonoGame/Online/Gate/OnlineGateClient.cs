@@ -755,7 +755,8 @@ public class OnlineGateClient
 
         if (isSupabaseFunctions)
         {
-            ApplyTicketFunctionHeaders(request, accessToken, anonKey);
+            var authAttached = ApplyTicketFunctionHeaders(request, accessToken, anonKey);
+            log.Info($"[gate] ticket headers apikeyAttached={!string.IsNullOrWhiteSpace(anonKey)} authAttached={authAttached}");
         }
 
         try
@@ -904,6 +905,16 @@ public class OnlineGateClient
 
         if (statusCode is HttpStatusCode.Unauthorized or HttpStatusCode.Forbidden)
         {
+            if (ContainsAny(bodyText, "invalid_auth_token"))
+            {
+                return new TicketCheckResult
+                {
+                    Ok = false,
+                    Status = TicketCheckStatus.Unauthorized,
+                    Message = "Online ticket auth token invalid (launcher token missing/expired)."
+                };
+            }
+
             return new TicketCheckResult
             {
                 Ok = false,
@@ -980,6 +991,16 @@ public class OnlineGateClient
 
         if (ContainsAny(normalized, "unauthorized", "forbidden", "401", "403", "auth"))
         {
+            if (ContainsAny(normalized, "invalid_auth_token"))
+            {
+                return new TicketCheckResult
+                {
+                    Ok = false,
+                    Status = TicketCheckStatus.Unauthorized,
+                    Message = "Online ticket auth token invalid (launcher token missing/expired)."
+                };
+            }
+
             return new TicketCheckResult
             {
                 Ok = false,
@@ -1052,14 +1073,17 @@ public class OnlineGateClient
         };
     }
 
-    private static void ApplyTicketFunctionHeaders(HttpRequestMessage request, string accessToken, string anonKey)
+    private static bool ApplyTicketFunctionHeaders(HttpRequestMessage request, string accessToken, string anonKey)
     {
         if (!string.IsNullOrWhiteSpace(anonKey))
             request.Headers.TryAddWithoutValidation("apikey", anonKey);
 
-        var bearer = !string.IsNullOrWhiteSpace(accessToken) ? accessToken : anonKey;
-        if (!string.IsNullOrWhiteSpace(bearer))
-            request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", bearer);
+        var token = (accessToken ?? string.Empty).Trim();
+        if (!IsUsableAccessToken(token))
+            return false;
+
+        request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", token);
+        return true;
     }
 
     private static List<string> ResolveTicketEndpointCandidates(string baseUrl)
@@ -1109,6 +1133,15 @@ public class OnlineGateClient
     private static string ResolveVeilnetAccessToken()
     {
         return (Environment.GetEnvironmentVariable("LV_VEILNET_ACCESS_TOKEN") ?? string.Empty).Trim();
+    }
+
+    private static bool IsUsableAccessToken(string token)
+    {
+        if (string.IsNullOrWhiteSpace(token))
+            return false;
+
+        return !string.Equals(token, "null", StringComparison.OrdinalIgnoreCase)
+            && !string.Equals(token, "undefined", StringComparison.OrdinalIgnoreCase);
     }
 
     private static string TrimSnippet(string value, int maxLen)
