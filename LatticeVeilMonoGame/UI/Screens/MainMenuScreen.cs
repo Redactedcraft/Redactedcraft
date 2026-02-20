@@ -9,11 +9,19 @@ using LatticeVeilMonoGame.Online.Eos;
 using LatticeVeilMonoGame.Online.Gate;
 using LatticeVeilMonoGame.UI;
 using LatticeVeilMonoGame.UI.Screens;
+using WinForms = System.Windows.Forms;
 
 namespace LatticeVeilMonoGame.UI.Screens;
 
 public sealed class MainMenuScreen : IScreen
 {
+    private enum MultiplayerDialogAction
+    {
+        Retry,
+        GoOffline,
+        Close
+    }
+
     private readonly MenuStack _menus;
     private readonly AssetLoader _assets;
     private readonly PixelFont _font;
@@ -256,22 +264,62 @@ public sealed class MainMenuScreen : IScreen
 
     private void OpenMultiplayer()
     {
-        // Allow the button to be clickable while EOS is still connecting.
-        _eosClient ??= EosClientProvider.Current;
-        if (_eosClient == null)
-            _eosClient = EosClientProvider.GetOrCreate(_log, "deviceid", allowRetry: true);
+        if (_isOffline)
+        {
+            _menus.Push(new MultiplayerScreen(_menus, _assets, _font, _pixel, _log, _profile, _graphics, null), _viewport);
+            return;
+        }
 
-        _eosClient?.Tick();
-        var snapshot = EosRuntimeStatus.Evaluate(_eosClient);
-        if (snapshot.Reason != EosRuntimeReason.Ready)
+        while (true)
+        {
+            // Allow the button to be clickable while EOS is still connecting.
+            _eosClient ??= EosClientProvider.Current;
+            var providerReturnedNull = false;
+            if (_eosClient == null)
+            {
+                _eosClient = EosClientProvider.GetOrCreate(_log, "deviceid", allowRetry: true);
+                providerReturnedNull = _eosClient == null;
+            }
+
+            _eosClient?.Tick();
+            var snapshot = EosRuntimeStatus.Evaluate(_eosClient);
+
+            _log.Info(
+                $"Main menu multiplayer open: reason={snapshot.Reason}; status={snapshot.StatusText}; " +
+                $"configSource={EosRuntimeStatus.DescribeConfigSource()}; providerNull={providerReturnedNull}; clientNull={_eosClient == null}");
+
+            if (snapshot.Reason is EosRuntimeReason.Ready or EosRuntimeReason.Connecting)
+            {
+                _menus.Push(new MultiplayerScreen(_menus, _assets, _font, _pixel, _log, _profile, _graphics, _eosClient), _viewport);
+                return;
+            }
+
             RefreshMultiplayerAvailability(forceLog: false);
+            var action = ShowMultiplayerUnavailableDialog(snapshot, providerReturnedNull);
+            if (action == MultiplayerDialogAction.Retry)
+            {
+                _eosClient = EosClientProvider.GetOrCreate(_log, "deviceid", allowRetry: true);
+                _eosClient?.Tick();
+                continue;
+            }
 
-        _menus.Push(new MultiplayerScreen(_menus, _assets, _font, _pixel, _log, _profile, _graphics, _eosClient), _viewport);
+            if (action == MultiplayerDialogAction.GoOffline)
+            {
+                Environment.SetEnvironmentVariable("EOS_DISABLED", "1");
+                Environment.SetEnvironmentVariable("LV_LAUNCHER_ONLINE_AUTH", "0");
+                Environment.SetEnvironmentVariable("LV_OFFICIAL_BUILD_VERIFIED", "0");
+                Environment.SetEnvironmentVariable("LV_ONLINE_SERVICES_OK", "0");
+                _log.Warn("Main menu: user switched to offline multiplayer fallback.");
+                _menus.Push(new MultiplayerScreen(_menus, _assets, _font, _pixel, _log, _profile, _graphics, null), _viewport);
+            }
+
+            return;
+        }
     }
 
     private void RefreshMultiplayerAvailability(bool forceLog)
     {
-        var available = ComputeMultiplayerAvailability(out var reason);
+        var available = ComputeMultiplayerAvailability(out var reason, out var snapshot, out var providerReturnedNull);
         if (!forceLog
             && available == _multiplayerAvailable
             && string.Equals(reason, _multiplayerDisabledReason, StringComparison.Ordinal))
@@ -281,15 +329,23 @@ public sealed class MainMenuScreen : IScreen
 
         _multiplayerAvailable = available;
         _multiplayerDisabledReason = reason;
-        _multiBtn.Enabled = available;
-        _multiBtn.ForceDisabledStyle = !available;
+        _multiBtn.Enabled = true;
+        _multiBtn.ForceDisabledStyle = false;
 
-        if (forceLog || !available)
-            _log.Info(available ? "Main menu multiplayer enabled." : $"Main menu multiplayer disabled: {reason}");
+        if (forceLog || !available || snapshot.Reason != EosRuntimeReason.Ready || providerReturnedNull)
+        {
+            _log.Info(
+                $"Main menu multiplayer state: available={available}; reason={snapshot.Reason}; status={snapshot.StatusText}; " +
+                $"configSource={EosRuntimeStatus.DescribeConfigSource()}; providerNull={providerReturnedNull}; " +
+                $"clientNull={_eosClient == null}; disabledReason={reason}");
+        }
     }
 
-    private bool ComputeMultiplayerAvailability(out string reason)
+    private bool ComputeMultiplayerAvailability(out string reason, out EosRuntimeSnapshot snapshot, out bool providerReturnedNull)
     {
+        providerReturnedNull = false;
+        snapshot = EosRuntimeStatus.Evaluate(_eosClient);
+
         if (_isOffline)
         {
             reason = "Offline mode: LAN only";
@@ -298,10 +354,13 @@ public sealed class MainMenuScreen : IScreen
 
         _eosClient ??= EosClientProvider.Current;
         if (_eosClient == null)
+        {
             _eosClient = EosClientProvider.GetOrCreate(_log, "deviceid", allowRetry: true);
+            providerReturnedNull = _eosClient == null;
+        }
 
         _eosClient?.Tick();
-        var snapshot = EosRuntimeStatus.Evaluate(_eosClient);
+        snapshot = EosRuntimeStatus.Evaluate(_eosClient);
         if (snapshot.Reason == EosRuntimeReason.Ready)
         {
             reason = string.Empty;
@@ -322,9 +381,127 @@ public sealed class MainMenuScreen : IScreen
             EosRuntimeReason.ConfigMissing => "EOS config missing: Multiplayer disabled",
             EosRuntimeReason.DisabledByEnvironment => "EOS disabled by environment: Multiplayer disabled",
             EosRuntimeReason.SdkNotCompiled => "EOS SDK not compiled: Multiplayer disabled",
+            EosRuntimeReason.ClientUnavailable => BuildClientUnavailableReason(providerReturnedNull),
             _ => "EOS unavailable: Multiplayer disabled"
         };
         return false;
+    }
+
+    private static bool IsTruthy(string? value)
+    {
+        return string.Equals(value, "1", StringComparison.Ordinal)
+            || string.Equals(value, "true", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static string BuildClientUnavailableReason(bool providerReturnedNull)
+    {
+        if (providerReturnedNull)
+        {
+            var processKind = (Environment.GetEnvironmentVariable("LV_PROCESS_KIND") ?? string.Empty).Trim();
+            if (string.Equals(processKind, "game", StringComparison.OrdinalIgnoreCase))
+            {
+                var launcherAuth = IsTruthy(Environment.GetEnvironmentVariable("LV_LAUNCHER_ONLINE_AUTH"));
+                var official = IsTruthy(Environment.GetEnvironmentVariable("LV_OFFICIAL_BUILD_VERIFIED"));
+                var servicesOk = IsTruthy(Environment.GetEnvironmentVariable("LV_ONLINE_SERVICES_OK"));
+                var gateTicket = (Environment.GetEnvironmentVariable("LV_GATE_TICKET") ?? string.Empty).Trim();
+                var accessToken = (Environment.GetEnvironmentVariable("LV_VEILNET_ACCESS_TOKEN") ?? string.Empty).Trim();
+
+                if (!launcherAuth)
+                    return "Launcher did not authorize online mode for this session.";
+                if (!official)
+                    return "Official build verification flag is missing.";
+                if (!servicesOk)
+                    return "Online services flag is missing.";
+                if (string.IsNullOrWhiteSpace(gateTicket))
+                    return "Gate ticket is missing.";
+                if (string.IsNullOrWhiteSpace(accessToken))
+                    return "Veilnet access token is missing. Re-link in launcher.";
+            }
+
+            return "EOS client unavailable. Retry initialization from launcher.";
+        }
+
+        return "EOS client unavailable: Multiplayer disabled";
+    }
+
+    private MultiplayerDialogAction ShowMultiplayerUnavailableDialog(EosRuntimeSnapshot snapshot, bool providerReturnedNull)
+    {
+        var message = snapshot.Reason switch
+        {
+            EosRuntimeReason.ConfigMissing =>
+                $"EOS config is missing.\n\nConfig source: {EosRuntimeStatus.DescribeConfigSource()}\n" +
+                "Ensure eos.public.json is present or EOS_* public env vars are set.",
+            EosRuntimeReason.SdkNotCompiled =>
+                "EOS SDK is not compiled into this build.\nRebuild with EOS_SDK enabled and EOSSDK-Win64-Shipping.dll present.",
+            EosRuntimeReason.DisabledByEnvironment =>
+                "EOS is disabled by environment flags (EOS_DISABLED / EOS_DISABLE).",
+            EosRuntimeReason.ClientUnavailable =>
+                BuildClientUnavailableReason(providerReturnedNull),
+            _ =>
+                $"EOS is not ready.\nStatus: {snapshot.StatusText}\nReason: {snapshot.Reason}"
+        };
+
+        using var form = new WinForms.Form();
+        form.Text = "Multiplayer Unavailable";
+        form.StartPosition = WinForms.FormStartPosition.CenterScreen;
+        form.FormBorderStyle = WinForms.FormBorderStyle.FixedDialog;
+        form.MinimizeBox = false;
+        form.MaximizeBox = false;
+        form.ShowInTaskbar = false;
+        form.Width = 560;
+        form.Height = 280;
+
+        var label = new WinForms.Label
+        {
+            Left = 16,
+            Top = 16,
+            Width = 520,
+            Height = 160,
+            Text = message,
+            AutoSize = false
+        };
+
+        var retryButton = new WinForms.Button
+        {
+            Text = "Retry",
+            Left = 110,
+            Top = 190,
+            Width = 100,
+            DialogResult = WinForms.DialogResult.Retry
+        };
+
+        var offlineButton = new WinForms.Button
+        {
+            Text = "Go Offline",
+            Left = 225,
+            Top = 190,
+            Width = 120,
+            DialogResult = WinForms.DialogResult.Yes
+        };
+
+        var closeButton = new WinForms.Button
+        {
+            Text = "Close",
+            Left = 360,
+            Top = 190,
+            Width = 100,
+            DialogResult = WinForms.DialogResult.Cancel
+        };
+
+        form.Controls.Add(label);
+        form.Controls.Add(retryButton);
+        form.Controls.Add(offlineButton);
+        form.Controls.Add(closeButton);
+        form.AcceptButton = retryButton;
+        form.CancelButton = closeButton;
+
+        var result = form.ShowDialog();
+        return result switch
+        {
+            WinForms.DialogResult.Retry => MultiplayerDialogAction.Retry,
+            WinForms.DialogResult.Yes => MultiplayerDialogAction.GoOffline,
+            _ => MultiplayerDialogAction.Close
+        };
     }
 
     private void UpdateAssetStatus(double now)

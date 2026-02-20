@@ -160,6 +160,8 @@ public sealed class EosConfig
 
             if (!TryReadJson(candidate.Path, out PublicEosConfigFile? parsed, out var parseError) || parsed == null)
                 throw new InvalidDataException($"Invalid EOS public config at {candidate.DisplayPath}: {parseError}");
+            if (!HasRequiredPublicFields(parsed))
+                continue;
 
             source = candidate.DisplayPath;
             return parsed;
@@ -177,10 +179,10 @@ public sealed class EosConfig
         var deploymentId = GetEnv("EOS_DEPLOYMENT_ID");
         var clientId = GetEnv("EOS_CLIENT_ID");
 
-        if (string.IsNullOrWhiteSpace(productId)
-            || string.IsNullOrWhiteSpace(sandboxId)
-            || string.IsNullOrWhiteSpace(deploymentId)
-            || string.IsNullOrWhiteSpace(clientId))
+        if (IsMissingRequiredPublicValue(productId)
+            || IsMissingRequiredPublicValue(sandboxId)
+            || IsMissingRequiredPublicValue(deploymentId)
+            || IsMissingRequiredPublicValue(clientId))
         {
             return false;
         }
@@ -234,10 +236,10 @@ public sealed class EosConfig
     private static List<string> GetMissingRequiredPublicFields(EosConfig config)
     {
         var missing = new List<string>();
-        if (string.IsNullOrWhiteSpace(config.ProductId)) missing.Add("ProductId");
-        if (string.IsNullOrWhiteSpace(config.SandboxId)) missing.Add("SandboxId");
-        if (string.IsNullOrWhiteSpace(config.DeploymentId)) missing.Add("DeploymentId");
-        if (string.IsNullOrWhiteSpace(config.ClientId)) missing.Add("ClientId");
+        if (IsMissingRequiredPublicValue(config.ProductId)) missing.Add("ProductId");
+        if (IsMissingRequiredPublicValue(config.SandboxId)) missing.Add("SandboxId");
+        if (IsMissingRequiredPublicValue(config.DeploymentId)) missing.Add("DeploymentId");
+        if (IsMissingRequiredPublicValue(config.ClientId)) missing.Add("ClientId");
         return missing;
     }
 
@@ -280,12 +282,14 @@ public sealed class EosConfig
     {
         yield return BuildCandidate(Path.Combine(AppContext.BaseDirectory, "eos.public.json"), "AppBase/eos.public.json");
         yield return BuildCandidate(Path.Combine(AppContext.BaseDirectory, "eos", "eos.public.json"), "AppBase/eos/eos.public.json");
+        yield return BuildCandidate(Path.Combine(AppContext.BaseDirectory, "Defaults", "eos.public.json"), "AppBase/Defaults/eos.public.json");
 
         var currentDir = SafeGetCurrentDirectory();
         if (!string.IsNullOrWhiteSpace(currentDir))
         {
             yield return BuildCandidate(Path.Combine(currentDir, "eos.public.json"), "CWD/eos.public.json");
             yield return BuildCandidate(Path.Combine(currentDir, "eos", "eos.public.json"), "CWD/eos/eos.public.json");
+            yield return BuildCandidate(Path.Combine(currentDir, "Defaults", "eos.public.json"), "CWD/Defaults/eos.public.json");
         }
 
         var projectRoot = ResolveProjectRoot();
@@ -293,6 +297,8 @@ public sealed class EosConfig
         {
             yield return BuildCandidate(Path.Combine(projectRoot, "eos", "eos.public.json"), "ProjectRoot/eos/eos.public.json");
             yield return BuildCandidate(Path.Combine(projectRoot, "eos.public.json"), "ProjectRoot/eos.public.json");
+            yield return BuildCandidate(Path.Combine(projectRoot, "LatticeVeilMonoGame", "Defaults", "eos.public.json"), "ProjectRoot/LatticeVeilMonoGame/Defaults/eos.public.json");
+            yield return BuildCandidate(Path.Combine(projectRoot, "Defaults", "eos.public.json"), "ProjectRoot/Defaults/eos.public.json");
         }
     }
 
@@ -401,6 +407,30 @@ public sealed class EosConfig
             return "***";
 
         return trimmed.Substring(0, 3) + "***" + trimmed.Substring(trimmed.Length - 2);
+    }
+
+    private static bool HasRequiredPublicFields(PublicEosConfigFile config)
+    {
+        return !IsMissingRequiredPublicValue(config.ProductId)
+            && !IsMissingRequiredPublicValue(config.SandboxId)
+            && !IsMissingRequiredPublicValue(config.DeploymentId)
+            && !IsMissingRequiredPublicValue(config.ClientId);
+    }
+
+    private static bool IsMissingRequiredPublicValue(string? value)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+            return true;
+
+        var normalized = value.Trim();
+        if (normalized.StartsWith("REPLACE_WITH_", StringComparison.OrdinalIgnoreCase))
+            return true;
+        if (normalized.StartsWith("YOUR_", StringComparison.OrdinalIgnoreCase))
+            return true;
+        if (string.Equals(normalized, "CHANGEME", StringComparison.OrdinalIgnoreCase))
+            return true;
+
+        return false;
     }
 
     private sealed class PublicEosConfigFile

@@ -102,6 +102,7 @@
 
   <ItemGroup>
     <None Include="Defaults/**" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="Never" />
+    <None Include="..\eos\eos.public.json" Link="eos.public.json" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" Condition="Exists('..\eos\eos.public.json')" />
   </ItemGroup>
 
 </Project>

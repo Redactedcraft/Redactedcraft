@@ -2345,6 +2345,9 @@ public sealed class LauncherForm : Form
             if (!launchingOffline && !string.IsNullOrWhiteSpace(veilnetToken))
                 startInfo.EnvironmentVariables["LV_VEILNET_ACCESS_TOKEN"] = veilnetToken;
 
+            if (!launchingOffline)
+                CopyPublicEosEnvironmentToChildProcess(startInfo);
+
             if (!launchingOffline
                 && officialVerifiedForRun
                 && servicesReachableForRun
@@ -2375,6 +2378,27 @@ public sealed class LauncherForm : Form
         }
 
         SetLaunchButtonState(GetGameState());
+    }
+
+    private static void CopyPublicEosEnvironmentToChildProcess(ProcessStartInfo startInfo)
+    {
+        var keys = new[]
+        {
+            "EOS_PRODUCT_ID",
+            "EOS_SANDBOX_ID",
+            "EOS_DEPLOYMENT_ID",
+            "EOS_CLIENT_ID",
+            "EOS_PRODUCT_NAME",
+            "EOS_PRODUCT_VERSION"
+        };
+
+        for (var i = 0; i < keys.Length; i++)
+        {
+            var key = keys[i];
+            var value = (Environment.GetEnvironmentVariable(key) ?? string.Empty).Trim();
+            if (!string.IsNullOrWhiteSpace(value))
+                startInfo.EnvironmentVariables[key] = value;
+        }
     }
 
     private void ConfirmAndKillGame()
