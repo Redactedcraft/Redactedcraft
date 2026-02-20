@@ -375,8 +375,6 @@ public sealed class GameWorldScreen : IScreen, IMouseCaptureScreen
     private const string HostJoinLinkPrefix = "latticeveil://join/";
     private const string JoinApproveActionPrefix = "join-approve:";
     private const string JoinDeclineActionPrefix = "join-decline:";
-    private const string WorldInviteAcceptPrefix = "wia:";
-    private const string WorldInviteRejectPrefix = "wir:";
     private static readonly HashSet<string> CheatsDisabledAllowedCommands = new(StringComparer.OrdinalIgnoreCase)
     {
         "help",
@@ -534,10 +532,9 @@ public sealed class GameWorldScreen : IScreen, IMouseCaptureScreen
         LayoutStructureFinderGui();
     }
 
-    private DateTime _nextWorldInvitePollUtc = DateTime.MinValue;
     private DateTime _nextSessionHeartbeatUtc = DateTime.MinValue;
-    private HashSet<string> _notifiedInviteKeys = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, string> _usernameCache = new(StringComparer.OrdinalIgnoreCase);
+    private readonly Dictionary<string, string> _pendingJoinLookup = new(StringComparer.OrdinalIgnoreCase);
     private HashSet<string> _whitelist = new(StringComparer.OrdinalIgnoreCase);
     private bool _sessionHeartbeatInFlight;
     private int _sessionHeartbeatTickCount;
@@ -592,13 +589,7 @@ public sealed class GameWorldScreen : IScreen, IMouseCaptureScreen
             _fpsTimer = 0;
         }
 
-        if (DateTime.UtcNow >= _nextWorldInvitePollUtc)
-        {
-            _nextWorldInvitePollUtc = DateTime.UtcNow.AddSeconds(5);
-            _ = PollWorldInvitesAsync();
-        }
-
-        TickHostedOnlineSessionHeartbeat();
+        TickHostedOnlineLobbyHeartbeat();
 
         if (_commandStatusTimer > 0f)
         {
@@ -1081,64 +1072,7 @@ public sealed class GameWorldScreen : IScreen, IMouseCaptureScreen
         return PlayerProfile.ShortId(puid);
     }
 
-    private async Task PollWorldInvitesAsync()
-    {
-        var result = await _onlineGate.GetMyWorldInvitesAsync();
-        if (result.Ok)
-        {
-            foreach (var invite in result.Incoming)
-            {
-                var senderUserId = (invite.SenderProductUserId ?? string.Empty).Trim();
-                var senderJoinTarget = (invite.SenderJoinTarget ?? string.Empty).Trim();
-                var senderName = await ResolveUsernameAsync(senderUserId);
-
-                if (invite.Status == "accepted")
-                {
-                    if (_lanSession is EosP2PHostSession hostSession)
-                    {
-                        var approvedPuid = string.IsNullOrWhiteSpace(senderJoinTarget) ? senderUserId : senderJoinTarget;
-                        hostSession.PreApprovePuid(approvedPuid);
-                    }
-                    continue;
-                }
-
-                if (invite.Status != "pending") continue;
-
-                // Case-insensitive whitelist check for both name and PUID
-                var isWhitelisted = _whitelist.Any(w => 
-                    string.Equals(w, senderName, StringComparison.OrdinalIgnoreCase) || 
-                    string.Equals(w, senderUserId, StringComparison.OrdinalIgnoreCase) ||
-                    (!string.IsNullOrWhiteSpace(senderJoinTarget) && string.Equals(w, senderJoinTarget, StringComparison.OrdinalIgnoreCase)));
-
-                if (isWhitelisted)
-                {
-                    _log.Info($"Auto-accepting whitelisted friend: {senderName} ({senderUserId})");
-                    _ = _onlineGate.RespondToWorldInviteAsync(senderUserId, "accepted");
-                    if (_lanSession is EosP2PHostSession hostSession)
-                    {
-                        var approvedPuid = string.IsNullOrWhiteSpace(senderJoinTarget) ? senderUserId : senderJoinTarget;
-                        hostSession.PreApprovePuid(approvedPuid);
-                    }
-                    continue;
-                }
-                
-                var key = $"{senderUserId}:{invite.CreatedUtc.Ticks}";
-                if (_notifiedInviteKeys.Add(key))
-                {
-                    var nameToShow = senderName;
-                    AddChatLine($"{nameToShow} wants to join! Accept?", isSystem: true,
-                        actionLabel: "ACCEPT",
-                        customActionToken: WorldInviteAcceptPrefix + senderUserId,
-                        customActionStatus: $"{nameToShow} joined.",
-                        actionLabel2: "REJECT",
-                        customActionToken2: WorldInviteRejectPrefix + senderUserId,
-                        customActionStatus2: $"{nameToShow} rejected.");
-                }
-            }
-        }
-    }
-
-    private void TickHostedOnlineSessionHeartbeat()
+    private void TickHostedOnlineLobbyHeartbeat()
     {
         if (_lanSession is not EosP2PHostSession || !_lanSession.IsConnected)
             return;
@@ -1148,8 +1082,7 @@ public sealed class GameWorldScreen : IScreen, IMouseCaptureScreen
             return;
 
         var eos = EnsureEosClient();
-        var hostPuid = (eos?.LocalProductUserId ?? string.Empty).Trim();
-        if (string.IsNullOrWhiteSpace(hostPuid))
+        if (eos == null || !eos.IsLoggedIn)
             return;
 
         var worldName = (_meta?.Name ?? _world?.Meta?.Name ?? "WORLD").Trim();
@@ -1157,59 +1090,58 @@ public sealed class GameWorldScreen : IScreen, IMouseCaptureScreen
             worldName = "WORLD";
 
         var gameMode = (_meta?.CurrentWorldGameMode ?? _gameMode).ToString();
-        var displayName = _profile.GetDisplayUsername();
+        var displayName = (_profile.GetDisplayUsername() ?? string.Empty).Trim();
+        if (string.IsNullOrWhiteSpace(displayName))
+            displayName = "Host";
+        var worldId = (_meta?.WorldId ?? _world?.Meta?.WorldId ?? string.Empty).Trim();
         var playerCount = Math.Max(1, _playerNames.Count);
         const int maxPlayers = 8;
         var isInWorld = _hasLoadedWorld && !_worldSyncInProgress && !_isClosing;
-        var status = isInWorld ? $"Hosting {worldName}" : "Online";
 
         _sessionHeartbeatInFlight = true;
         var tick = ++_sessionHeartbeatTickCount;
-        _log.Info($"HOST_HEARTBEAT tick={tick} world={worldName} inWorld={isInWorld} players={playerCount}");
-        _ = SendHostedOnlineSessionHeartbeatAsync(
+        _log.Info($"EOS_LOBBY_HEARTBEAT tick={tick} world={worldName} inWorld={isInWorld} players={playerCount}");
+        _ = SendHostedOnlineLobbyHeartbeatAsync(
             tick,
-            hostPuid,
+            eos,
             displayName,
             worldName,
             gameMode,
-            status,
             isInWorld,
             playerCount,
-            maxPlayers);
+            maxPlayers,
+            worldId);
     }
 
-    private async Task SendHostedOnlineSessionHeartbeatAsync(
+    private async Task SendHostedOnlineLobbyHeartbeatAsync(
         int tick,
-        string hostPuid,
+        EosClient eos,
         string displayName,
         string worldName,
         string gameMode,
-        string status,
         bool isInWorld,
         int playerCount,
-        int maxPlayers)
+        int maxPlayers,
+        string worldId)
     {
         try
         {
-            var ok = await _onlineGate.HeartbeatPresenceAsync(
-                productUserId: hostPuid,
-                displayName: displayName,
-                isHosting: true,
+            var ok = await eos.StartOrUpdateHostedLobbyAsync(
                 worldName: worldName,
                 gameMode: gameMode,
-                joinTarget: hostPuid,
-                status: status,
-                isInWorld: isInWorld,
                 cheats: false,
                 playerCount: playerCount,
-                maxPlayers: maxPlayers);
+                maxPlayers: maxPlayers,
+                isInWorld: isInWorld,
+                hostUsername: displayName,
+                worldId: worldId);
 
-            _log.Info($"HOST_HEARTBEAT_RESULT tick={tick} ok={ok}");
+            _log.Info($"EOS_LOBBY_HEARTBEAT_RESULT tick={tick} ok={ok}");
             _nextSessionHeartbeatUtc = DateTime.UtcNow.AddSeconds(ok ? 6 : 10);
         }
         catch (Exception ex)
         {
-            _log.Warn($"HOST_HEARTBEAT_RESULT tick={tick} ok=false error={ex.Message}");
+            _log.Warn($"EOS_LOBBY_HEARTBEAT_RESULT tick={tick} ok=false error={ex.Message}");
             _nextSessionHeartbeatUtc = DateTime.UtcNow.AddSeconds(10);
         }
         finally
@@ -4761,9 +4693,7 @@ public sealed class GameWorldScreen : IScreen, IMouseCaptureScreen
         _chunkGenerationInFlight.Clear();
         if (_lanSession is EosP2PHostSession)
         {
-            var hostPuid = (EnsureEosClient()?.LocalProductUserId ?? string.Empty).Trim();
-            _log.Info($"HOST_STOP requested hasProductUserId={!string.IsNullOrWhiteSpace(hostPuid)}");
-            _ = _onlineGate.StopHostingAsync(hostPuid);
+            _log.Info("HOST_STOP requested transport=EOS_LOBBY_P2P");
             WorldHostBootstrap.TryClearHostingPresence(_log, EnsureEosClient());
         }
         _lanSession?.Dispose();
@@ -5356,6 +5286,7 @@ public sealed class GameWorldScreen : IScreen, IMouseCaptureScreen
             if (_whitelist.Contains(peerId) || _whitelist.Contains(username))
             {
                 _log.Info($"P2P: Auto-approving whitelisted peer {username} ({peerId}) in ProcessPendingJoinRequests fallback.");
+                hostSession.PreApprovePuid(peerId);
                 hostSession.ApproveJoinRequest(peerId);
                 continue;
             }
@@ -5366,6 +5297,7 @@ public sealed class GameWorldScreen : IScreen, IMouseCaptureScreen
 
     private void AddJoinRequestChatPrompt(string peerId, string displayName)
     {
+        RememberPendingJoinRequester(peerId, displayName);
         AddChatLine(
             $"{displayName} wants to join! Accept?",
             isSystem: true,
@@ -5376,6 +5308,42 @@ public sealed class GameWorldScreen : IScreen, IMouseCaptureScreen
             actionLabel2: "REJECT",
             customActionToken2: JoinDeclineActionPrefix + peerId,
             customActionStatus2: $"{displayName} declined.");
+    }
+
+    private void RememberPendingJoinRequester(string peerId, string displayName)
+    {
+        var normalizedPeerId = (peerId ?? string.Empty).Trim();
+        if (string.IsNullOrWhiteSpace(normalizedPeerId))
+            return;
+
+        _pendingJoinLookup[normalizedPeerId] = normalizedPeerId;
+        if (!string.IsNullOrWhiteSpace(displayName))
+            _pendingJoinLookup[displayName.Trim()] = normalizedPeerId;
+    }
+
+    private void ForgetPendingJoinRequester(string peerId)
+    {
+        var normalizedPeerId = (peerId ?? string.Empty).Trim();
+        if (string.IsNullOrWhiteSpace(normalizedPeerId))
+            return;
+
+        var keysToRemove = _pendingJoinLookup
+            .Where(kvp => string.Equals(kvp.Value, normalizedPeerId, StringComparison.OrdinalIgnoreCase))
+            .Select(kvp => kvp.Key)
+            .ToArray();
+
+        for (var i = 0; i < keysToRemove.Length; i++)
+            _pendingJoinLookup.Remove(keysToRemove[i]);
+    }
+
+    private bool TryResolvePendingJoinRequester(string query, out string peerId)
+    {
+        peerId = string.Empty;
+        var normalized = (query ?? string.Empty).Trim();
+        if (string.IsNullOrWhiteSpace(normalized))
+            return false;
+
+        return _pendingJoinLookup.TryGetValue(normalized, out peerId!) && !string.IsNullOrWhiteSpace(peerId);
     }
 
     private void ApplyPlayerList(LanPlayerList list)
@@ -7575,6 +7543,7 @@ public sealed class GameWorldScreen : IScreen, IMouseCaptureScreen
         if (token.StartsWith(JoinApproveActionPrefix, StringComparison.Ordinal))
         {
             var peerId = token.Substring(JoinApproveActionPrefix.Length).Trim();
+            hostSession.PreApprovePuid(peerId);
             if (!hostSession.ApproveJoinRequest(peerId))
             {
                 SetCommandStatus("Join request is no longer pending.", 4f, echoToChat: false);
@@ -7587,20 +7556,7 @@ public sealed class GameWorldScreen : IScreen, IMouseCaptureScreen
                 AddChatLine($"You approved {username}'s join request.", isSystem: true);
                 SetCommandStatus($"Join approved for {username}.", 4f, echoToChat: false);
             });
-            return;
-        }
-
-        if (token.StartsWith(WorldInviteAcceptPrefix, StringComparison.Ordinal))
-        {
-            var senderPuid = token.Substring(WorldInviteAcceptPrefix.Length).Trim();
-            _ = RespondToInviteAsync(senderPuid, "accepted");
-            return;
-        }
-
-        if (token.StartsWith(WorldInviteRejectPrefix, StringComparison.Ordinal))
-        {
-            var senderPuid = token.Substring(WorldInviteRejectPrefix.Length).Trim();
-            _ = RespondToInviteAsync(senderPuid, "rejected");
+            ForgetPendingJoinRequester(peerId);
             return;
         }
 
@@ -7619,6 +7575,7 @@ public sealed class GameWorldScreen : IScreen, IMouseCaptureScreen
                 AddChatLine($"You declined {username}'s join request.", isSystem: true);
                 SetCommandStatus($"Join declined for {username}.", 4f, echoToChat: false);
             });
+            ForgetPendingJoinRequester(peerId);
         }
     }
 
@@ -8476,7 +8433,7 @@ public sealed class GameWorldScreen : IScreen, IMouseCaptureScreen
             SetCommandStatus("Usage: /accept <username>");
             return;
         }
-        _ = RespondToInviteAsync(commandParts[1], "accepted");
+        _ = RespondToPendingJoinRequestAsync(commandParts[1], accept: true);
     }
 
     private void ExecuteRejectInviteCommand(string[] commandParts)
@@ -8486,49 +8443,46 @@ public sealed class GameWorldScreen : IScreen, IMouseCaptureScreen
             SetCommandStatus("Usage: /reject <username>");
             return;
         }
-        _ = RespondToInviteAsync(commandParts[1], "rejected");
+        _ = RespondToPendingJoinRequestAsync(commandParts[1], accept: false);
     }
 
-    private async Task RespondToInviteAsync(string username, string response)
+    private async Task RespondToPendingJoinRequestAsync(string username, bool accept)
     {
-        var invites = await _onlineGate.GetMyWorldInvitesAsync();
-        if (!invites.Ok)
+        if (_lanSession is not EosP2PHostSession hostSession)
         {
-            SetCommandStatus("Failed to fetch invites.", echoToChat: false);
+            SetCommandStatus("This command is only available to the online host.", echoToChat: false);
             return;
         }
 
-        var invite = invites.Incoming.FirstOrDefault(i => 
-            (string.Equals(i.SenderDisplayName, username, StringComparison.OrdinalIgnoreCase) || 
-             string.Equals(i.SenderProductUserId, username, StringComparison.OrdinalIgnoreCase) ||
-             string.Equals(i.SenderJoinTarget, username, StringComparison.OrdinalIgnoreCase)) && 
-            i.Status == "pending");
-            
-        if (invite == null)
+        if (!TryResolvePendingJoinRequester(username, out var peerId))
         {
-            SetCommandStatus($"No pending invite from {username}.", echoToChat: false);
+            SetCommandStatus($"No pending join request from {username}.", echoToChat: false);
             return;
         }
 
-        var ok = await _onlineGate.RespondToWorldInviteAsync(invite.SenderProductUserId, response);
-        if (ok)
+        bool ok;
+        if (accept)
         {
-            var bestName = await ResolveUsernameAsync(invite.SenderProductUserId);
-
-            SetCommandStatus($"Invite from {bestName} {response}.", echoToChat: false);
-            AddChatLine($"You {response} {bestName}'s join request.", isSystem: true);
-
-            if (response == "accepted" && _lanSession is EosP2PHostSession hostSession)
-            {
-                var approvedPuid = string.IsNullOrWhiteSpace(invite.SenderJoinTarget)
-                    ? invite.SenderProductUserId
-                    : invite.SenderJoinTarget;
-                hostSession.PreApprovePuid(approvedPuid);
-            }
+            hostSession.PreApprovePuid(peerId);
+            ok = hostSession.ApproveJoinRequest(peerId);
         }
         else
         {
-            SetCommandStatus($"Failed to {response} invite.", echoToChat: false);
+            ok = hostSession.DeclineJoinRequest(peerId);
+        }
+        if (ok)
+        {
+            var bestName = await ResolveUsernameAsync(peerId);
+            var actionWord = accept ? "accepted" : "rejected";
+
+            SetCommandStatus($"Join request from {bestName} {actionWord}.", echoToChat: false);
+            AddChatLine($"You {actionWord} {bestName}'s join request.", isSystem: true);
+            ForgetPendingJoinRequester(peerId);
+        }
+        else
+        {
+            var actionWord = accept ? "accept" : "reject";
+            SetCommandStatus($"Failed to {actionWord} {username}.", echoToChat: false);
         }
     }
 

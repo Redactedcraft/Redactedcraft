@@ -24,6 +24,20 @@ public readonly struct EosJoinRequest
     public string DisplayName { get; init; }
 }
 
+public enum EosJoinApprovalStatus
+{
+    Approved,
+    Pending,
+    Declined,
+    Failed
+}
+
+public readonly struct EosJoinApprovalResult
+{
+    public EosJoinApprovalStatus Status { get; init; }
+    public string Message { get; init; }
+}
+
 public sealed class EosP2PHostSession : ILanSession
 {
     public bool IsHost => true;
@@ -406,9 +420,6 @@ public sealed class EosP2PHostSession : ILanSession
         ClosePeerConnection(target.PeerId);
         RemoveClient(target.PeerId);
 
-        // Also clear the GateServer invite so they can't just click "CAN JOIN" again instantly
-        _ = _onlineGate.RespondToWorldInviteAsync(target.PeerId.ToString(), "rejected");
-
         return true;
 #else
         return false;
@@ -438,6 +449,7 @@ public sealed class EosP2PHostSession : ILanSession
             if (!_pendingJoinByPeer.TryGetValue(peerProductUserId.Trim(), out pending))
                 return false;
 
+            _sociallyApprovedPuids.Add(peerProductUserId.Trim());
             _pendingJoinByPeer.Remove(pending.Key);
             var id = Interlocked.Increment(ref _nextId);
             approved = new ClientState(pending.PeerId, id)
@@ -452,9 +464,6 @@ public sealed class EosP2PHostSession : ILanSession
         SendInitialWorldData(approved);
         _log.Info($"EOS join request approved ({pending!.Key}).");
         BroadcastPlayerList();
-
-        // Ensure central gate invite status is updated so the joiner's UI reflects acceptance
-        _ = _onlineGate.RespondToWorldInviteAsync(pending.Key, "accepted");
 
         return true;
 #else
@@ -480,9 +489,6 @@ public sealed class EosP2PHostSession : ILanSession
         EosP2PWire.SendJoinDenied(_p2p, _localUserId, pending!.PeerId, _socketId, reason, _log);
         _log.Info($"EOS join request declined ({pending!.Key}).");
         ClosePeerConnection(pending.PeerId);
-
-        // Also update central gate invite status so the joiner's UI updates
-        _ = _onlineGate.RespondToWorldInviteAsync(pending.Key, "rejected");
 
         return true;
 #else
@@ -1093,6 +1099,132 @@ public sealed class EosP2PClientSession : ILanSession
         return new LanClientConnectResult { Success = true, Session = session, WorldInfo = worldInfo.Value };
 #else
         return new LanClientConnectResult { Success = false, Error = "EOS SDK not available." };
+#endif
+    }
+
+    public static async Task<EosJoinApprovalResult> RequestJoinApprovalAsync(
+        Logger log,
+        EosClient eosClient,
+        string hostJoinInfo,
+        string username,
+        TimeSpan timeout)
+    {
+#if EOS_SDK
+        if (eosClient.P2PInterface == null || eosClient.LocalProductUserIdHandle == null || !eosClient.LocalProductUserIdHandle.IsValid())
+            return new EosJoinApprovalResult { Status = EosJoinApprovalStatus.Failed, Message = "EOS not ready." };
+
+        var hostId = ParseProductUserId(hostJoinInfo);
+        if (hostId == null || !hostId.IsValid())
+            return new EosJoinApprovalResult { Status = EosJoinApprovalStatus.Failed, Message = "Invalid host join info." };
+
+        var p2p = eosClient.P2PInterface;
+        var localId = eosClient.LocalProductUserIdHandle;
+        var socketId = EosP2PWire.CreateSocket();
+        var onlineGate = OnlineGateClient.GetOrCreate();
+        string? gateTicket = null;
+
+        if (!onlineGate.CanUseOfficialOnline(log, out var gateDenied))
+            return new EosJoinApprovalResult { Status = EosJoinApprovalStatus.Failed, Message = gateDenied };
+
+        if (onlineGate.IsGateRequired)
+        {
+            if (!onlineGate.TryGetValidTicketForChildProcess(out gateTicket, out _)
+                && !onlineGate.EnsureTicket(log, TimeSpan.FromSeconds(6)))
+            {
+                return new EosJoinApprovalResult
+                {
+                    Status = EosJoinApprovalStatus.Failed,
+                    Message = string.IsNullOrWhiteSpace(onlineGate.DenialReason)
+                        ? "Online gate ticket unavailable."
+                        : onlineGate.DenialReason
+                };
+            }
+
+            if (!onlineGate.TryGetValidTicketForChildProcess(out gateTicket, out _))
+                return new EosJoinApprovalResult { Status = EosJoinApprovalStatus.Failed, Message = "Online gate ticket unavailable." };
+        }
+        else
+        {
+            onlineGate.TryGetValidTicketForChildProcess(out gateTicket, out _);
+        }
+
+        try
+        {
+            var acceptOptions = new AcceptConnectionOptions
+            {
+                LocalUserId = localId,
+                RemoteUserId = hostId,
+                SocketId = socketId
+            };
+            p2p.AcceptConnection(ref acceptOptions);
+
+            var helloPayload = EosP2PWire.BuildHelloPayload(username ?? "Player", gateTicket, log);
+            if (!EosP2PWire.SendRaw(p2p, localId, hostId, socketId, helloPayload, PacketReliability.ReliableOrdered, log))
+                return new EosJoinApprovalResult { Status = EosJoinApprovalStatus.Failed, Message = "Failed to send join request." };
+
+            var nextHelloResend = DateTime.UtcNow + TimeSpan.FromSeconds(1);
+            var deadline = DateTime.UtcNow + timeout;
+            log.Info($"EOS_JOIN_REQUEST sent host={hostId} timeout={timeout.TotalSeconds:0}s");
+
+            while (DateTime.UtcNow < deadline)
+            {
+                if (DateTime.UtcNow >= nextHelloResend)
+                {
+                    EosP2PWire.SendRaw(p2p, localId, hostId, socketId, helloPayload, PacketReliability.ReliableOrdered, log);
+                    nextHelloResend = DateTime.UtcNow + TimeSpan.FromSeconds(1.5);
+                }
+
+                if (!EosP2PWire.TryReceivePacket(p2p, localId, socketId, out var peerId, out var msg))
+                {
+                    await Task.Delay(50).ConfigureAwait(false);
+                    continue;
+                }
+
+                if (peerId == null || !peerId.IsValid() || !peerId.Equals(hostId))
+                    continue;
+
+                if (msg.Type == LanMessageType.JoinDenied)
+                {
+                    var reason = string.IsNullOrWhiteSpace(msg.JoinDeniedReason)
+                        ? "Host declined join request."
+                        : msg.JoinDeniedReason!;
+                    log.Info($"EOS_JOIN_REQUEST_RESULT host={hostId} status=declined");
+                    return new EosJoinApprovalResult { Status = EosJoinApprovalStatus.Declined, Message = reason };
+                }
+
+                if (msg.Type == LanMessageType.Welcome || msg.Type == LanMessageType.WorldInfo)
+                {
+                    log.Info($"EOS_JOIN_REQUEST_RESULT host={hostId} status=approved");
+                    return new EosJoinApprovalResult { Status = EosJoinApprovalStatus.Approved, Message = "approved" };
+                }
+            }
+
+            log.Info($"EOS_JOIN_REQUEST_RESULT host={hostId} status=pending");
+            return new EosJoinApprovalResult
+            {
+                Status = EosJoinApprovalStatus.Pending,
+                Message = "Request sent. Waiting for host approval."
+            };
+        }
+        finally
+        {
+            try
+            {
+                var closeOptions = new CloseConnectionsOptions
+                {
+                    LocalUserId = localId,
+                    SocketId = socketId
+                };
+                p2p.CloseConnections(ref closeOptions);
+            }
+            catch (Exception ex)
+            {
+                log.Warn($"EOS_JOIN_REQUEST cleanup failed: {ex.Message}");
+            }
+        }
+#else
+        await Task.CompletedTask;
+        return new EosJoinApprovalResult { Status = EosJoinApprovalStatus.Failed, Message = "EOS SDK not available." };
 #endif
     }
 

@@ -73,8 +73,8 @@ See `OFFICIAL_ONLINE_SERVICE_TERMS.md` for policy and restrictions.
 ### Hosting/Discovery Transport
 
 - LAN hosting/discovery uses local network broadcast/listening (`LanDiscovery`).
-- Official online transport is EOS P2P.
-- Supabase is used only for identity/friends plus lightweight signaling (host presence + join requests), not for world/session transport.
+- Official online discovery uses EOS Lobbies and transport uses EOS P2P.
+- Supabase is used only for identity/profile/friend directory APIs. It is not used for world hosting, session state, or join signaling.
 
 ### Client Environment Variables
 
