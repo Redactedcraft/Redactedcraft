@@ -21,6 +21,12 @@
 
 ### 🎨 Asset Updates
 - **Added New Texture**: Added `air.png` texture for improved block rendering
+- **New Background Images**: Added 5 new multiplayer background images:
+  - `InviteFriends_bg.png` for friend invitation screen
+  - `JoinByCode_bg.png` for code joining screen
+  - `Kicked_background.png` for kick/disconnect screen
+  - `MultiplayerHost_bg.png` for multiplayer hosting screen
+  - `ShareJoinCode_bg.png` for code sharing screen
 - **Asset Structure Cleanup**: Removed duplicate textures and maintained proper folder structure
 - **Enhanced Compatibility**: Ensured proper launcher asset loading paths
 
