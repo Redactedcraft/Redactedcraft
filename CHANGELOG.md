@@ -19,7 +19,14 @@
 - **Error Handling**: Better error reporting and user feedback throughout the application
 - **Configuration Management**: Centralized Supabase configuration with proper environment variable handling
 
-### 🎨 Asset Updates
+### � Gameplay Improvements
+- **Enhanced Command System**: Improved command input handling with better prediction and tab completion
+- **Fixed Control Rebinding**: Controls now properly rebind without conflicts or lost bindings
+- **Pause Menu Fixes**: Resolved floating/movement issues when game is paused
+- **Enhanced Input Handling**: Better key detection and modifier key support
+- **Improved Chat System**: Enhanced chat history and command input processing
+
+### � Asset Updates
 - **Added New Texture**: Added `air.png` texture for improved block rendering
 - **New Background Images**: Added 5 new multiplayer background images:
   - `InviteFriends_bg.png` for friend invitation screen
@@ -36,7 +43,10 @@
 - **Network Resilience**: Improved retry logic and connection handling
 - **Build Authentication**: Stronger verification of official builds
 
-### 🐛 Bug Fixes
+### � Release Build
+- **Production Ready**: Release build (`LatticeVeilMonoGame.exe`) included in `bin/Release/net8.0-windows/win-x64/`
+- **Stable Hash**: Release build uses proper release hash validation
+- **Optimized Performance**: Release build optimized for production deployment
 - **Fixed Release Build Detection**: Release builds now correctly use release hash lists instead of dev
 - **Resolved Database Errors**: Fixed null constraint violations in ticket storage
 - **Corrected CORS Issues**: Proper cross-origin handling for web functions
