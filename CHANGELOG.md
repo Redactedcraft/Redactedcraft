@@ -19,10 +19,10 @@
 - **Error Handling**: Better error reporting and user feedback throughout the application
 - **Configuration Management**: Centralized Supabase configuration with proper environment variable handling
 
-### 🎨 UI/UX Enhancements
-- **Launcher Visual Updates**: Improved status indicators and error messaging
-- **Online Status Display**: Better visual feedback for online service availability
-- **Progress Indicators**: Enhanced loading and status progress throughout the application
+### 🎨 Asset Updates
+- **Added New Texture**: Added `air.png` texture for improved block rendering
+- **Asset Structure Cleanup**: Removed duplicate textures and maintained proper folder structure
+- **Enhanced Compatibility**: Ensured proper launcher asset loading paths
 
 ### 🛡️ Security & Reliability
 - **JWT Token Validation**: Proper token verification with expiration checking
