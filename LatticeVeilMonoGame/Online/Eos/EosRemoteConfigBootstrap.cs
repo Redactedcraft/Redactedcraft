@@ -47,6 +47,15 @@ public static class EosRemoteConfigBootstrap
             return false;
         }
 
+        // Skip EOS bootstrap entirely if not launched through launcher
+        var launchMode = Environment.GetEnvironmentVariable("LV_LAUNCH_MODE") ?? string.Empty;
+        var launcherAuth = Environment.GetEnvironmentVariable("LV_LAUNCHER_ONLINE_AUTH") ?? string.Empty;
+        if (launchMode != "online" || launcherAuth != "1")
+        {
+            log.Info("EOS remote config bootstrap skipped: not launched through launcher with online auth");
+            return false;
+        }
+
         var authTicket = ticket;
         if (string.IsNullOrEmpty(authTicket))
             gate.TryGetValidTicketForChildProcess(out authTicket, out _);

@@ -196,7 +196,7 @@ public class OnlineGateClient
         var requiredValue = Environment.GetEnvironmentVariable("LV_GATE_REQUIRED");
         _gateRequired = string.IsNullOrWhiteSpace(requiredValue) || ParseBool(requiredValue);
         _proofPath = Path.Combine(AppContext.BaseDirectory, "official_build.sig");
-        _buildFlavor = File.Exists(_proofPath) ? "release" : "dev";
+        _buildFlavor = Paths.IsDevBuild ? "dev" : "release";
         TryRestorePreAuthorizedTicketFromEnvironment();
     }
 
